@@ -66,15 +66,32 @@ final class TodoPanel implements ExtensionHandler<PanelContributionRequest, Pane
     /**
      * 渲染一条待办。
      * <p>
-     * 已完成整行用 {@link UiEmphasis#DIM}：面板的用处是「看还剩什么」，做完的事应当退到背景里，
-     * 而不是和未完成项一样抢眼。
+     * 三态的强调档位各不相同：已完成用 {@link UiEmphasis#DIM}（面板的用处是「看还剩什么」，
+     * 做完的事应当退到背景里）、进行中用 {@link UiEmphasis#ACCENT}（它是此刻正在发生的事，
+     * 是扫一眼面板最想看到的那一行）、未开始用 {@link UiEmphasis#NORMAL}。
      *
      * @param item 待办项
      * @return 界面行
      */
     private static UiLine lineOf(TodoItem item) {
-        UiEmphasis emphasis = item.done() ? UiEmphasis.DIM : UiEmphasis.NORMAL;
-        return UiLine.of(UiSegment.of(TodoText.mark(item), emphasis),
+        UiEmphasis emphasis = emphasisOf(item.status());
+        return UiLine.of(UiSegment.of(item.status().mark(), emphasis),
                 UiSegment.of(item.content(), emphasis));
+    }
+
+    /**
+     * 取某个状态在面板上的强调档位。
+     *
+     * @param status 待办状态，不可为 {@code null}
+     * @return 强调档位
+     */
+    private static UiEmphasis emphasisOf(TodoStatus status) {
+        if (status == TodoStatus.COMPLETED) {
+            return UiEmphasis.DIM;
+        }
+        if (status == TodoStatus.IN_PROGRESS) {
+            return UiEmphasis.ACCENT;
+        }
+        return UiEmphasis.NORMAL;
     }
 }

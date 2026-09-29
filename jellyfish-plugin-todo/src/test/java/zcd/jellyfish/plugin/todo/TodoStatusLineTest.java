@@ -41,9 +41,19 @@ class TodoStatusLineTest {
     @Test
     @DisplayName("显示完成数 / 总数")
     void handle_should_renderProgress() {
-        store.replace("s-1", Arrays.asList(new TodoItem("写文档", true), new TodoItem("跑测试", false)));
+        store.replace("s-1", Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED),
+                new TodoItem("跑测试", TodoStatus.PENDING)));
 
         assertEquals("待办 1/2", statusLine.handle(new StatusLineContributionRequest("s-1")).getText());
+    }
+
+    @Test
+    @DisplayName("有进行中项时补一段：状态栏是唯一常驻的进度显示")
+    void handle_should_renderInProgress() {
+        store.replace("s-1", Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED),
+                new TodoItem("跑测试", TodoStatus.IN_PROGRESS)));
+
+        assertEquals("待办 1/2 · 进行中 1", statusLine.handle(new StatusLineContributionRequest("s-1")).getText());
     }
 
     @Test
@@ -63,7 +73,7 @@ class TodoStatusLineTest {
     @Test
     @DisplayName("只读当前会话那一份，别的会话的待办不影响本会话的进度")
     void handle_should_ignoreOtherSessions() {
-        store.replace("s-2", Collections.singletonList(new TodoItem("别人的事", false)));
+        store.replace("s-2", Collections.singletonList(new TodoItem("别人的事", TodoStatus.PENDING)));
 
         assertTrue(statusLine.handle(new StatusLineContributionRequest("s-1")).isEmpty());
     }

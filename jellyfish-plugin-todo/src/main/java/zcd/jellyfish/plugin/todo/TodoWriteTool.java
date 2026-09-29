@@ -24,7 +24,12 @@ import java.util.Map;
  * <p>
  * <b>参数是不可信输入</b>：模型可能传错类型、漏字段、写错枚举值。这里一律当场抛
  * {@link JellyfishException}——ReAct 会把工具异常转成 tool 结果回灌，模型因此能看着错误信息自己改，
- * 而不是让一份坏数据静默落盘。
+ * 而不是让一份坏数据静默落盘。报错消息因此必须<b>带上实际收到的值</b>：只说「实际为 String」时
+ * 模型改不动（它以为自己传的就是对的），会原样重试。
+ * <p>
+ * <b>状态取值与模型的语言对齐</b>：见 {@link TodoStatus}。曾经只认 {@code pending} / {@code completed}，
+ * 而模型习惯写 {@code in_progress}，于是一次写入被整批拒掉——整表覆盖是原子操作，同一批里已经标成
+ * {@code completed} 的项跟着一起丢。三态是为了让模型能如实表达「正在做」，不是为了放宽校验。
  * <p>
  * 无状态，可安全跨线程传递。
  *
@@ -35,11 +40,8 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
     /** 工具名，同时是路由键。 */
     static final String NAME = "todo_write";
 
-    /** 状态取值：未完成。 */
-    private static final String STATUS_PENDING = "pending";
-
-    /** 状态取值：已完成。 */
-    private static final String STATUS_COMPLETED = "completed";
+    /** 报错消息里回显参数值时的长度上限：消息首行会显示在轨迹行上，不能让它变成一整段内容。 */
+    private static final int MAX_DESCRIBE_CHARS = 40;
 
     /** 待办仓库。 */
     private final TodoStore store;
@@ -61,8 +63,9 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
     static ToolDescriptor descriptor() {
         Map<String, Object> itemProperties = new LinkedHashMap<String, Object>();
         itemProperties.put("content", property("string", "待办内容，一句话说清要做什么"));
-        Map<String, Object> status = property("string", "pending 表示未完成，completed 表示已完成");
-        status.put("enum", Arrays.asList(STATUS_PENDING, STATUS_COMPLETED));
+        Map<String, Object> status = property("string",
+                "pending 表示还没轮到它，in_progress 表示此刻正在做的就是这一项，completed 表示已完成");
+        status.put("enum", wiredNames());
         itemProperties.put("status", status);
 
         Map<String, Object> itemSchema = new LinkedHashMap<String, Object>();
@@ -80,8 +83,8 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
 
         return new ToolDescriptor(NAME,
                 "创建或更新本会话的待办清单。开始一项需要多步的工作时，先把计划写成待办，"
-                        + "并在推进过程中把完成的项标记为 completed，让用户能看到进度。"
-                        + "内容要简短、可执行；同一时间只应有一项是当前正在做的。",
+                        + "并在推进过程中把当前在做的那一项标成 in_progress、做完的标成 completed，"
+                        + "让用户能看到进度。内容要简短、可执行；同一时间只应有一项是 in_progress。",
                 properties, Collections.singletonList("todos"), true);
     }
 
@@ -120,7 +123,7 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
             if (!(content instanceof String) || ((String) content).trim().isEmpty()) {
                 throw new JellyfishException("todos 每一项的 content 必须是非空字符串，实际为 " + describe(content));
             }
-            items.add(new TodoItem((String) content, isDone(item.get("status"))));
+            items.add(new TodoItem((String) content, status(item.get("status"))));
         }
         return items;
     }
@@ -128,26 +131,34 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
     /**
      * 解析状态取值。
      *
-     * @param status {@code status} 参数原值，可为 {@code null}（按未完成处理）
-     * @return 已完成返回 {@code true}
+     * @param raw {@code status} 参数原值，可为 {@code null}（按未开始处理）
+     * @return 待办状态，保证非 {@code null}
      * @throws JellyfishException 取值不在允许集合内时抛出
      */
-    private static boolean isDone(Object status) {
+    private static TodoStatus status(Object raw) {
+        if (raw == null) {
+            // 少写状态时按「未开始」处理：这是更容易改对的一侧，且不会把计划项当成已完成
+            return TodoStatus.PENDING;
+        }
+        TodoStatus status = raw instanceof String ? TodoStatus.ofWireName((String) raw) : null;
         if (status == null) {
-            // 少写状态时按「未完成」处理：这是更容易改对的一侧，且不会把计划项当成已完成
-            return false;
+            throw new JellyfishException("todos 的 status 只能是 " + TodoStatus.allowedNames()
+                    + "，实际为 " + describe(raw));
         }
-        if (status instanceof String) {
-            String text = ((String) status).trim();
-            if (STATUS_PENDING.equals(text)) {
-                return false;
-            }
-            if (STATUS_COMPLETED.equals(text)) {
-                return true;
-            }
+        return status;
+    }
+
+    /**
+     * 拼出允许的状态取值列表，供工具名片使用。
+     *
+     * @return 取值列表
+     */
+    private static List<String> wiredNames() {
+        List<String> names = new ArrayList<String>(TodoStatus.values().length);
+        for (TodoStatus status : TodoStatus.values()) {
+            names.add(status.wireName());
         }
-        throw new JellyfishException("todos 的 status 只能是 " + STATUS_PENDING + " 或 "
-                + STATUS_COMPLETED + "，实际为 " + describe(status));
+        return names;
     }
 
     /**
@@ -166,11 +177,26 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
 
     /**
      * 生成便于排错的参数描述。
+     * <p>
+     * 字符串要打出<b>原文</b>而不是类名：模型最常犯的错是把 {@code status} 写成别的词，
+     * 而「实际为 String」对它是零信息——那句话与「实际为 pending」长得一模一样，于是它只会原样重试
+     * （实测如此：同一份 {@code in_progress} 参数被连续重试了两次）。长度与换行都做了限制，
+     * 因为这条消息的首行会显示在轨迹行上。
      *
      * @param value 参数值，可为 {@code null}
      * @return 描述文本
      */
     private static String describe(Object value) {
-        return value == null ? "null" : value.getClass().getSimpleName();
+        if (value == null) {
+            return "null";
+        }
+        if (value instanceof String) {
+            String text = ((String) value).replace('\n', ' ').trim();
+            if (text.length() <= MAX_DESCRIBE_CHARS) {
+                return '"' + text + '"';
+            }
+            return '"' + text.substring(0, MAX_DESCRIBE_CHARS) + "…\"";
+        }
+        return value.getClass().getSimpleName();
     }
 }

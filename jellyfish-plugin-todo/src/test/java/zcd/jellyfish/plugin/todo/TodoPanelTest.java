@@ -43,26 +43,30 @@ class TodoPanelTest {
     @Test
     @DisplayName("把清单渲染成面板：标题 + 每行一条 + 建议右栏")
     void handle_should_renderList() {
-        store.replace("s-1", Arrays.asList(new TodoItem("写文档", true), new TodoItem("跑测试", false)));
+        store.replace("s-1", Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED),
+                new TodoItem("跑测试", TodoStatus.IN_PROGRESS), new TodoItem("提交", TodoStatus.PENDING)));
 
         PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
 
         assertEquals("待办", contribution.getTitle());
         assertEquals(UiRegion.RIGHT, contribution.getPreferredRegion());
-        assertEquals(2, contribution.getLines().size());
+        assertEquals(3, contribution.getLines().size());
         assertEquals("[x] 写文档", contribution.getLines().get(0).text());
-        assertEquals("[ ] 跑测试", contribution.getLines().get(1).text());
+        assertEquals("[~] 跑测试", contribution.getLines().get(1).text());
+        assertEquals("[ ] 提交", contribution.getLines().get(2).text());
     }
 
     @Test
-    @DisplayName("已完成项整行变暗：面板是用来看「还剩什么」的，做完的不该继续抢眼")
-    void handle_should_dimCompletedItems() {
-        store.replace("s-1", Arrays.asList(new TodoItem("写文档", true), new TodoItem("跑测试", false)));
+    @DisplayName("三态强调各不相同：做完的退到背景，正在做的要被扫到")
+    void handle_should_emphasizeByStatus() {
+        store.replace("s-1", Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED),
+                new TodoItem("跑测试", TodoStatus.IN_PROGRESS), new TodoItem("提交", TodoStatus.PENDING)));
 
         PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
 
         assertEquals(UiEmphasis.DIM, contribution.getLines().get(0).getSegments().get(0).getEmphasis());
-        assertEquals(UiEmphasis.NORMAL, contribution.getLines().get(1).getSegments().get(0).getEmphasis());
+        assertEquals(UiEmphasis.ACCENT, contribution.getLines().get(1).getSegments().get(0).getEmphasis());
+        assertEquals(UiEmphasis.NORMAL, contribution.getLines().get(2).getSegments().get(0).getEmphasis());
     }
 
     @Test
@@ -80,7 +84,7 @@ class TodoPanelTest {
     @Test
     @DisplayName("只读当前会话那一份，别的会话的待办不进本会话的面板")
     void handle_should_ignoreOtherSessions() {
-        store.replace("s-2", Collections.singletonList(new TodoItem("别人的事", false)));
+        store.replace("s-2", Collections.singletonList(new TodoItem("别人的事", TodoStatus.PENDING)));
 
         assertTrue(panel.handle(new PanelContributionRequest("s-1")).isEmpty());
     }

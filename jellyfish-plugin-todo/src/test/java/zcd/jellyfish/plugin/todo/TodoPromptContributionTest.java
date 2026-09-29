@@ -40,7 +40,8 @@ class TodoPromptContributionTest {
     @Test
     @DisplayName("有待办时注入与内核原先一致的待办块")
     void handle_should_renderBlock() {
-        store.replace("s-1", Arrays.asList(new TodoItem("写文档", false), new TodoItem("跑测试", true)));
+        store.replace("s-1", Arrays.asList(new TodoItem("写文档", TodoStatus.PENDING),
+                new TodoItem("跑测试", TodoStatus.COMPLETED)));
 
         PromptContribution result = contribution.handle(new PromptContributionRequest("s-1"));
 

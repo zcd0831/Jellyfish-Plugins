@@ -102,13 +102,17 @@ cp jellyfish-plugin-shell/target/jellyfish-plugin-shell-*.jar plugins/
 
 | 面 | 扩展点 | 说明 |
 | --- | --- | --- |
-| `todo_write` 工具 | `ToolCallRequest` | 模型写待办的唯一入口。**整表覆盖**：传完整的新列表，上次列过而这次没列出的项视为删除，空数组表示清空；状态只有 `pending` / `completed`，缺省按 `pending` 处理 |
+| `todo_write` 工具 | `ToolCallRequest` | 模型写待办的唯一入口。**整表覆盖**：传完整的新列表，上次列过而这次没列出的项视为删除，空数组表示清空；状态取 `pending` / `in_progress` / `completed`，缺省按 `pending` 处理 |
 | `/todo` 命令 | `CommandRequest` | 只读地列出当前会话待办（写入只走 `todo_write`，不给同一份状态第二套写入语义） |
 | 上下文注入 | `PromptContributionRequest` | 每轮把待办块注入 system prompt，模型始终看得见自己的计划；没有待办时不注入 |
-| 状态栏进度 | `StatusLineContributionRequest` | 状态栏尾部显示 `待办 2/5`，不敲命令也能看到还剩几件事；没有待办时不占位 |
-| 侧栏清单 | `PanelContributionRequest` | 在侧栏常驻显示完整清单（已完成项整行变暗），建议放右栏；没有待办时不占区域 |
+| 状态栏进度 | `StatusLineContributionRequest` | 状态栏尾部显示 `待办 2/5`，有进行中项时补 `· 进行中 1`，不敲命令也能看到还剩几件事；没有待办时不占位 |
+| 侧栏清单 | `PanelContributionRequest` | 在侧栏常驻显示完整清单（已完成项整行变暗、进行中项高亮：`[~]`），建议放右栏；没有待办时不占区域 |
 
-参数非法（`todos` 不是数组、项不是对象、`content` 为空、`status` 不在取值内）会**当场报错**，并作为工具结果回灌给模型让它自己改，而不是静默落盘一份坏数据。待办写完会广播一次 UI 失效事件，因此状态栏进度与侧栏清单不必等回合结束就更新。
+三态的写法与人看到的标记一一对应：`pending` = `[ ]`、`in_progress` = `[~]`、`completed` = `[x]`（清单里有进行中项时，注入的待办块标题会补一句图例）。状态取值读的时候忽略大小写与连字符（`In-Progress` 也认），写出去的一律是小写下划线。
+
+参数非法（`todos` 不是数组、项不是对象、`content` 为空、`status` 不在取值内）会**当场报错**，并作为工具结果回灌给模型让它自己改，而不是静默落盘一份坏数据。报错消息会**带上实际收到的值**（`实际为 "doing"`）：只说「实际为 String」时模型改不动，只会原样重试。待办写完会广播一次 UI 失效事件，因此状态栏进度与侧栏清单不必等回合结束就更新。
+
+待办文件是插件自己的私有格式，落盘字段为 `status`；升级前写下的、只有 `done` 的旧文件仍能读（`done:true` 即已完成），两个字段同时出现时以 `status` 为准。
 
 面板是「独占型」贡献：它建议落在右栏，但外壳可以忽略这个建议（终端太窄时侧栏整体隐藏，也可能被用户用 `/ui` 改到别处）。
 

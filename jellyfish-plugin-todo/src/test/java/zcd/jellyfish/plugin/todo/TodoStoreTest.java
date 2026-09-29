@@ -49,18 +49,18 @@ class TodoStoreTest {
     @Test
     @DisplayName("覆盖后应能读回，并把文件写到磁盘")
     void replace_should_writeFileAndBeReadable() {
-        List<TodoItem> stored = store.replace("s-1", Arrays.asList(new TodoItem("写文档", true)));
+        List<TodoItem> stored = store.replace("s-1", Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED)));
 
         assertEquals(1, stored.size());
         assertTrue(Files.exists(store.fileOf("s-1")));
         assertEquals(1, store.itemsOf("s-1").size());
-        assertTrue(store.itemsOf("s-1").get(0).done());
+        assertEquals(TodoStatus.COMPLETED, store.itemsOf("s-1").get(0).status());
     }
 
     @Test
     @DisplayName("另一个仓库实例应能从文件懒加载：这是重启后待办还在的依据")
     void itemsOf_should_loadFromFile_when_newStoreInstance() {
-        store.replace("s-1", Arrays.asList(new TodoItem("写文档", false)));
+        store.replace("s-1", Arrays.asList(new TodoItem("写文档", TodoStatus.PENDING)));
 
         TodoStore reopened = new TodoStore(directory);
 
@@ -69,9 +69,20 @@ class TodoStoreTest {
     }
 
     @Test
+    @DisplayName("旧版本写的文件（只有 done 字段）也要能懒加载：升级不该把待办清空")
+    void itemsOf_should_loadLegacyDoneField_when_newStoreInstance() throws IOException {
+        Files.write(store.fileOf("s-1"),
+                "[{\"content\":\"写文档\",\"done\":true}]".getBytes(StandardCharsets.UTF_8));
+
+        TodoStore reopened = new TodoStore(directory);
+
+        assertEquals(TodoStatus.COMPLETED, reopened.itemsOf("s-1").get(0).status());
+    }
+
+    @Test
     @DisplayName("覆盖为空表应删除文件，不留空壳")
     void replace_should_deleteFile_when_empty() {
-        store.replace("s-1", Arrays.asList(new TodoItem("写文档", false)));
+        store.replace("s-1", Arrays.asList(new TodoItem("写文档", TodoStatus.PENDING)));
 
         List<TodoItem> stored = store.replace("s-1", Collections.<TodoItem>emptyList());
 
@@ -83,8 +94,9 @@ class TodoStoreTest {
     @Test
     @DisplayName("会话之间互不影响")
     void itemsOf_should_isolatePerSession() {
-        store.replace("s-1", Arrays.asList(new TodoItem("a", false)));
-        store.replace("s-2", Arrays.asList(new TodoItem("b", false), new TodoItem("c", true)));
+        store.replace("s-1", Arrays.asList(new TodoItem("a", TodoStatus.PENDING)));
+        store.replace("s-2", Arrays.asList(new TodoItem("b", TodoStatus.PENDING),
+                new TodoItem("c", TodoStatus.COMPLETED)));
 
         assertEquals(1, store.itemsOf("s-1").size());
         assertEquals(2, store.itemsOf("s-2").size());
@@ -102,7 +114,7 @@ class TodoStoreTest {
     @Test
     @DisplayName("删除会话待办应清掉缓存与文件；文件不存在时返回 false")
     void delete_should_clearCacheAndFile() {
-        store.replace("s-1", Arrays.asList(new TodoItem("a", false)));
+        store.replace("s-1", Arrays.asList(new TodoItem("a", TodoStatus.PENDING)));
 
         assertTrue(store.delete("s-1"));
         assertFalse(Files.exists(store.fileOf("s-1")));
