@@ -13,17 +13,26 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 命令策略：前缀白名单（强）与命令分类器（弱），两者都只收紧、不放宽。
+ * 命令策略：前缀白名单（默认拒绝）、可信命令表（免审批）与命令分类器（弱），三者都只收紧、不放宽。
  * <p>
- * <b>为什么白名单与分类器是两件事</b>：
+ * <b>三只旋钮回答两个问题</b>：
  * <ul>
  *     <li><b>白名单</b>（{@code allowedCommands}）是<b>默认拒绝</b>。它是给「没有人在场」的模式
  *     （{@code -cli} / {@code -server}，那两个模式里 {@code askTools} 等于禁用）准备的安全网：
- *     配置了它，就只放行列出来的那些前缀。</li>
- *     <li><b>分类器</b>是<b>减少审批打扰</b>。它把「只读查询」判成无异议，从而让人不必每次点批准；
+ *     配置了它，就只放行列出来的那些前缀。它回答<b>「能不能跑」</b>。</li>
+ *     <li><b>可信表</b>（{@code commandPolicy.trustedCommands}）是<b>免审批</b>：命中即无异议，
+ *     不弹批准框。它回答<b>「要不要问人」</b>。</li>
+ *     <li><b>分类器</b>同样回答「要不要问人」：它把只读查询判成无异议，让人不必每次点批准，
  *     其余命令升级为人工审批。它不拒绝任何东西。</li>
  * </ul>
- * 前者回答「能不能跑」，后者回答「要不要问人」。
+ * <b>白名单与后两者是两件事</b>：配了白名单不等于白名单里的命令免审批——白名单只解除默认拒绝，
+ * 命令仍要过可信表与分类器，命中不了就问人。这正是「把 {@code mvn test} 放进白名单却仍被弹框」
+ * 的原因，不是缺陷。
+ * <p>
+ * <b>可信表与只读表（{@code readOnlyCommands}）为什么不合并</b>：只读表的语义承诺是
+ * 「这条命令不改东西」，而免审批的诉求常常落在 {@code mvn test} / {@code git commit} 这类
+ * <b>确实会改东西</b>的命令上。逼用户把它们写进只读表，等于让他对系统说谎，
+ * 而这份谎话会掩盖「我为什么信任这条命令」。两个键的<b>审批口径相同</b>（都不打扰），语义各归其位。
  * <p>
  * <b>分类器不是安全边界，这一点必须写清楚</b>：它按命令原文的前缀匹配，
  * {@code FOO=bar cmd}、{@code $(...)}、别名、{@code sh -c} 嵌套都能绕过它。
@@ -34,6 +43,10 @@ import java.util.Map;
  * {@code git fetch} / {@code git push} 不在（会改远端与本地 ref）、
  * {@code npm test} / {@code mvn test} 不在（执行仓库里的任意代码）。这三个都是「看起来无害」的
  * 典型误判点。
+ * <p>
+ * <b>这三条免审批的唯一正当路径是可信表</b>：内置表的保守是有理由的，不该被放宽；而用户确实
+ * 要在某个项目里反复跑 {@code mvn test} 时，把这份判断写进 {@code trustedCommands} 是显式、
+ * 可审计的——比把它塞进只读表精确，也比把它算进内置只读表诚实。
  * <p>
  * 不可变，可安全跨线程传递。
  *
@@ -86,6 +99,9 @@ final class CommandPolicy {
     /** 白名单，空列表表示不启用。 */
     private final List<String> allowedCommands;
 
+    /** 可信命令表，命中即免审批；空列表表示不启用。 */
+    private final List<String> trustedCommands;
+
     /** 只读命令表。 */
     private final List<String> readOnlyCommands;
 
@@ -97,13 +113,15 @@ final class CommandPolicy {
      *
      * @param enabled          是否启用分类器
      * @param allowedCommands  白名单
+     * @param trustedCommands  可信命令表
      * @param readOnlyCommands 只读命令表
      * @param deniedPatterns   拒绝形状列表
      */
-    private CommandPolicy(boolean enabled, List<String> allowedCommands, List<String> readOnlyCommands,
-                          List<String> deniedPatterns) {
+    private CommandPolicy(boolean enabled, List<String> allowedCommands, List<String> trustedCommands,
+                          List<String> readOnlyCommands, List<String> deniedPatterns) {
         this.enabled = enabled;
         this.allowedCommands = allowedCommands;
+        this.trustedCommands = trustedCommands;
         this.readOnlyCommands = readOnlyCommands;
         this.deniedPatterns = deniedPatterns;
     }
@@ -124,6 +142,7 @@ final class CommandPolicy {
         return new CommandPolicy(
                 booleanValue(values.get("enabled"), true),
                 Collections.unmodifiableList(new ArrayList<String>(allowedCommands)),
+                PluginConfig.stringListOf(context, values.get("trustedCommands"), "commandPolicy.trustedCommands"),
                 extend(DEFAULT_READ_ONLY_COMMANDS, PluginConfig.stringListOf(context, values.get("readOnlyCommands"),
                         "commandPolicy.readOnlyCommands")),
                 extend(DEFAULT_DENIED_PATTERNS, PluginConfig.stringListOf(context, values.get("deniedPatterns"),
@@ -203,20 +222,26 @@ final class CommandPolicy {
     /**
      * 给出这次命令调用的权限裁定。
      * <p>
-     * 顺序即优先级：白名单（默认拒绝）→ 拒绝形状 → 只读 → 其余问人。
-     * 白名单与拒绝形状<b>不受 {@code commandPolicy.enabled} 影响</b>：那个开关关掉的是
-     * 「分类器」这个便利机制，不是用户明确声明的安全约束。
+     * 顺序即优先级：白名单（默认拒绝）→ 拒绝形状 → 可信表（免审批）→ 只读 → 其余问人。
+     * 白名单、可信表与拒绝形状<b>都不受 {@code commandPolicy.enabled} 影响</b>：那个开关关掉的是
+     * 「分类器」这个便利机制，不是用户明确声明的约束。
+     * <p>
+     * <b>可信表排在拒绝形状之后是刻意的</b>：把 {@code rm} 写进可信表，{@code rm -rf /} 依旧被拒——
+     * 免审批回答的是「要不要问人」，不是「连灾难形状也放行」。
      *
      * @param command 命令原文，不可为 {@code null}
      * @return 权限裁定，保证非 {@code null}
      */
     PermissionVerdict verdict(String command) {
-        if (!allowedCommands.isEmpty() && !allowedByPrefix(command)) {
+        if (!allowedCommands.isEmpty() && !matchesPrefix(allowedCommands, command)) {
             return PermissionVerdict.deny("命令不在 allowedCommands 白名单内：" + firstToken(command));
         }
         String denied = matchedDeniedPattern(command);
         if (denied != null) {
             return PermissionVerdict.deny("命令匹配拒绝形状：" + denied);
+        }
+        if (matchesPrefix(trustedCommands, command)) {
+            return PermissionVerdict.abstain();
         }
         if (!enabled) {
             return PermissionVerdict.abstain();
@@ -228,23 +253,33 @@ final class CommandPolicy {
     }
 
     /**
-     * 判断命令是否命中白名单前缀。
+     * 判断命令是否命中某个前缀表。
      * <p>
-     * 匹配粒度与只读表一致：允许写 {@code git status} 这种两 token 形式（精确匹配前两个 token），
-     * 也允许写单 token（匹配该命令本身）。
+     * 白名单、可信表与只读表的匹配粒度一致：允许写 {@code git status} 这种两 token 形式
+     * （精确匹配前两个 token），也允许写单 token（匹配该命令本身）。
      *
+     * @param table   前缀表，不可为 {@code null}
      * @param command 命令原文
      * @return 命中返回 {@code true}
      */
-    private boolean allowedByPrefix(String command) {
+    private static boolean matchesPrefix(List<String> table, String command) {
         String first = firstToken(command);
         String firstTwo = firstTwoTokens(command);
-        for (String allowed : allowedCommands) {
-            if (allowed.indexOf(' ') < 0 ? allowed.equals(first) : allowed.equals(firstTwo)) {
+        for (String prefix : table) {
+            if (prefix.indexOf(' ') < 0 ? prefix.equals(first) : prefix.equals(firstTwo)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * 获取可信命令表条目数，供启动台账展示。
+     *
+     * @return 条目数
+     */
+    int trustedCommandCount() {
+        return trustedCommands.size();
     }
 
     /**
@@ -257,14 +292,7 @@ final class CommandPolicy {
         if (matchedDeniedPattern(command) != null) {
             return Classification.DENIED;
         }
-        String first = firstToken(command);
-        String firstTwo = firstTwoTokens(command);
-        for (String readOnly : readOnlyCommands) {
-            if (readOnly.indexOf(' ') < 0 ? readOnly.equals(first) : readOnly.equals(firstTwo)) {
-                return Classification.READ_ONLY;
-            }
-        }
-        return Classification.OTHER;
+        return matchesPrefix(readOnlyCommands, command) ? Classification.READ_ONLY : Classification.OTHER;
     }
 
     /**

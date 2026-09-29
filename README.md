@@ -14,7 +14,7 @@
 | `jellyfish-plugin-compact` | `jellyfish-compact` | 会话压缩策略：提供摘要指令与保留条数/摘要上限（**不装它就没有压缩**，见下文） |
 | `jellyfish-plugin-python` | `jellyfish-plugin-python` | Python 脚本插件运行时：把 `scripts/python/<id>/` 下的脚本目录变成标准插件（控制面网关 + 每脚本一 worker 进程） |
 | `jellyfish-plugin-node` | `jellyfish-plugin-node` | Node 脚本插件运行时：与 Python 同构（同一套协议与进程模型），零第三方依赖 |
-| `jellyfish-plugin-shell` | `jellyfish-shell` | 命令行：`shell` 工具（`/bin/sh -c` 执行命令原文）+ 命令分类器（只读不打扰、灾难形状拒绝、其余审批）。**没有沙箱**，见下文 |
+| `jellyfish-plugin-shell` | `jellyfish-shell` | 命令行：`shell` 工具（`/bin/sh -c` 执行命令原文）+ 命令策略（白名单准入、可信表免审批、只读不打扰、灾难形状拒绝、其余审批）。**没有沙箱**，见下文 |
 | `jellyfish-plugin-skills` | `jellyfish-skills` | skills：按目录发现 `SKILL.md`，元信息常驻 system prompt、正文由模型用 `skill` 工具按需加载，见下文 |
 | `jellyfish-plugin-mcp` | `jellyfish-mcp` | MCP 客户端：stdio 连外部 MCP server，把它的工具以 `mcp__<server>__<tool>` 接入，见下文 |
 
@@ -74,7 +74,13 @@ cp jellyfish-plugin-shell/target/jellyfish-plugin-shell-*.jar plugins/
         "maxTimeoutSeconds": 1800,
         "idleTimeoutSeconds": 0,
         "environment": {},
-        "allowedCommands": []
+        "allowedCommands": [],
+        "commandPolicy": {
+          "enabled": true,
+          "trustedCommands": [],
+          "readOnlyCommands": [],
+          "deniedPatterns": []
+        }
       }
     }
   }
@@ -95,6 +101,12 @@ cp jellyfish-plugin-shell/target/jellyfish-plugin-shell-*.jar plugins/
 - `idleTimeoutSeconds`（`jellyfish-shell`，默认 `0` 即**关闭**）：连续多久没有任何输出就判定卡住。墙钟回答「最多跑多久」，它回答「多久没动静就当死了」：一条持续打印进度的 `mvn test` 跑 20 分钟不该被误杀，而 `docker build` 之类确实可能长时间无输出，所以缺省不开。**模型不能设置它**，它是用户的环境策略。
 - `environment`（`jellyfish-shell`）：额外注入或覆盖的环境变量。子进程默认**继承**父进程环境，但名字匹配 `*KEY*` / `*TOKEN*` / `*SECRET*` / `*PASSWORD*` / `*CREDENTIAL*` 的变量**不会**传下去（工具输出会送到远端 LLM），另有一组防挂死默认值（`PAGER=cat`、`GIT_PAGER=cat`、`GIT_TERMINAL_PROMPT=0`、`TERM=dumb`、`NO_COLOR=1`、`DEBIAN_FRONTEND=noninteractive`）。这里写的值可以盖掉默认值。`sensitivePatterns` 用于**追加**剔除模式。
 - `allowedCommands`（`jellyfish-shell`，默认 `[]`）：**非空即默认拒绝**的前缀白名单，支持 `git status` 这种两 token 形式（单 token 覆盖该命令的全部子命令）。它服务于 `-cli` / `-server` 这类没有人在场批准的模式，且**不受 `commandPolicy.enabled` 影响**。
+- `commandPolicy`（`jellyfish-shell`）：命令策略段，四个键都**可省略**。
+  - `enabled`（默认 `true`）：只关**分类器**这个便利机制。`false` 时只读表与「其余命令问人」都不再表态，但**白名单、可信表、拒绝形状照旧生效**——它们不是分类器的一部分。
+  - `trustedCommands`（默认 `[]`）：**可信命令表，命中即免审批**（无异议、不弹批准框）。粒度与白名单一致。它是「白名单里的命令为什么还要点批准」的答案：白名单只管「能不能跑」，免审批归这张表。
+  - `readOnlyCommands`（默认 `[]`）：**追加**在内置只读表之后，用于把用户认为只读的命令纳入免打扰范围。内置表**不可替换**，只能追加。
+  - `deniedPatterns`（默认 `[]`）：**追加**在内置拒绝形状（`rm -rf /`、`mkfs`、`of=/dev/`、`:(){`）之后。同样是追加，内置那几条不可撤销。
+- **`allowedCommands` 与 `trustedCommands` 要在两处各写一遍才算「能跑且不打扰」**。这不是冗余失误，是刻意分工：前者回答能不能跑（默认拒绝），后者回答要不要问人（默认问）。也因此，「允许跑但每次都要我批准」这种姿态仍然写得出来——只配白名单、不配可信表即可。
 
 ## 待办（jellyfish-todo）
 
@@ -164,15 +176,24 @@ cp jellyfish-plugin-shell/target/jellyfish-plugin-shell-*.jar plugins/
 
 失败的命令在界面上都是能一眼看出的：`-tui` 的工具轨迹后带 `⚠ 退出码 N`（或被终止的原因），`-cli` 的结束行同样补一段后缀，`-server` 的 `tool_done.metadata` 给了同样的字段。判据由内核统一给出（退出码非零，或终止原因不是正常完成），**不解析文本**。
 
-**权限与分类器**：插件会按命令原文做三态判定——只读查询（`ls`、`git status`、`cat`……）不打扰你；极少几条灾难形状（`rm -rf /`、`mkfs`、`dd of=/dev/`）直接拒绝；其余升级为人工审批。
+**权限与分类器**：每次调用依次过五道，先拒绝后免打扰、最后才问人。
+
+1. `allowedCommands` 非空且没命中 → **直接拒绝**（默认拒绝的硬门）；
+2. 命中拒绝形状（`rm -rf /`、`mkfs`、`dd of=/dev/`）→ **直接拒绝**；
+3. 命中 `commandPolicy.trustedCommands` → **免审批**，直接执行；
+4. 命中只读表（`ls`、`git status`、`cat`……）→ **免审批**；
+5. 其余 → **升级为人工审批**，你会看到一个批准框。
+
+第 2 步排在第 3 步之前是刻意的：把 `rm` 写进可信表，`rm -rf /` 依旧被拒。白名单、可信表、拒绝形状都**不受 `commandPolicy.enabled` 影响**（那个开关关掉的只是第 4、5 步的分类器）。
 
 - **分类器不是安全边界**：`FOO=bar cmd`、`$(...)`、`&&` 链都能绕过它。它的价值是让你不必为每次 `git status` 点一次批准——否则你最终会把 `shell` 从 `askTools` 里整个拿掉，那才是真正的风险。
-- **`find` / `git fetch` / `npm test` 刻意不算只读**：`find -delete` 会删东西，`git fetch` 改 ref，`npm test` 执行仓库里的任意代码。
+- **`commandPolicy.trustedCommands` 是免审批表，白名单不解除审批**：这是最容易踩的一处——`allowedCommands` 里的 `mvn test` 每次仍然弹批准框，因为白名单只回答「能不能跑」。要它静默执行，就把同一条前缀也写进 `trustedCommands`（粒度与白名单一致，单 token 覆盖全部子命令）。
+- **`find` / `git fetch` / `npm test` 刻意不算只读**：`find -delete` 会删东西，`git fetch` 改 ref，`npm test` 执行仓库里的任意代码。它们免审批的唯一正当路径是可信表：内置表保持保守，你的判断写成一条显式、可审计的配置。
 - **默认配置（`shell` 不在 `askTools` 里）就是推荐的姿态**：只读命令静默执行，其余命令由分类器升级为审批，你会看到一次批准框。
 - **把 `shell` 写进 `askTools` 则是「每条命令都要批准」**（连 `git status` 也要）：核心策略的 `ASK` 无法被插件的「无异议」降级——插件的裁定只能收紧、不能放宽。想要最强姿态就用它，代价是噪音。
-- **`-cli` / `-server` 下没有人在场**：`askTools` 等于禁用（无审批者即拒绝）。**不配 `allowedCommands` 时，分类器的「只读」判定就是这两个模式仅有的放行口**——命令分类器在这个场景里是承重的，这也是那半句「它可被绕过」必须被认真对待的地方：要跑无人值守的服务，就配上白名单。
+- **`-cli` / `-server` 下没有人在场**：`askTools` 等于禁用，而 **`ASK` 就是拒绝**。于是免审批的放行口只剩两个——被分类器判为只读的命令，以及 `trustedCommands` 里的命令（白名单非空时还得先过白名单）。**想在无人值守下跑 `mvn test` 这类非只读命令，必须把它写进 `trustedCommands`**：只配白名单不够，白名单只解除默认拒绝，后面等着它的仍是「`ASK` 即拒绝」。这也是那半句「分类器可被绕过」必须被认真对待的地方：要跑无人值守的服务，就配上白名单与可信表。
 - **不做目录围栏**：它可绕过（`cd /`、绝对路径、`sh -c` 嵌套），与文件工具没有围栏也不自洽，还会挡住合法需求。真正的边界是审批加白名单。
-- **`allowedCommands` 白名单**（非空即默认拒绝）是给 `-cli` / `-server` 这类没有人在场的模式准备的安全网。
+- **`allowedCommands` 白名单**（非空即默认拒绝）是给 `-cli` / `-server` 这类没有人在场的模式准备的安全网；**它只管准入，不管审批**，免审批看 `trustedCommands`。
 - **Windows 未验证**：非 POSIX 平台映射成 `cmd.exe /c`，但没有在真机上跑过。
 - **进程树只能尽力杀**：`sh -c` 的直接子进程是 shell，杀掉它不一定带走 `npm run dev` 拉起的孙进程。工具会用 `pgrep -P` 递归尽力而为，**杀不干净是已知边界**。
 

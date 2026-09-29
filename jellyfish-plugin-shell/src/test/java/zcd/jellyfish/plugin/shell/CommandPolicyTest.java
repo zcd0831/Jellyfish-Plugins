@@ -99,6 +99,67 @@ class CommandPolicyTest {
     }
 
     @Test
+    @DisplayName("可信表命中即免审批——白名单只解除默认拒绝，免审批靠它")
+    void verdict_should_abstain_whenCommandTrusted() {
+        CommandPolicy policy = trustedPolicy(Arrays.asList("git", "mvn test"));
+
+        // 写类命令的诉求正在这里：`git commit` 不改远端、`mvn test` 确实会改东西，
+        // 但用户已经明确表态信任它们，不该每次点批准
+        assertTrue(policy.verdict("git commit -m x").isAbstain());
+        assertTrue(policy.verdict("mvn test").isAbstain());
+        // 两 token 条目只覆盖那一个前缀，粒度与白名单、只读表一致
+        assertTrue(policy.verdict("mvn deploy").isAsk());
+        assertTrue(policy.verdict("curl https://example.com").isAsk());
+    }
+
+    @Test
+    @DisplayName("可信表能救回白名单里的非只读命令，但救不了白名单外的命令")
+    void verdict_should_trustWithinAllowList() {
+        Map<String, Object> raw = new HashMap<String, Object>();
+        raw.put("trustedCommands", Arrays.asList("mvn", "docker"));
+        CommandPolicy policy = policy(raw, Arrays.asList("git", "mvn"));
+
+        // 白名单 + 可信 → 免审批：白名单里的 `mvn test` 不再弹框，这就是本次改造的缺口
+        assertTrue(policy.verdict("mvn test").isAbstain());
+        // 白名单外即使可信也进不来：白名单是默认拒绝的硬门，可信表不能反过来放宽它
+        assertTrue(policy.verdict("docker compose up").isDenied());
+    }
+
+    @Test
+    @DisplayName("可信表不受分类器开关影响——它是用户声明的约束，不是分类器的一部分")
+    void verdict_should_honourTrustedCommands_whenClassifierDisabled() {
+        Map<String, Object> raw = new HashMap<String, Object>();
+        raw.put("enabled", Boolean.FALSE);
+        raw.put("trustedCommands", Collections.singletonList("mvn"));
+        CommandPolicy policy = policy(raw, Arrays.asList("git", "mvn"));
+
+        assertTrue(policy.verdict("mvn test").isAbstain());
+        // 白名单内但不可信、且分类器关掉：仍由拒绝形状与白名单兜着，不是无条件放行
+        assertTrue(policy.verdict("git push").isAbstain());
+        assertTrue(policy.verdict("ls").isDenied());
+    }
+
+    @Test
+    @DisplayName("可信表排在拒绝形状之后：写进可信表也拦得住灾难形状")
+    void verdict_should_stillDeny_disasterShape_whenTrusted() {
+        CommandPolicy policy = trustedPolicy(Collections.singletonList("rm"));
+
+        // 免审批回答的是「要不要问人」，不是「连灾难形状也放行」
+        assertTrue(policy.verdict("rm build/app.jar").isAbstain());
+        assertTrue(policy.verdict("rm -rf /").isDenied());
+    }
+
+    @Test
+    @DisplayName("缺省无可信表时判定与改造前一致")
+    void verdict_should_beUnchanged_whenNoTrustedCommands() {
+        CommandPolicy policy = policy(null, Collections.<String>emptyList());
+
+        assertTrue(policy.verdict("git status").isAbstain());
+        assertTrue(policy.verdict("mvn test").isAsk());
+        assertTrue(policy.verdict("rm -rf /").isDenied());
+    }
+
+    @Test
     @DisplayName("关掉分类器后只读与其余都不表态")
     void verdict_should_abstain_whenDisabled() {
         Map<String, Object> raw = new HashMap<String, Object>();
@@ -143,5 +204,17 @@ class CommandPolicyTest {
      */
     private static CommandPolicy policy(Map<String, Object> raw, java.util.List<String> allowedCommands) {
         return CommandPolicy.from(null, raw, allowedCommands);
+    }
+
+    /**
+     * 构造只带可信表、不启用白名单的策略。
+     *
+     * @param trustedCommands 可信命令表
+     * @return 策略
+     */
+    private static CommandPolicy trustedPolicy(java.util.List<String> trustedCommands) {
+        Map<String, Object> raw = new HashMap<String, Object>();
+        raw.put("trustedCommands", trustedCommands);
+        return policy(raw, Collections.<String>emptyList());
     }
 }

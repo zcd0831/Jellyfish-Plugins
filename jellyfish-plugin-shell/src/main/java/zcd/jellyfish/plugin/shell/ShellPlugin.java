@@ -55,9 +55,10 @@ public final class ShellPlugin implements JellyfishPlugin {
                 new InputDirectiveDescriptor("执行一条 shell 命令（结果进入上下文）"),
                 new ShellInputDirective());
         this.runner = created;
-        LOG.info("命令行插件已启动: timeout={}s maxTimeout={}s idleTimeout={}s allowed={}",
+        LOG.info("命令行插件已启动: timeout={}s maxTimeout={}s idleTimeout={}s allowed={} trusted={}",
                 Integer.valueOf(config.timeoutSeconds()), Integer.valueOf(config.maxTimeoutSeconds()),
-                Integer.valueOf(config.idleTimeoutSeconds()), Integer.valueOf(config.allowedCommands().size()));
+                Integer.valueOf(config.idleTimeoutSeconds()), Integer.valueOf(config.allowedCommands().size()),
+                Integer.valueOf(config.commandPolicy().trustedCommandCount()));
     }
 
     @Override

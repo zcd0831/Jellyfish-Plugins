@@ -30,7 +30,7 @@ mvn -q -Pmcp-it test                # MCP 插件端到端（真 fork 进程跑�
 | `jellyfish-plugin-todo` | 会话待办：`todo_write` 工具 + `/todo` + 提示词/状态栏/面板贡献 | api（provided） |
 | `jellyfish-plugin-project` | 项目约定：探测工作目录下 `AGENTS.md`，小文件内联原文、大文件只给路径 | api（provided） |
 | `jellyfish-plugin-compact` | 压缩策略：摘要指令 + 保留条数与摘要上限；不启用它压缩整体不可用 | api（provided） |
-| `jellyfish-plugin-shell` | 命令行：`shell` 工具（`/bin/sh -c` 执行命令原文）+ 命令分类器（只读不打扰 / 灾难形状拒绝 / 其余审批）。**无沙箱**，能读写本用户任意文件；自带 commons-exec（**shade 进插件包**，内核 classpath 上不出现它） | api（provided）、commons-exec（shade） |
+| `jellyfish-plugin-shell` | 命令行：`shell` 工具（`/bin/sh -c` 执行命令原文）+ 命令策略（白名单准入 / 可信表免审批 / 只读不打扰 / 灾难形状拒绝 / 其余审批）。**无沙箱**，能读写本用户任意文件；自带 commons-exec（**shade 进插件包**，内核 classpath 上不出现它） | api（provided）、commons-exec（shade） |
 | `jellyfish-plugin-skills` | skills：按目录发现 `SKILL.md`，元信息进 system prompt、正文由模型按需用 `skill` 工具加载、附带文件交给已有工具读取。零第三方依赖（frontmatter 手写极简解析，不引 YAML） | api（provided） |
 | `jellyfish-plugin-mcp` | MCP 客户端：stdio 连外部 server，把它的工具以 `mcp__<server>__<tool>` 注册进内核，支持 `tools/list_changed`、`roots`，**不声明也不支持 sampling / elicitation**。自带 Jackson（**shade 进插件包**） | api（provided）、jackson-databind（shade） |
 | `jellyfish-plugin-node` | Node 桥接插件：与 python 插件同构（同一个 `ScriptBridgePlugin` 骨架），差异只有 `NodeLanguage` 与网关资源 `script/gateway.js`（Node 事件循环）、`script/worker.js`、`script/jellyfish_sdk.js`、`script/script_wire.js`、`script/dump_manifest.js`。**零第三方依赖**（只用 Node 内置模块，因此不需要 npm install） | api（provided）、jellyfish-script（shade） |
@@ -73,8 +73,10 @@ mvn -q -Pmcp-it test                # MCP 插件端到端（真 fork 进程跑�
 - **终止链是 TERM → 宽限 → KILL，并尽力杀进程树**：只杀直接子进程会让 `npm run dev` 拉起的孙进程继续跑（「报告已终止，端口却还占着」）。JDK 8 没有 `ProcessHandle.descendants()`，只能靠 `pgrep -P` 递归，**杀不干净是已知边界**。
 - **取消回调只发信号**：它可能在界面渲染线程上执行，因此不等待、不递归；完整的终止链由等待循环在几十毫秒内接手。**判定顺序必须是「先看令牌，再看进程是否退出」**——取消回调会直接杀进程，先判退出会把取消误报成正常完成。
 - **环境是「继承 + 默认脱敏 + 防挂死」**：丢掉 `PATH` 会让几乎所有命令 command not found，因此不采用严格白名单；代价是脱敏必须默认开启（名字匹配 `*KEY*` / `*TOKEN*` / `*SECRET*` / `*PASSWORD*` / `*CREDENTIAL*` 的变量不传子进程）——工具输出会送到远端 LLM。防挂死注入 `PAGER=cat` / `GIT_PAGER=cat` / `GIT_TERMINAL_PROMPT=0` / `TERM=dumb` / `NO_COLOR=1` / `DEBIAN_FRONTEND=noninteractive`。
-- **命令分类器是便利机制，不是安全边界**：按命令原文的前缀匹配，`FOO=bar cmd`、`$(...)`、`&&` 链、`sh -c` 嵌套都能绕过。它的价值是让只读查询不再打扰人，从而避免用户因为嫌烦把 `shell` 从 `askTools` 里整个拿掉。`find` / `git fetch` / `npm test` **刻意不算只读**（`find -delete`、改远端 ref、执行仓库里的任意代码）。**但在 `-cli` / `-server` 下它事实上是承重的**：那里没有审批者（`ASK` 即拒绝），于是「被判只读」成了仅有的放行口——这两个模式必须靠 `allowedCommands` 白名单，不能只靠分类器。
-- **前缀白名单与分类器是两件事**：`allowedCommands` 非空即**默认拒绝**（给 `-cli` / `-server` 这类没有人在场的模式准备的安全网），且**不受 `commandPolicy.enabled` 影响**——那个开关关掉的是分类器这个便利机制，不是用户明确声明的约束。
+- **命令分类器是便利机制，不是安全边界**：按命令原文的前缀匹配，`FOO=bar cmd`、`$(...)`、`&&` 链、`sh -c` 嵌套都能绕过。它的价值是让只读查询不再打扰人，从而避免用户因为嫌烦把 `shell` 从 `askTools` 里整个拿掉。`find` / `git fetch` / `npm test` **刻意不算只读**（`find -delete`、改远端 ref、执行仓库里的任意代码），它们免审批的唯一正当路径是 `trustedCommands`——内置表保持保守，用户的判断写成显式配置。**但在 `-cli` / `-server` 下它事实上是承重的**：那里没有审批者（`ASK` 即拒绝），于是「被判只读」与「命中 `trustedCommands`」成了仅有的两个放行口——这两个模式必须配好白名单与可信表，不能只靠分类器。
+- **准入、免审批、分类器是三件事**：`allowedCommands` 非空即**默认拒绝**（给 `-cli` / `-server` 这类没有人在场的模式准备的安全网），回答「能不能跑」；`commandPolicy.trustedCommands` 命中即 **ABSTAIN**，回答「要不要问人」；分类器只是「减少打扰」这个便利机制。三者**都不受 `commandPolicy.enabled` 影响**——那个开关关掉的只是分类器。
+- **白名单不解除审批**：`allowedCommands` 里的 `mvn test` 每次仍然弹批准框，它只解除默认拒绝，命令之后还要过可信表与只读表。把「能不能跑」与「要不要问人」合回一个键，就再也表达不出「允许跑但每次都要批准」了。
+- **`trustedCommands` 排在拒绝形状之后，且两者都排在只读判断之前**：免审批回答的是「要不要问人」，不是「连 `rm -rf /` 也放行」。改 `CommandPolicy.verdict` 的顺序前先想清楚这一条。
 - **插件停止时必须终止在途命令**（`stop()` → 杀在途），否则用户看到的是「jellyfish 都退出了，那条命令还在跑」。
 
 ## skills 插件
@@ -103,7 +105,7 @@ mvn -q -Pmcp-it test                # MCP 插件端到端（真 fork 进程跑�
 
 ## 已知边界与后续项
 
-- **`shell`**：**已落地**（`jellyfish-plugin-shell`，commons-exec shade 进插件包）。**已知边界**：Windows 映射未验证；进程树只能尽力杀（`pgrep -P` 不存在或没权限时退化为只杀直接子进程）；分类器可被 `FOO=bar cmd` / `$(...)` / `&&` 链绕过。**明确不做**：每次调用的预览预算覆盖（调大是上下文脚枪、调小不如直接在命令里写 `head -50`）；只读分类对重定向与复合命令不设防（真正的防线是审批框里那条完整命令原文，要收紧应当在白名单那一层）。
+- **`shell`**：**已落地**（`jellyfish-plugin-shell`，commons-exec shade 进插件包）。**已知边界**：Windows 映射未验证；进程树只能尽力杀（`pgrep -P` 不存在或没权限时退化为只杀直接子进程）；分类器可被 `FOO=bar cmd` / `$(...)` / `&&` 链绕过。**明确不做**：每次调用的预览预算覆盖（调大是上下文脚枪、调小不如直接在命令里写 `head -50`）；只读分类对重定向与复合命令不设防（真正的防线是审批框里那条完整命令原文，要收紧应当在白名单那一层，要免审批则写 `trustedCommands`）。
 - **`shell` 明确不做**（需要时另开一期）：沙箱 / 权限降级 / 容器内执行（要硬隔离就把 jellyfish 整个跑进容器，那是唯一的硬边界）、命令黑名单与「解析式安全」、目录围栏、后台进程 / 常驻服务 / `shell_kill`（需要会话级进程注册表 + 输出重定向 API + 会话关闭清理）、**会话级工作目录**（牵动 `Session` 快照、持久化、恢复兼容与所有工具的路径解析，v1 用 `cwd` 参数）、落盘文件的引用计数式保留、TUI 审批的「本次会话记住该决定」。
 
 ## 编码约定
