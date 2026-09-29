@@ -114,6 +114,7 @@ mvn -q -Pmcp-it test                # MCP 插件端到端（真 fork 进程跑�
 - 注释使用中文，说明“为什么”而非复述代码。
 - 类、接口、私有方法、成员变量都要有文档注释，类注释要加`@author zcd`，方法注释要用`@param`写清楚每个参数、用`@return`写清楚返回值。
 - 异常统一抛出 `JellyfishException`。
+- **工具结果摘要与异常消息都是「给人看的一行」**：成功返回时用 `ToolMetadata.KEY_SUMMARY` 写一句「刚才那一行到底是什么事」（五个文件工具与 `todo_write` 已这么做，摘要必须单行）；抛 `JellyfishException` 时它的**首行**会作为失败原因显示在内核的轨迹行上，因此消息要写成一句给人看的原因（「文件不存在: /x/y」），**不要放密钥或大段内容**。非 `JellyfishException` 的异常不会暴露消息。
 - 工具方法/常量类使用 `final` + 私有构造器（如 `ProviderTypes`、`LlmClients`）。
 - 所有代码均需要满足sonar规范要求。
 

@@ -2,6 +2,8 @@ package zcd.jellyfish.plugin.tools;
 
 import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.ToolCallRequest;
+import zcd.jellyfish.api.extension.ToolCallResult;
+import zcd.jellyfish.api.extension.ToolMetadata;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -47,6 +49,28 @@ final class ToolTestSupport {
      */
     static String invoke(PluginTool tool, Map<String, Object> arguments) throws Exception {
         return String.valueOf(tool.handle(new ToolCallRequest(tool.name(), arguments)).getOutput());
+    }
+
+    /**
+     * 以指定参数调用工具，返回完整结果（含元数据）。
+     *
+     * @param tool      工具
+     * @param arguments 参数
+     * @return 工具结果
+     * @throws Exception 工具抛出的异常
+     */
+    static ToolCallResult invokeResult(PluginTool tool, Map<String, Object> arguments) throws Exception {
+        return tool.handle(new ToolCallRequest(tool.name(), arguments));
+    }
+
+    /**
+     * 取结果里的单行摘要。
+     *
+     * @param result 工具结果
+     * @return 摘要文本；没有摘要时为空串
+     */
+    static String summaryOf(ToolCallResult result) {
+        return ToolMetadata.summaryOf(result.getMetadata());
     }
 
     /**

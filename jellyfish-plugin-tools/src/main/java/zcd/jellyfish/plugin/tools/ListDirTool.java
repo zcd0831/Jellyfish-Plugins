@@ -72,7 +72,8 @@ public final class ListDirTool implements PluginTool {
         }
         List<Path> entries = listEntries(directory);
         if (entries.isEmpty()) {
-            return new ToolCallResult(name(), "目录 " + ToolPaths.display(directory) + " 是空目录");
+            return new ToolCallResult(name(), "目录 " + ToolPaths.display(directory) + " 是空目录",
+                    ToolSummaries.of(ToolPaths.display(directory) + "（空目录）"));
         }
         // 目录优先、同类按名字排序：让「该往下走」这件事在输出里一眼可见
         entries.sort(Comparator.comparing((Path path) -> !Files.isDirectory(path))
@@ -94,7 +95,8 @@ public final class ListDirTool implements PluginTool {
                     .append(" 项未显示，可用 offset=").append(to + 1).append(" 继续（limit=").append(limit)
                     .append("）]");
         }
-        return new ToolCallResult(name(), text.toString());
+        return new ToolCallResult(name(), text.toString(), ToolSummaries.of(ToolPaths.display(directory)
+                + " · 第 " + (from + 1) + '-' + to + " 项，共 " + entries.size() + " 项"));
     }
 
     /**

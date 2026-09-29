@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.extension.ToolCallResult;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -17,6 +18,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.args;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.expectFailure;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.invoke;
+import static zcd.jellyfish.plugin.tools.ToolTestSupport.invokeResult;
+import static zcd.jellyfish.plugin.tools.ToolTestSupport.summaryOf;
 
 /**
  * {@link GrepFilesTool} 的单元测试。
@@ -202,6 +205,28 @@ class GrepFilesToolTest {
                 () -> invoke(tool, args("pattern", "x", "path", tempDir.toString(), "max_line_chars", 0)));
 
         assertTrue(failure.getMessage().contains("max_line_chars 必须大于 0"), failure.getMessage());
+    }
+
+    @Test
+    @DisplayName("摘要给出「在哪儿、搜什么、命中多少」，长说明不进摘要")
+    void handle_should_summarizeMatches() throws Exception {
+        write("a.txt", "hello\nworld\n");
+
+        ToolCallResult result = invokeResult(tool, args("pattern", "hello", "path", tempDir.toString()));
+
+        String summary = summaryOf(result);
+        assertTrue(summary.startsWith("hello @ "), summary);
+        assertTrue(summary.endsWith(" · 1 处"), summary);
+    }
+
+    @Test
+    @DisplayName("没有匹配时摘要也要说清是「无匹配」，而不是留空")
+    void handle_should_summarizeNoMatch() throws Exception {
+        write("a.txt", "hello\n");
+
+        ToolCallResult result = invokeResult(tool, args("pattern", "nope", "path", tempDir.toString()));
+
+        assertTrue(summaryOf(result).endsWith(" · 无匹配"), summaryOf(result));
     }
 
     /**

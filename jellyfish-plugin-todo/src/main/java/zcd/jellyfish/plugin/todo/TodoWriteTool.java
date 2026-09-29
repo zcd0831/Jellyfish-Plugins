@@ -5,6 +5,7 @@ import zcd.jellyfish.api.extension.ExtensionHandler;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
 import zcd.jellyfish.api.extension.ToolDescriptor;
+import zcd.jellyfish.api.extension.ToolMetadata;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -91,7 +92,11 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
             throw new JellyfishException("todo_write 需要会话上下文，当前没有会话");
         }
         List<TodoItem> stored = store.replace(sessionId, parse(request.getArguments().get("todos")));
-        return new ToolCallResult(NAME, TodoText.confirmation(stored));
+        // 摘要在轨迹行上回答「现在有几项待办、完成了几项」，与状态栏同一口径
+        String status = TodoText.statusLine(stored);
+        return new ToolCallResult(NAME, TodoText.confirmation(stored),
+                Collections.<String, Object>singletonMap(ToolMetadata.KEY_SUMMARY,
+                        status == null ? "待办已清空" : status));
     }
 
     /**

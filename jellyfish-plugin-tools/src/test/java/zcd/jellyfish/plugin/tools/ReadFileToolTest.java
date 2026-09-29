@@ -6,6 +6,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.junit.jupiter.MockitoExtension;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.extension.ToolCallResult;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -18,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.args;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.expectFailure;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.invoke;
+import static zcd.jellyfish.plugin.tools.ToolTestSupport.invokeResult;
+import static zcd.jellyfish.plugin.tools.ToolTestSupport.summaryOf;
 
 /**
  * {@link ReadFileTool} 的单元测试。
@@ -197,6 +200,26 @@ class ReadFileToolTest {
                 () -> invoke(tool, args("path", file.toString(), "max_bytes", 0)));
 
         assertTrue(failure.getMessage().contains("max_bytes 必须大于 0"), failure.getMessage());
+    }
+
+    @Test
+    @DisplayName("摘要给出实际读到的行区间，供轨迹行显示「读了哪一段」")
+    void handle_should_summarizeReadRange() throws Exception {
+        Path file = write("a.txt", "第一行\n第二行\n第三行");
+
+        ToolCallResult result = invokeResult(tool, args("path", file.toString(), "offset", 2, "limit", 1));
+
+        assertTrue(summaryOf(result).endsWith("a.txt:2-2+"), summaryOf(result));
+    }
+
+    @Test
+    @DisplayName("空文件的摘要说明是空文件，而不是给出 1-0 这种区间")
+    void handle_should_summarizeEmptyFile() throws Exception {
+        Path file = write("a.txt", "");
+
+        ToolCallResult result = invokeResult(tool, args("path", file.toString()));
+
+        assertTrue(summaryOf(result).endsWith("a.txt（空文件）"), summaryOf(result));
     }
 
     /**

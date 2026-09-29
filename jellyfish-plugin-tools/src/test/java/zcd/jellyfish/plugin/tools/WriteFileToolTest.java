@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.extension.ToolCallResult;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -15,6 +16,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.args;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.expectFailure;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.invoke;
+import static zcd.jellyfish.plugin.tools.ToolTestSupport.invokeResult;
+import static zcd.jellyfish.plugin.tools.ToolTestSupport.summaryOf;
 
 /**
  * {@link WriteFileTool} 的单元测试。
@@ -94,6 +97,15 @@ class WriteFileToolTest {
                 () -> invoke(tool, args("path", tempDir.resolve("a.txt").toString())));
 
         assertEquals("缺少必需参数: content", failure.getMessage());
+    }
+
+    @Test
+    @DisplayName("摘要给出文件与字节数，新建 / 覆盖可区分")
+    void handle_should_summarizeWrittenFile() throws Exception {
+        ToolCallResult result = invokeResult(tool,
+                args("path", tempDir.resolve("a.txt").toString(), "content", "你好"));
+
+        assertTrue(summaryOf(result).endsWith("（新建，6 字节）"), summaryOf(result));
     }
 
     /**

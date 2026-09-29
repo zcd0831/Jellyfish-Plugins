@@ -8,6 +8,7 @@ import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
 import zcd.jellyfish.api.extension.ToolDescriptor;
+import zcd.jellyfish.api.extension.ToolMetadata;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -80,6 +81,24 @@ class TodoWriteToolTest {
 
         assertTrue(result.getOutput().toString().contains("清空"));
         assertTrue(store.itemsOf("s-1").isEmpty());
+    }
+
+    @Test
+    @DisplayName("摘要在轨迹行上回答「现在有几项、完成几项」，与状态栏同一口径")
+    void handle_should_summarizeProgress() {
+        ToolCallResult result = tool.handle(request("s-1", item("写文档", "pending"), item("跑测试", "completed")));
+
+        assertEquals("待办 1/2", ToolMetadata.summaryOf(result.getMetadata()));
+    }
+
+    @Test
+    @DisplayName("清空后摘要说明已清空，而不是残留上一次的进度")
+    void handle_should_summarizeClear() {
+        tool.handle(request("s-1", item("写文档", "pending")));
+
+        ToolCallResult result = tool.handle(request("s-1"));
+
+        assertEquals("待办已清空", ToolMetadata.summaryOf(result.getMetadata()));
     }
 
     @Test
