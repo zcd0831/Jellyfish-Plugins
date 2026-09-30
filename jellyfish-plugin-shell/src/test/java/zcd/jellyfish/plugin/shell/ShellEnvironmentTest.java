@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * {@link ShellEnvironment} 的单元测试。
  * <p>
- * 关注点：脱敏是否默认生效、防挂死变量是否注入、以及用户显式配置能不能盖住默认值。
+ * 关注点：剔除敏感变量是否默认生效、防挂死变量是否注入、以及用户显式配置能不能盖住默认值。
  *
  * @author zcd
  */
@@ -72,7 +72,7 @@ class ShellEnvironmentTest {
     }
 
     @Test
-    @DisplayName("用户追加的脱敏模式叠加在内置表之上")
+    @DisplayName("用户追加的剔除模式叠加在内置表之上")
     void sensitivePatterns_should_extend_defaults() {
         List<String> patterns = ShellEnvironment.sensitivePatterns(Arrays.asList("*INTERNAL*"));
 

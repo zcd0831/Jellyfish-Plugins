@@ -125,7 +125,7 @@ class PluginConfigTest {
     }
 
     @Test
-    @DisplayName("白名单与追加脱敏模式被读出，多余项被丢弃")
+    @DisplayName("白名单与追加剔除模式被读出，多余项被丢弃")
     void from_should_parseLists() {
         Map<String, Object> values = new HashMap<String, Object>();
         values.put("allowedCommands", Arrays.asList("git status", "  ", "ls"));

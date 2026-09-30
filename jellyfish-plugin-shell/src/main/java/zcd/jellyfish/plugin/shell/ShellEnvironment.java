@@ -7,11 +7,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 子进程环境变量的构造：继承 + 默认脱敏 + 防挂死覆盖。
+ * 子进程环境变量的构造：继承 + 默认剔除敏感变量 + 防挂死覆盖。
  * <p>
  * <b>为什么继承而不是严格白名单</b>：脚本插件用的是严格白名单（那些进程只需要解释器与几个专用变量），
  * 而命令行工具丢掉 {@code PATH} 就意味着几乎所有命令都是 command not found。
- * <b>代价是脱敏必须默认开启</b>：工具输出会被送到远端 LLM，一次 {@code env} 或 {@code printenv}
+ * <b>代价是剔除敏感变量必须默认开启</b>：工具输出会被送到远端 LLM，一次 {@code env} 或 {@code printenv}
  * 就是一次凭据外泄，而用户不会记得为这件事做配置。
  * <p>
  * <b>三条叠加顺序不能颠倒</b>：先按模式剔除、再注入防挂死默认值、最后叠加用户显式配置。
@@ -68,7 +68,7 @@ final class ShellEnvironment {
     }
 
     /**
-     * 合并内置脱敏模式与用户追加模式。
+     * 合并内置剔除模式与用户追加模式。
      *
      * @param extra 用户追加模式，可为 {@code null}
      * @return 合并结果，保证非 {@code null}
@@ -84,7 +84,7 @@ final class ShellEnvironment {
     }
 
     /**
-     * 判断变量名是否命中脱敏模式。
+     * 判断变量名是否命中剔除模式。
      *
      * @param name     变量名
      * @param patterns 模式列表，可为 {@code null}
