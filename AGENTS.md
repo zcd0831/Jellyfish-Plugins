@@ -38,7 +38,7 @@ mvn -q -Pmcp-it test                # MCP 插件端到端（真 fork 进程跑�
 
 源码结构同构：`resources/plugin.properties` + `PluginConfig` + `JellyfishPlugin` 实现 + 各扩展点 handler。
 
-- **官方插件**：tools 五个文件工具（三个只读）；session-file 一会话一 JSON + git（落盘失败上抛、git/坏文件只告警）；todo `todo_write` + `/todo` + 提示词/状态栏/面板贡献 + 删除清理；project 按 `maxInlineBytes`（默认 32 KiB，0=不内联）内联 `AGENTS.md` 原文或只给路径（一会话只读一次）；compact 压缩策略；skills 见下；mcp 见下。
+- **官方插件**：tools 五个文件工具（三个只读）；session-file 一会话一 JSON + git（落盘失败上抛、git/坏文件只告警）；todo `todo_write` + `/todo` + 回合上下文/状态栏/面板贡献 + 删除清理（待办块走 `TurnContextRequest` 随本轮用户消息送达，**不进 system prompt**——那是缓存前缀的第 0 个 token，待办每变一次就会作废整个请求）；project 按 `maxInlineBytes`（默认 32 KiB，0=不内联）内联 `AGENTS.md` 原文或只给路径（一会话只读一次）；compact 压缩策略；skills 见下；mcp 见下。
 - **project 插件必须从仓库根目录启动**：查找基准是进程工作目录（与内核 `ToolPaths` 同一处），不做向上查找。
 
 ## 新增一门语言（桥接插件）

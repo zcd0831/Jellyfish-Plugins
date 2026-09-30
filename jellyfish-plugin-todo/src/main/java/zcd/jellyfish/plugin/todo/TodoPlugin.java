@@ -7,11 +7,11 @@ import zcd.jellyfish.api.extension.CommandDescriptor;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.ExtensionHandler;
 import zcd.jellyfish.api.extension.PanelContributionRequest;
-import zcd.jellyfish.api.extension.PromptContributionRequest;
 import zcd.jellyfish.api.extension.SessionDeleteRequest;
 import zcd.jellyfish.api.extension.StatusLineContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
+import zcd.jellyfish.api.extension.TurnContextRequest;
 import zcd.jellyfish.api.plugin.JellyfishPlugin;
 import zcd.jellyfish.api.plugin.PluginContext;
 
@@ -24,7 +24,9 @@ import java.nio.file.Path;
  * <ul>
  *     <li>{@code todo_write} 工具 → {@link ToolCallRequest}，模型写待办的唯一入口；</li>
  *     <li>{@code /todo} 命令 → {@link CommandRequest}，给人看的只读清单；</li>
- *     <li>待办注入 system prompt → {@link PromptContributionRequest}，让模型每轮都看得见自己的计划；</li>
+ *     <li>待办随本轮用户消息送达 → {@link TurnContextRequest}，让模型每轮都看得见自己的计划；
+ *     <b>而不是往 system prompt 里注</b>——待办是会话中途反复改写的状态，放进缓存前缀的第 0 个 token
+ *     意味着每勾掉一件事，整个请求连同全部历史都要重新计费一次；</li>
  *     <li>状态栏进度 → {@link StatusLineContributionRequest}，不敲命令也能看到还剩几件事；</li>
  *     <li>待办面板 → {@link PanelContributionRequest}，在侧栏常驻显示完整清单。</li>
  * </ul>
@@ -55,7 +57,7 @@ public final class TodoPlugin implements JellyfishPlugin {
         context.handle(CommandRequest.class, "todo",
                 // 末尾显式声明 sessionRequired=true：待办是按会话归属的，没有会话就没有待办可看
                 new CommandDescriptor("查看当前会话待办", null, null, true), new TodoCommand(store));
-        context.contribute(PromptContributionRequest.class, new TodoPromptContribution(store));
+        context.contribute(TurnContextRequest.class, new TodoTurnContext(store));
         context.contribute(StatusLineContributionRequest.class, new TodoStatusLine(store));
         context.contribute(PanelContributionRequest.class, new TodoPanel(store));
         // 会话删除时清掉本会话的待办文件（lambda 只为把 store 带进处理器，逻辑全在 TodoStore）

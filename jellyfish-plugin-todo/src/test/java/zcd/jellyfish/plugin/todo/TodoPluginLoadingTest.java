@@ -9,7 +9,7 @@ import org.pf4j.PluginState;
 import zcd.jellyfish.api.extension.CommandDescriptor;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.PanelContributionRequest;
-import zcd.jellyfish.api.extension.PromptContributionRequest;
+import zcd.jellyfish.api.extension.TurnContextRequest;
 import zcd.jellyfish.api.extension.StatusLineContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolDescriptor;
@@ -117,7 +117,7 @@ class TodoPluginLoadingTest {
         }
         assertTrue(tools.contains(TodoWriteTool.NAME), tools.toString());
 
-        assertEquals(1, extensions.handlers(PromptContributionRequest.class, null).size());
+        assertEquals(1, extensions.handlers(TurnContextRequest.class, null).size());
         assertEquals(1, extensions.handlers(PanelContributionRequest.class, null).size());
     }
 
@@ -133,7 +133,7 @@ class TodoPluginLoadingTest {
 
         assertTrue(extensions.handlers(ToolCallRequest.class, TodoWriteTool.NAME).isEmpty());
         assertTrue(extensions.handlers(CommandRequest.class, "todo").isEmpty());
-        assertTrue(extensions.handlers(PromptContributionRequest.class, null).isEmpty());
+        assertTrue(extensions.handlers(TurnContextRequest.class, null).isEmpty());
         assertTrue(extensions.handlers(StatusLineContributionRequest.class, null).isEmpty());
         assertTrue(extensions.handlers(PanelContributionRequest.class, null).isEmpty());
     }

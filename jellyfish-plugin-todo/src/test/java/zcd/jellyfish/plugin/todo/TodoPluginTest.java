@@ -9,11 +9,11 @@ import zcd.jellyfish.api.event.notification.UiInvalidatedEvent;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.ExtensionHandler;
 import zcd.jellyfish.api.extension.PanelContributionRequest;
-import zcd.jellyfish.api.extension.PromptContributionRequest;
 import zcd.jellyfish.api.extension.SessionDeleteRequest;
 import zcd.jellyfish.api.extension.StatusLineContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
+import zcd.jellyfish.api.extension.TurnContextRequest;
 import zcd.jellyfish.api.plugin.PluginContext;
 import zcd.jellyfish.api.plugin.PluginDeclaration;
 import zcd.jellyfish.infra.event.EventChannel;
@@ -82,7 +82,7 @@ class TodoPluginTest {
     void start_should_registerAllCapabilities() {
         assertEquals(1, extensions.bindings(CommandRequest.class, "todo").size());
         assertEquals(1, extensions.bindings(ToolCallRequest.class, TodoWriteTool.NAME).size());
-        assertEquals(1, extensions.bindings(PromptContributionRequest.class, null).size());
+        assertEquals(1, extensions.bindings(TurnContextRequest.class, null).size());
         assertEquals(1, extensions.bindings(StatusLineContributionRequest.class, null).size());
         assertEquals(1, extensions.bindings(PanelContributionRequest.class, null).size());
         assertEquals(1, extensions.bindings(SessionDeleteRequest.class, null).size());

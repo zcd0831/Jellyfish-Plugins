@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | `jellyfish-plugin-tools` | `jellyfish-tools` | 五个文件工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`grep_files` |
 | `jellyfish-plugin-session-file` | `jellyfish-session-file` | 会话持久化：一个会话一个 JSON 文件，并用 git 管理历史 |
-| `jellyfish-plugin-todo` | `jellyfish-todo` | 会话待办：模型可写的 `todo_write` 工具 + 只读 `/todo` + 注入 system prompt + 状态栏进度 + 侧栏清单面板 |
+| `jellyfish-plugin-todo` | `jellyfish-todo` | 会话待办：模型可写的 `todo_write` 工具 + 只读 `/todo` + 随本轮消息送达的待办块 + 状态栏进度 + 侧栏清单面板 |
 | `jellyfish-plugin-project` | `jellyfish-project` | 项目约定：探测工作目录下的 `AGENTS.md`，**小文件内联原文、大文件只给路径**（阈值可配） |
 | `jellyfish-plugin-compact` | `jellyfish-compact` | 会话压缩策略：提供摘要指令与保留条数/摘要上限（**不装它就没有压缩**，见下文） |
 | `jellyfish-plugin-python` | `jellyfish-plugin-python` | Python 脚本插件运行时：把 `scripts/python/<id>/` 下的脚本目录变成标准插件（控制面网关 + 每脚本一 worker 进程） |
@@ -116,7 +116,7 @@ cp jellyfish-plugin-shell/target/jellyfish-plugin-shell-*.jar plugins/
 | --- | --- | --- |
 | `todo_write` 工具 | `ToolCallRequest` | 模型写待办的唯一入口。**整表覆盖**：传完整的新列表，上次列过而这次没列出的项视为删除，空数组表示清空；状态取 `pending` / `in_progress` / `completed`，缺省按 `pending` 处理 |
 | `/todo` 命令 | `CommandRequest` | 只读地列出当前会话待办（写入只走 `todo_write`，不给同一份状态第二套写入语义） |
-| 上下文注入 | `PromptContributionRequest` | 每轮把待办块注入 system prompt，模型始终看得见自己的计划；没有待办时不注入 |
+| 上下文注入 | `TurnContextRequest` | 每轮把待办块拼在本轮用户消息前面送达，模型始终看得见自己的计划；没有待办时不注入。**不再走 `PromptContributionRequest`**：system prompt 是缓存前缀的第 0 个 token，待办每勾掉一项都会作废整个请求（连同全部历史），而随消息落盘是 append-only 的 |
 | 状态栏进度 | `StatusLineContributionRequest` | 状态栏尾部显示 `待办 2/5`，有进行中项时补 `· 进行中 1`，不敲命令也能看到还剩几件事；没有待办时不占位 |
 | 侧栏清单 | `PanelContributionRequest` | 在侧栏常驻显示完整清单（已完成项整行变暗、进行中项高亮：`[~]`），建议放右栏；没有待办时不占区域 |
 
