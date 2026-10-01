@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.CommandArguments;
 import zcd.jellyfish.api.extension.CommandRequest;
@@ -19,6 +20,7 @@ import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
 import zcd.jellyfish.infra.plugin.PluginContextImpl;
 import zcd.jellyfish.infra.registry.TypeRegistry;
+import zcd.jellyfish.infra.session.SessionManager;
 
 import java.nio.file.Path;
 import java.util.Collections;
@@ -146,6 +148,7 @@ class SkillsPluginTest {
      * @return 上下文
      */
     private PluginContext context(Map<String, Object> configuration) {
-        return new PluginContextImpl(PluginDeclaration.of(PLUGIN_ID, configuration), extensions, events);
+        return new PluginContextImpl(PluginDeclaration.of(PLUGIN_ID, configuration), extensions,
+                events, Mockito.mock(SessionManager.class));
     }
 }

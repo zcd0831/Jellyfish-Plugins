@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
 import zcd.jellyfish.api.plugin.PluginContext;
@@ -13,6 +14,7 @@ import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
 import zcd.jellyfish.infra.plugin.PluginContextImpl;
 import zcd.jellyfish.infra.registry.TypeRegistry;
+import zcd.jellyfish.infra.session.SessionManager;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -59,7 +61,8 @@ class McpToolRegistrarTest {
         extensions = new ExtensionRegistry(typeRegistry);
         events = new EventChannel(EventChannelOptions.defaults(), typeRegistry);
         events.start();
-        context = new PluginContextImpl(PluginDeclaration.of("jellyfish-mcp"), extensions, events);
+        context = new PluginContextImpl(PluginDeclaration.of("jellyfish-mcp"), extensions, events,
+                Mockito.mock(SessionManager.class));
         registry = new McpRegistry();
         registry.register("fs", McpRegistry.State.CONNECTED, "");
         registrar = new McpToolRegistrar(context, registry);

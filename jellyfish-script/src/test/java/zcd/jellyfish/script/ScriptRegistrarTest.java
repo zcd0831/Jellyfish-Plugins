@@ -2,6 +2,7 @@ package zcd.jellyfish.script;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.event.RegisterOptions;
 import zcd.jellyfish.api.extension.CommandDescriptor;
@@ -16,11 +17,14 @@ import zcd.jellyfish.api.extension.ToolDescriptor;
 import zcd.jellyfish.api.plugin.PluginContext;
 import zcd.jellyfish.api.plugin.PluginDeclaration;
 import zcd.jellyfish.api.plugin.PluginOwnerNamespace;
+import zcd.jellyfish.infra.action.ActionQueue;
 import zcd.jellyfish.infra.event.EventChannel;
 import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
 import zcd.jellyfish.infra.plugin.PluginContextFactory;
+import zcd.jellyfish.infra.plugin.RuntimeInfoHolder;
 import zcd.jellyfish.infra.registry.TypeRegistry;
+import zcd.jellyfish.infra.session.SessionManager;
 import zcd.jellyfish.script.codec.ExtensionCodecs;
 
 import java.nio.file.Paths;
@@ -58,7 +62,8 @@ class ScriptRegistrarTest {
     private final EventChannel events = new EventChannel(EventChannelOptions.defaults(), registry);
 
     /** 上下文工厂。 */
-    private final PluginContextFactory factory = new PluginContextFactory(extensions, events, registry);
+    private final PluginContextFactory factory = new PluginContextFactory(extensions, events, registry,
+            new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class));
 
     @Test
     @DisplayName("工具应按路由键注册，处理器转发到脚本并在返回时解出结果")

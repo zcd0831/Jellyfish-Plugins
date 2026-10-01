@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import org.pf4j.PluginState;
 import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.CommandRequest;
@@ -12,9 +13,12 @@ import zcd.jellyfish.api.extension.CommandResult;
 import zcd.jellyfish.api.extension.PromptContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
+import zcd.jellyfish.infra.action.ActionQueue;
 import zcd.jellyfish.infra.plugin.PF4JPluginManager;
 import zcd.jellyfish.infra.plugin.PluginContextFactory;
 import zcd.jellyfish.infra.plugin.PluginRuntimeConfig;
+import zcd.jellyfish.infra.plugin.RuntimeInfoHolder;
+import zcd.jellyfish.infra.session.SessionManager;
 import zcd.jellyfish.script.ScriptBridgeConfig;
 
 import java.io.IOException;
@@ -1069,7 +1073,9 @@ class PythonScriptIT {
         python.put(ScriptBridgeConfig.KEY_CIRCUIT_BREAKER, breaker);
         Map<String, Map<String, Object>> configurations = new LinkedHashMap<String, Map<String, Object>>();
         configurations.put("jellyfish-plugin-python", python);
-        manager = new PF4JPluginManager(new PluginContextFactory(extensions, events, registry),
+        manager = new PF4JPluginManager(new PluginContextFactory(
+                extensions, events, registry,
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class)),
                 new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations));
         manager.bootstrap();
         assertEquals(PluginState.STARTED, manager.stateOf("jellyfish-plugin-python"));
@@ -1091,7 +1097,9 @@ class PythonScriptIT {
         python.put(ScriptBridgeConfig.KEY_WORKER_IDLE, Integer.valueOf(idleSeconds));
         Map<String, Map<String, Object>> configurations = new LinkedHashMap<String, Map<String, Object>>();
         configurations.put("jellyfish-plugin-python", python);
-        manager = new PF4JPluginManager(new PluginContextFactory(extensions, events, registry),
+        manager = new PF4JPluginManager(new PluginContextFactory(
+                extensions, events, registry,
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class)),
                 new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations));
         manager.bootstrap();
     }
@@ -1295,7 +1303,9 @@ class PythonScriptIT {
         python.put(ScriptBridgeConfig.KEY_PID_DIRECTORY, pidRoot.toString());
         Map<String, Map<String, Object>> configurations = new LinkedHashMap<String, Map<String, Object>>();
         configurations.put("jellyfish-plugin-python", python);
-        manager = new PF4JPluginManager(new PluginContextFactory(extensions, events, registry),
+        manager = new PF4JPluginManager(new PluginContextFactory(
+                extensions, events, registry,
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class)),
                 new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations));
         manager.bootstrap();
         assertEquals(PluginState.STARTED, manager.stateOf("jellyfish-plugin-python"));

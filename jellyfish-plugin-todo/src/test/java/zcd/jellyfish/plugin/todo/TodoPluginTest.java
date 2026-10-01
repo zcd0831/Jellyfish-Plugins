@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import zcd.jellyfish.api.event.notification.UiInvalidatedEvent;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.ExtensionHandler;
@@ -21,6 +22,7 @@ import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
 import zcd.jellyfish.infra.plugin.PluginContextImpl;
 import zcd.jellyfish.infra.registry.TypeRegistry;
+import zcd.jellyfish.infra.session.SessionManager;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -68,7 +70,8 @@ class TodoPluginTest {
         Map<String, Object> configuration = new LinkedHashMap<String, Object>();
         configuration.put("todoDir", directory.toString());
         PluginContext context = new PluginContextImpl(
-                PluginDeclaration.of("jellyfish-todo", configuration), extensions, events);
+                PluginDeclaration.of("jellyfish-todo", configuration), extensions, events,
+                Mockito.mock(SessionManager.class));
         new TodoPlugin().start(context);
     }
 
