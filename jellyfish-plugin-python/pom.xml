@@ -141,8 +141,9 @@
                                     清单里写着不存在的工具），这里就会红。
                                     刻意不做「向上找仓库根」的猜测：路径写错时用例应当立刻报错，
                                     而不是悄悄跳过。
+                                    路径以**本模块目录**为基准（不是仓库根）：${project.basedir}/.. 才是仓库根。
                                 -->
-                                <jellyfish.test.examples>${project.basedir}/../../examples/scripts/python</jellyfish.test.examples>
+                                <jellyfish.test.examples>${project.basedir}/../examples/scripts/python</jellyfish.test.examples>
                             </systemPropertyVariables>
                         </configuration>
                     </plugin>
