@@ -58,6 +58,28 @@ class TodoTurnContextTest {
     }
 
     @Test
+    @DisplayName("待办全部完成时返回空结果：此后每一轮都重申一段没有信息量的话，且会落进历史")
+    void handle_should_returnEmpty_when_allCompleted() {
+        store.replace("s-1", Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED),
+                new TodoItem("跑测试", TodoStatus.COMPLETED)));
+
+        TurnContext result = turnContext.handle(new TurnContextRequest("s-1", "继续", false));
+
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    @DisplayName("还剩一件未完成就照常送达：省 token 不能省到「模型看不见自己的计划」")
+    void handle_should_renderBlock_when_anyOpen() {
+        store.replace("s-1", Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED),
+                new TodoItem("跑测试", TodoStatus.PENDING)));
+
+        TurnContext result = turnContext.handle(new TurnContextRequest("s-1", "继续", false));
+
+        assertEquals("[待办]\n- [x] 写文档\n- [ ] 跑测试", result.getText());
+    }
+
+    @Test
     @DisplayName("没有会话上下文时返回空结果，不抛异常打扰对话")
     void handle_should_returnEmpty_when_noSession() {
         assertTrue(turnContext.handle(new TurnContextRequest(null, "继续", false)).isEmpty());

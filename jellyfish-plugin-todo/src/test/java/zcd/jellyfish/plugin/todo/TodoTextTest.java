@@ -49,6 +49,24 @@ class TodoTextTest {
     }
 
     @Test
+    @DisplayName("全部已完成时返回 null：没有活要干就不再每轮重申，但仍要有未完成项时才送全量")
+    void promptBlock_should_returnNull_when_allCompleted() {
+        assertNull(TodoText.promptBlock(Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED),
+                new TodoItem("跑测试", TodoStatus.COMPLETED))));
+    }
+
+    @Test
+    @DisplayName("还剩一件未完成就照发全量：已完成项也在内，模型据此不必重读一遍")
+    void promptBlock_should_keepAllItems_when_anyOpen() {
+        List<TodoItem> items = Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED),
+                new TodoItem("跑测试", TodoStatus.COMPLETED), new TodoItem("提交", TodoStatus.PENDING));
+
+        String block = TodoText.promptBlock(items);
+
+        assertEquals("[待办]\n- [x] 写文档\n- [x] 跑测试\n- [ ] 提交", block);
+    }
+
+    @Test
     @DisplayName("给人看的清单带位置编号，并明确说明为空")
     void list_should_renderNumberedLines() {
         assertEquals("当前没有待办。", TodoText.list(Collections.<TodoItem>emptyList()));

@@ -23,18 +23,26 @@ final class TodoText {
     }
 
     /**
-     * 渲染注入 system prompt 的待办块。
+     * 渲染随本轮用户消息送达的待办块。
      * <p>
      * 与内核原先的形态一致（{@code [待办]} 标题 + 每行 {@code - [ ] 内容}）：模型看到的东西不该因为
      * 「待办从内核搬到插件」而变化。唯一的例外是出现了「进行中」项——那时标题后面会补一句图例，
      * 因为 {@code [~]} 不像 {@code [ ]} / {@code [x]} 那样自明，而这一项恰恰是模型此刻最该认准的；
      * 没有进行中项时保持原样，不为用不上的图例每轮多花 token。
+     * <p>
+     * <b>全部已完成时返回 {@code null}，不再每轮重申</b>：本处理器每一轮都会被问到，而清单里全是
+     * {@code [x]} 时这段话对「接下来做什么」已无信息量，却会跟着此后每一句用户输入一起发出去、
+     * 一并落进历史。注意这<b>不是</b>「内容没变就不送」那类去重——只要还剩一件没做完，仍然每轮发送
+     * <b>全量</b>清单：计划必须永远可见，而一旦改成按文本去重，上一次注入落进被压缩掉的那一段之后，
+     * 模型就再也看不到自己的计划，且日志里什么都看不出来（见内核 {@code docs/design/llm-cache.md}）。
+     * 全部完成的情形没有这个问题：没有活要干，也就无所谓失忆。清单本身仍在 {@code /todo} 与面板上
+     * 完整可见，只是不再往对话里塞。
      *
      * @param items 待办列表，不可为 {@code null}
-     * @return 待办块文本；没有待办时返回 {@code null}
+     * @return 待办块文本；没有待办或全部已完成时返回 {@code null}
      */
     static String promptBlock(List<TodoItem> items) {
-        if (items.isEmpty()) {
+        if (!hasOpen(items)) {
             return null;
         }
         StringBuilder text = new StringBuilder(hasInProgress(items) ? legendHeader() : HEADER);
@@ -110,6 +118,24 @@ final class TodoText {
                     .append(i + 1).append(". ").append(item.content());
         }
         return text.toString();
+    }
+
+    /**
+     * 判断列表里是否还有未完成的事。
+     * <p>
+     * 按「非已完成即未完成」判断，而不是逐一枚举 {@code PENDING} / {@code IN_PROGRESS}：将来新增状态时，
+     * 漏改这里的表现是「新状态的内容不送给模型」——模型看不到自己的计划，而这正是难查的那一侧。
+     *
+     * @param items 待办列表，不可为 {@code null}
+     * @return 存在未完成项返回 {@code true}
+     */
+    private static boolean hasOpen(List<TodoItem> items) {
+        for (TodoItem item : items) {
+            if (item.status() != TodoStatus.COMPLETED) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
