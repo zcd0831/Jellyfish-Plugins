@@ -46,9 +46,9 @@ function noteCount() {
 /**
  * 按名字打招呼。
  *
- * `readOnly: true` 是对内核的**能力声明**，不是注释：它让这个工具进入 PLAN 模式的
- * 只读白名单。声明错了等于给模型留了一个绕过 PLAN 的后门，因此只读必须显式写出来
- * （缺省是「可写」）。宿主在清单里读到的 `readOnly` 才是真正生效的那一份。
+ * 这里**没有** `readOnly`：PLAN 模式下哪些工具可用完全由用户在
+ * `plugins.configurations.jellyfish-plugin-node.readOnlyTools` 里决定，
+ * 脚本无法自称只读（传 `readOnly` 会被 SDK 当场拒绝）。
  *
  * @param {object} params 请求参数，工具用 `params.args`
  * @param {object} ctx 调用上下文
@@ -66,17 +66,16 @@ function greet(params, ctx) {
 
 tool({
     name: 'hello_greet',
-    description: '按名字打招呼；这是只读工具',
+    description: '按名字打招呼',
     parameters: { name: { type: 'string', description: '要打招呼的人' } },
     required: ['name'],
-    readOnly: true,
 }, greet);
 
 /**
  * 把一句话追加到便签里。
  *
- * 这是**可写**工具（没有 `readOnly`）：它在 PLAN 模式下会被拒绝，
- * 除非用户显式批准。示例故意让两个工具的只读性不同，好让 `/plan` 下的差别看得见。
+ * 这是**可写**工具：PLAN 模式下它默认被拒绝，除非用户在 `readOnlyTools` 里写了它。
+ * 示例故意让两个工具一个有副作用、一个没有，好让 `/plan` 下的差别看得见。
  *
  * @param {object} params 请求参数
  * @returns {string} 结果说明

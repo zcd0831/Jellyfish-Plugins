@@ -149,7 +149,8 @@ class SessionFilePluginLoadingTest {
         return new PF4JPluginManager(new PluginContextFactory(
                 extensions, eventChannel, registry,
                 new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class)),
-                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations));
+                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations),
+                eventChannel);
     }
 
     /**

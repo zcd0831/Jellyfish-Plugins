@@ -181,16 +181,17 @@ class ScriptContext {
  * 接受的参数一致——不一致的后果是模型按错误的签名调用，而错误只在运行期以
  * 「参数缺失」的形式出现。
  *
- * `readOnly` 参与内核 PLAN 模式的只读白名单，缺省 `false`（可写）：
- * 误声明只读等于给模型留了一个绕过 PLAN 的后门，因此只读必须是显式选择。
+ * 这里**没有** `readOnly`：PLAN 模式下哪些工具可用完全由用户决定
+ * （`jellyfish.json` 里 `plugins.configurations.<插件>.readOnlyTools` 列出的工具名），
+ * 工具无法自称只读。传了它会被**当场拒绝**——静默忽略会让作者以为自己声明成功了。
  *
  * JS 里没有装饰器，因此用法是「声明 + 就地注册」，返回值就是那个函数：
  * ```js
- * const greet = tool({name: 'hello_greet', description: '按名字打招呼', readOnly: true},
+ * const greet = tool({name: 'hello_greet', description: '按名字打招呼'},
  *                    (params, ctx) => '你好，' + params.args.name);
  * ```
  *
- * @param {object} spec 声明：`name` / `description` / `parameters` / `required` / `readOnly`
+ * @param {object} spec 声明：`name` / `description` / `parameters` / `required`
  * @param {Function} handler 处理函数，签名 `(params, ctx)`；工具用 `params.args`
  * @returns {Function} 同一个处理函数，便于赋值给变量
  */
@@ -199,12 +200,14 @@ function tool(spec, handler) {
     if (tools.some((item) => item.name === spec.name)) {
         throw new ScriptError(`工具名重复声明: ${spec.name}`);
     }
+    if (spec.readOnly !== undefined) {
+        throw new ScriptError('readOnly 已不再支持：PLAN 模式下哪些工具可用由用户在 readOnlyTools 里声明');
+    }
     tools.push({
         name: spec.name,
         description: spec.description === undefined ? null : spec.description,
         parameters: spec.parameters || {},
         required: listOf(spec.required),
-        readOnly: Boolean(spec.readOnly),
     });
     handlers.set(`tool\u0000${spec.name}`, handler);
     return handler;
@@ -384,7 +387,6 @@ function dumpManifest(scriptId, entry) {
         description: item.description,
         parameters: item.parameters,
         required: item.required,
-        readOnly: item.readOnly,
     }));
     manifest.commands = commands.map((item) => ({
         name: item.name,

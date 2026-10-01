@@ -87,11 +87,13 @@ cp jellyfish-plugin-shell/target/jellyfish-plugin-shell-*.jar plugins/
 }
 ```
 
-- `readOnlyTools` 是**跨插件的约定键**（`jellyfish.json` 里位于插件配置段下），作用是**追加** PLAN 模式的只读白名单。
-  - 工具的只读性**默认由工具提供方在 `ToolDescriptor` 里声明**，不需要用户再写一遍：`read_file` / `list_dir` / `grep_files`（`jellyfish-tools`）与 `todo_write`（`jellyfish-todo`）开箱即在 PLAN 白名单里；`write_file` / `edit_file` 不是。
-  - 配置里的声明只能**追加**，用于把提供方没标只读的工具自行纳入，不能撤销提供方的声明。
-  - 两个来源取**并集**，且不依赖任何缓存：插件热部署（装上 / 卸下 / 重载）后白名单立刻跟着变。
-  - PLAN 模式下不在白名单里的工具一律拒绝。
+- `readOnlyTools` 是**跨插件的约定键**（`jellyfish.json` 里位于插件配置段下），它是 **PLAN 模式只读白名单的唯一来源**：
+  用户写哪些工具名，PLAN 下就只有哪些可用。
+  - **不写就等于 PLAN 下全部不可用**——白名单语义下「用户没表态」与「用户不准」是同一件事。用 `-p --mode plan`
+    之前，先把这次任务要用的工具名列进去。
+  - 工具**无法自称只读**：`ToolDescriptor` 里已没有该字段（提供方声明过的旧写法也已从脚本 SDK 与 MCP 侧移除）。
+    早先的口径是「提供方声明 ∪ 用户配置」，那让白名单只增不减、判定权还落在被判定的一方。
+  - 与插件热部署无关：白名单只跟这份配置走，插件装上 / 卸下不会改变它。
 - `sessionDir`（默认 `~/.jellyfish/sessions`）：会话文件目录。会话是跨项目的运行态数据，因此默认放全局级目录。
 - `gitEnabled`（默认 `true`）：首次落盘时在 `sessionDir` 里 `git init`，此后**每次内容变化的落盘留一次提交**（内容没变则不写文件、也不提交）。机器上没有 git 时只告警，文件照常落盘。
 - `todoDir`（默认 `~/.jellyfish/todos`）：待办文件目录，一个会话一个 JSON 文件，空表会删掉文件。
@@ -128,7 +130,8 @@ cp jellyfish-plugin-shell/target/jellyfish-plugin-shell-*.jar plugins/
 
 面板是「独占型」贡献：它建议落在右栏，但外壳可以忽略这个建议（终端太窄时侧栏整体隐藏，也可能被用户用 `/ui` 改到别处）。
 
-`todo_write` 只写插件自己的待办文件、不动工作目录里的项目文件，因此它**在描述符里就声明了只读**：PLAN 模式下开箱即可用，不需要任何配置。上面示例里的 `readOnlyTools: ["todo_write"]` 现在只是冗余写法，可以去掉（保留也不会出错）；配置那份只用于追加拿不写声明的工具。
+`todo_write` 只写插件自己的待办文件、不动工作目录里的项目文件。注意**在 PLAN 模式下它并不自动可用**：只读与否只看用户在
+`readOnlyTools` 里写了什么，工具自己没有发言权。上面示例里的 `readOnlyTools: ["todo_write"]` 就是让它可用的那份声明。
 
 会话恢复：启动时内核向所有注册了恢复处理器的插件要回会话，因此上次退出前的会话在下次启动时立即可见（`/session` 会列出来）。
 
@@ -275,7 +278,7 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 - **工具名带前缀**：`mcp__<server>__<tool>`。server 给的工具名可能与内置工具或另一个 server 重名，前缀让「谁占谁的位置」不成为事实；字符会被清洗成厂商允许的集合，超长时保留前缀并追加哈希。
 - **连接发生在启动之后**：`startupWaitSeconds`（缺省 5 秒）内先等一等，让第一轮就能看到工具；超时就转异步，连上之后工具会自己出现。**某个 server 装错了不会让内核起不来**。
 - **`tools/list_changed` 会实时跟随**：server 运行期增删工具时，模型下一轮就能看到。
-- **只读与审批**：server 声明的 `readOnlyHint` 或你在 `readOnlyTools` 里写的名字都算只读；**缺省一律按可写**。可写的工具缺省要人工审批（`askWriteTools: false` 可关）。
+- **只读与审批**：只读**只认你写的 `readOnlyTools`**（server 自填的 `readOnlyHint` 不再采纳）；**缺省一律按可写**。可写的工具缺省要人工审批（`askWriteTools: false` 可关）。这里的 `readOnlyTools` **只影响本插件的审批策略**，与内核 PLAN 白名单无关——后者要看同一段配置里的另一个层级的同名键（见上文「插件配置」）。
 - **协议能力**：声明 `roots`（把进程工作目录告诉 server）；**不声明也不支持 `sampling` / `elicitation`**——这两个是「server 反过来向客户端要东西」，本客户端办不到，因此被请求时回一条明确的错误而不是挂在那里等。
 - **二进制内容落盘**：server 返回的图片/音频写到系统临时目录下的 `jellyfish-mcp/<pid>/`，回灌给模型的只是一个路径（base64 塞进上下文会让一次截图就撑满窗口）。插件停止时整个目录会被删掉。
 - **`-cli` / `-server` 下没有审批者**：`ASK` 等于拒绝，因此这两个模式里写类 MCP 工具实际不可用（与 `shell` 同理）。

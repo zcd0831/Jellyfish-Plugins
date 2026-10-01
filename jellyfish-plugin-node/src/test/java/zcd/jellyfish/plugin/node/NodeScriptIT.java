@@ -376,7 +376,8 @@ class NodeScriptIT {
         manager = new PF4JPluginManager(new PluginContextFactory(
                 extensions, events, registry,
                 new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class)),
-                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations));
+                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations),
+                events);
         manager.bootstrap();
         assertEquals(PluginState.STARTED, manager.stateOf(PLUGIN_ID));
     }
@@ -686,7 +687,7 @@ class NodeScriptIT {
             + "'use strict';\n"
             + "const { ScriptError, tool, command, contributes, subscribe } = require('jellyfish_sdk');\n"
             + "let completed = 0;\n"
-            + "tool({ name: 'jira_issue', description: '读 issue', readOnly: true,\n"
+            + "tool({ name: 'jira_issue', description: '读 issue',\n"
             + "       parameters: { key: { type: 'string' } }, required: ['key'] },\n"
             + "     (params, ctx) => {\n"
             + "         const key = params.args.key;\n"
@@ -704,7 +705,7 @@ class NodeScriptIT {
 
     /** 夹具脚本的清单：名字集合必须与上面的声明一致，否则脚本会拒绝服务。 */
     private static final String FULL_MANIFEST = "{\"entry\":\"main.js\","
-            + "\"tools\":[{\"name\":\"jira_issue\",\"description\":\"读 issue\",\"readOnly\":true},"
+            + "\"tools\":[{\"name\":\"jira_issue\",\"description\":\"读 issue\"},"
             + "{\"name\":\"jira_boom\"},{\"name\":\"jira_hang\"}],"
             + "\"commands\":[{\"name\":\"jira\",\"descriptor\":{\"summary\":\"操作 Jira\"}}],"
             + "\"contributions\":[\"prompt\",\"status_line\"],"

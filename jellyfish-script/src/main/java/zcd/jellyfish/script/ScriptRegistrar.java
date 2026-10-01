@@ -107,7 +107,7 @@ public final class ScriptRegistrar {
                               List<Subscription> subscriptions, List<ScriptIssue> issues) {
         ToolCodec codec = new ToolCodec();
         ToolDescriptor descriptor = new ToolDescriptor(tool.name(), tool.description(), tool.parameters(),
-                tool.required(), tool.readOnly());
+                tool.required());
         try {
             subscriptions.add(context.handle(ToolCallRequest.class, tool.name(), descriptor,
                     handlerFor(codec, plugin), RegisterOptions.DEFAULT));

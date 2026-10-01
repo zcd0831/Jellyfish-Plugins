@@ -71,8 +71,7 @@ public final class GrepFilesTool implements PluginTool {
                     "max_line_chars", ToolSchema.integer("单行最多显示多少字符，超出部分截尾，缺省 "
                             + DEFAULT_MAX_LINE_CHARS),
                     "max_bytes", ToolSchema.integer("结果总字节上限，缺省 " + DEFAULT_MAX_BYTES)),
-            Arrays.asList("pattern"),
-            true);
+            Arrays.asList("pattern"));
 
     @Override
     public ToolDescriptor descriptor() {

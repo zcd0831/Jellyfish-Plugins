@@ -113,7 +113,7 @@ class ScriptContext:
 # ---------------------------------------------------------------- 装饰器
 
 
-def tool(name, description=None, parameters=None, required=None, read_only=False):
+def tool(name, description=None, parameters=None, required=None):
     """声明一个工具。
 
     ``parameters`` 是 JSON Schema 的 ``properties`` 部分，``required`` 是必填参数名列表：
@@ -121,8 +121,9 @@ def tool(name, description=None, parameters=None, required=None, read_only=False
     接受的参数一致——不一致的后果是模型按错误的签名调用，而错误只在运行期以
     「参数缺失」的形式出现。
 
-    ``read_only`` 参与内核 PLAN 模式的只读白名单，缺省 ``False``（可写）：
-    误声明只读等于给模型留了一个绕过 PLAN 的后门，因此只读必须是显式选择。
+    这里**没有** ``read_only`` 参数：PLAN 模式下哪些工具可用完全由用户决定
+    （``jellyfish.json`` 里 ``plugins.configurations.<插件>.readOnlyTools`` 列出的工具名），
+    工具无法自称只读——那会让白名单只增不减，用户没法把工具拿出来。
     """
 
     def decorate(func):
@@ -133,7 +134,6 @@ def tool(name, description=None, parameters=None, required=None, read_only=False
             "description": description or _first_doc_line(func),
             "parameters": parameters or {},
             "required": list(required or []),
-            "readOnly": bool(read_only),
             "handler": func,
         })
         _HANDLERS[("tool", name)] = func
@@ -365,7 +365,6 @@ def dump_manifest(script_id=None, entry="main.py"):
             "description": item["description"],
             "parameters": item["parameters"],
             "required": item["required"],
-            "readOnly": item["readOnly"],
         }
         for item in _TOOLS
     ]

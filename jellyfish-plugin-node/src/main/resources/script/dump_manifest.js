@@ -113,7 +113,6 @@ function normalize(manifest) {
         description: item.description || '',
         parameters: item.parameters || {},
         required: item.required || [],
-        readOnly: Boolean(item.readOnly),
     }));
     normalized.commands = (source.commands || []).map((item) => {
         const descriptor = item.descriptor || {};

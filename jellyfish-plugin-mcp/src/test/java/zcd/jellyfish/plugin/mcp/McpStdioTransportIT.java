@@ -120,6 +120,8 @@ class McpStdioTransportIT {
         server.put("args", new ArrayList<String>(javaCommandLine()));
         server.put("connectTimeoutSeconds", 20);
         server.put("callTimeoutSeconds", 10);
+        // 只读只认用户声明：echo 自己也填了 readOnlyHint，但那个不再采纳
+        server.put("readOnlyTools", Collections.singletonList("echo"));
         McpConfig global = McpConfig.from(new HashMap<String, Object>());
         registry = new McpRegistry();
         registry.register("echo", McpRegistry.State.PENDING, "");

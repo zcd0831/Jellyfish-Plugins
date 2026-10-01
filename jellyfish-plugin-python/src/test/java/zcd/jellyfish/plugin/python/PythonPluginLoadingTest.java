@@ -148,7 +148,7 @@ class PythonPluginLoadingTest {
     void bootstrap_should_registerScriptCapabilities_when_manifestIsValid() throws IOException {
         installPlugin();
         writeScript("jira", "{\"entry\":\"main.py\","
-                + "\"tools\":[{\"name\":\"jira_issue\",\"description\":\"读或改\",\"readOnly\":true}],"
+                + "\"tools\":[{\"name\":\"jira_issue\",\"description\":\"读或改\"}],"
                 + "\"commands\":[{\"name\":\"jira\",\"descriptor\":{\"summary\":\"操作 Jira\"},\"hasOptions\":true}],"
                 + "\"contributions\":[\"prompt\"]}");
 
@@ -161,7 +161,6 @@ class PythonPluginLoadingTest {
 
         ToolDescriptor descriptor = extensions.descriptors(ToolCallRequest.class, ToolDescriptor.class).get(0);
         assertEquals("jira_issue", descriptor.getName());
-        assertTrue(descriptor.isReadOnly());
 
         // 类型级贡献按类型注册
         assertEquals(1, extensions.handlers(
@@ -296,6 +295,6 @@ class PythonPluginLoadingTest {
         PluginContextFactory contexts = new PluginContextFactory(extensions, eventChannel, registry,
                 new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class));
         return new PF4JPluginManager(contexts, new PluginRuntimeConfig(
-                java.util.Collections.singletonList(pluginsRoot), null, null, configurations));
+                java.util.Collections.singletonList(pluginsRoot), null, null, configurations), eventChannel);
     }
 }

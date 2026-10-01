@@ -1076,7 +1076,8 @@ class PythonScriptIT {
         manager = new PF4JPluginManager(new PluginContextFactory(
                 extensions, events, registry,
                 new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class)),
-                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations));
+                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations),
+                events);
         manager.bootstrap();
         assertEquals(PluginState.STARTED, manager.stateOf("jellyfish-plugin-python"));
     }
@@ -1100,7 +1101,8 @@ class PythonScriptIT {
         manager = new PF4JPluginManager(new PluginContextFactory(
                 extensions, events, registry,
                 new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class)),
-                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations));
+                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations),
+                events);
         manager.bootstrap();
     }
 
@@ -1168,7 +1170,7 @@ class PythonScriptIT {
     private static final String TOOL_SCRIPT = ""
             + "from jellyfish_sdk import tool, command, contributes, ScriptError\n"
             + "\n"
-            + "@tool(name=\"jira_issue\", description=\"读 issue\", read_only=True)\n"
+            + "@tool(name=\"jira_issue\", description=\"读 issue\")\n"
             + "def jira_issue(args, ctx):\n"
             + "    if not args.get(\"key\"):\n"
             + "        raise ScriptError(\"缺少参数 key\")\n"
@@ -1266,7 +1268,7 @@ class PythonScriptIT {
      * 用例一旦用一份过时的清单，脚本会直接拒绝服务，而错误信息会立刻指出差在哪一项。
      */
     private static final String FULL_MANIFEST = "{\"entry\":\"main.py\","
-            + "\"tools\":[{\"name\":\"jira_issue\",\"readOnly\":true},{\"name\":\"jira_hang\"}],"
+            + "\"tools\":[{\"name\":\"jira_issue\"},{\"name\":\"jira_hang\"}],"
             + "\"commands\":[{\"name\":\"jira\",\"descriptor\":{\"summary\":\"操作 Jira\"}}],"
             + "\"contributions\":[\"prompt\"]}";
 
@@ -1279,13 +1281,13 @@ class PythonScriptIT {
     private static final String GIT_SCRIPT = ""
             + "from jellyfish_sdk import tool\n"
             + "\n"
-            + "@tool(name=\"git_status\", description=\"工作区状态\", read_only=True)\n"
+            + "@tool(name=\"git_status\", description=\"工作区状态\")\n"
             + "def git_status(args, ctx):\n"
             + "    return \"main 干净\"\n";
 
     /** 与 {@link #GIT_SCRIPT} 逐字对应的清单。 */
     private static final String GIT_MANIFEST = "{\"entry\":\"main.py\","
-            + "\"tools\":[{\"name\":\"git_status\",\"readOnly\":true}]}";
+            + "\"tools\":[{\"name\":\"git_status\"}]}";
 
     /**
      * 启动插件并完成注册。
@@ -1306,7 +1308,8 @@ class PythonScriptIT {
         manager = new PF4JPluginManager(new PluginContextFactory(
                 extensions, events, registry,
                 new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class)),
-                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations));
+                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations),
+                events);
         manager.bootstrap();
         assertEquals(PluginState.STARTED, manager.stateOf("jellyfish-plugin-python"));
     }

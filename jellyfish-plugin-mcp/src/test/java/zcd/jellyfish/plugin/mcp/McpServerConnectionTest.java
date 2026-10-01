@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -89,11 +90,23 @@ class McpServerConnectionTest {
         assertEquals(2, tools.size());
         assertEquals("mcp__fake__read_file", tools.get(0).qualifiedName());
         assertEquals("read_file", tools.get(0).originalName());
-        assertTrue(tools.get(0).readOnly());
+        // server 自填的 readOnlyHint 不再采纳：没被用户声明为只读就是可写
+        assertFalse(tools.get(0).readOnly());
         assertEquals(Collections.singletonList("path"), tools.get(0).required());
         assertTrue(tools.get(0).parameters().containsKey("path"));
-        // 没有 hint 的工具缺省按可写处理
-        assertTrue(!tools.get(1).readOnly());
+        assertFalse(tools.get(1).readOnly());
+    }
+
+    @Test
+    @DisplayName("只读只认用户声明：声明了才算只读")
+    void connect_should_markReadOnly_when_userDeclaresTool() {
+        // Given：用户在 readOnlyTools 里点名了 read_file
+        connection = connected(serverConfig(2, Collections.singletonList("read_file")));
+
+        // Then：只有被点名的那个是只读
+        List<McpToolDefinition> tools = received.get(0);
+        assertTrue(tools.get(0).readOnly());
+        assertFalse(tools.get(1).readOnly());
     }
 
     @Test
@@ -230,7 +243,16 @@ class McpServerConnectionTest {
      * @return 连接
      */
     private McpServerConnection connected(int callTimeoutSeconds) {
-        Map<String, Object> values = serverConfig(callTimeoutSeconds);
+        return connected(serverConfig(callTimeoutSeconds));
+    }
+
+    /**
+     * 用给定的 server 配置建一条已连接的连接。
+     *
+     * @param values server 配置映射
+     * @return 连接
+     */
+    private McpServerConnection connected(Map<String, Object> values) {
         McpServerConfig server = McpServerConfig.from(values);
         transport = new FakeTransport();
         transport.responder(this::defaultResponder);
@@ -288,6 +310,19 @@ class McpServerConnectionTest {
         values.put("command", "echo");
         values.put("connectTimeoutSeconds", 2);
         values.put("callTimeoutSeconds", callTimeoutSeconds);
+        return values;
+    }
+
+    /**
+     * 构造 server 配置，并带上用户声明的只读工具。
+     *
+     * @param callTimeoutSeconds 调用超时秒数
+     * @param readOnlyTools      用户声明的只读工具原名
+     * @return 配置映射
+     */
+    private static Map<String, Object> serverConfig(int callTimeoutSeconds, List<String> readOnlyTools) {
+        Map<String, Object> values = serverConfig(callTimeoutSeconds);
+        values.put("readOnlyTools", readOnlyTools);
         return values;
     }
 

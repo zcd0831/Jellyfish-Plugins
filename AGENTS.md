@@ -134,7 +134,7 @@ mvn -q -Pscript-it test
 - **连接发生在启动之后，且不在启动线程上做完**：工具清单只有连上才知道，而连上要起进程、要握手。全部同步做完，等于让「某个 server 装错了」变成「内核起不来」——与脚本桥接「`start()` 期零进程」同一条纪律。折中是 `startupWaitSeconds`（缺省 5 秒）：等一等让第一轮就有工具，超时就转异步（内核 `ToolCatalog` 每轮现取注册表，工具会自己出现）。
 - **它是注册窗口演进的第一个真实需求**：工具在运行期注册与注销，因此它依赖「注册窗口是插件存活期」那条契约；若改回「只能在 `start()` 内注册」，这个插件就无法以现在的形态存在。
 - **工具名必须带 `mcp__<server>__` 前缀并清洗字符**：名字由 server 决定，server 之间与 server 和内置工具之间都可能重名（`read_file` 就是典型）；而厂商对 function name 有共同约束，带点号的名字会让**整次请求**被拒（不是「这个工具不可用」，是「这一轮对话发不出去」）。超长时保留可读前缀并追加哈希，否则截断会把两个工具变成同一个名字。
-- **只读是「或」且缺省可写**：`annotations.readOnlyHint` 是 server 自填的建议，`readOnlyTools` 是用户声明，任一为真就算只读；但**没有声明时一律按可写**——反向推断会把一个真会改东西的工具当成只读。写类工具缺省经 `PermissionCheckRequest` 判为 `ASK`（`askWriteTools` 可关），与 shell 分类器一样是**便利机制而不是安全边界**。
+- **只读只认用户声明、缺省可写**：`readOnlyTools` 是用户在 server 配置里写的工具名清单；**server 自填的 `annotations.readOnlyHint` 不再采纳**——那是第三方进程对自己的评价，不该由它决定我们放宽什么。写类工具缺省经 `PermissionCheckRequest` 判为 `ASK`（`askWriteTools` 可关），与 shell 分类器一样是**便利机制而不是安全边界**。注意这里的 `readOnlyTools` **只影响本插件的审批策略**，与内核 PLAN 白名单无关（后者是 `plugins.configurations.<pluginId>.readOnlyTools`，唯一来源是用户配置）。
 - **不声明也不支持 sampling / elicitation**：`initialize` 里只声明 `roots`（答得上来），sampling / elicitation 真被请求时回一条明确的 `-32601`。声明了却办不到比不声明更糟：server 会按「客户端支持」去规划它的行为；而不回则会让对面等到它自己的超时。
 - **`tools/list` 必须处理分页**：工具多的 server 会分页返回，只取第一页的表现是「工具少了一大半，而日志里什么异常都没有」。
 - **`tools/list_changed` 的重扫必须转到另一条线程**：通知是在**读线程**上收到的，而重扫要发一个请求并等应答——应答只能由同一条读线程投递。直接在读线程上做就是一条线程等它自己（实测会挂到超时）。

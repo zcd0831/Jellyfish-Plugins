@@ -48,8 +48,7 @@ public final class ReadFileTool implements PluginTool {
                     "offset", ToolSchema.integer("起始行号，从 1 开始；缺省从第一行开始"),
                     "limit", ToolSchema.integer("最多读取多少行；缺省读到文件末尾"),
                     "max_bytes", ToolSchema.integer("最多读取多少字节，缺省 " + DEFAULT_MAX_BYTES)),
-            Arrays.asList("path"),
-            true);
+            Arrays.asList("path"));
 
     @Override
     public ToolDescriptor descriptor() {

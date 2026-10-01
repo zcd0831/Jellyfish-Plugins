@@ -122,8 +122,7 @@ public final class EchoMcpServer {
         return "{\"tools\":["
                 + "{\"name\":\"echo\",\"description\":\"回显文本\","
                 + "\"inputSchema\":{\"type\":\"object\",\"properties\":"
-                + "{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]},"
-                + "\"annotations\":{\"readOnlyHint\":true}},"
+                + "{\"text\":{\"type\":\"string\"}},\"required\":[\"text\"]}},"
                 + "{\"name\":\"boom\",\"description\":\"总是报告失败\","
                 + "\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}";
     }

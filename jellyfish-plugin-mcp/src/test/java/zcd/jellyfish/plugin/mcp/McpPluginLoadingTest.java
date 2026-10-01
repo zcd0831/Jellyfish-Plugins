@@ -149,6 +149,6 @@ class McpPluginLoadingTest {
     private PF4JPluginManager newManager() {
         PluginContextFactory contexts = new PluginContextFactory(extensions, eventChannel, registry,
                 new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class));
-        return new PF4JPluginManager(contexts, PluginRuntimeConfig.ofRoots(pluginsRoot));
+        return new PF4JPluginManager(contexts, PluginRuntimeConfig.ofRoots(pluginsRoot), eventChannel);
     }
 }

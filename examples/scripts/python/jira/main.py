@@ -2,7 +2,7 @@
 
 与 ``hello`` 的区别在于它展示了**更完整的一套能力**：
 
-- 多个工具，且**只读与可写分开声明**（``readOnly`` 决定 PLAN 模式下谁能过）；
+- 多个工具（一个有副作用、一个没有），PLAN 模式下谁能过由用户的 ``readOnlyTools`` 决定；
 - 命令带别名与用法，并且**候选查询写在单独的函数里**（候选与执行是两条独立的路）；
 - 两个类型级贡献：一个进 system prompt，一个进 UI 面板；
 - **订阅**内核事件，并且**发布**自己的事件（发布只有两类自由载荷事件可用，见下）。
@@ -42,10 +42,9 @@ def _remember(action):
     description="读取一个工单的摘要与状态",
     parameters={"key": {"type": "string", "description": "工单号，例如 PROJ-1"}},
     required=["key"],
-    read_only=True,
 )
 def jira_read(args, ctx):
-    """读一个工单。只读工具，PLAN 模式下可以直接用。"""
+    """读一个工单。这是**没有副作用**的工具：用户在 ``readOnlyTools`` 里写上它，PLAN 模式下就能用。"""
     key = (args.get("key") or "").strip().upper()
     issue = ISSUES.get(key)
     if issue is None:

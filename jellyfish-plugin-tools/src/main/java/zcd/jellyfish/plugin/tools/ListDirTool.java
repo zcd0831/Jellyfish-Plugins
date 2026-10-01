@@ -44,8 +44,7 @@ public final class ListDirTool implements PluginTool {
                     "path", ToolSchema.string("目录路径，相对路径按进程工作目录解析；缺省为当前工作目录"),
                     "offset", ToolSchema.integer("起始条目序号，从 1 开始；缺省从第一项开始"),
                     "limit", ToolSchema.integer("每页最多返回多少项，缺省 " + DEFAULT_LIMIT)),
-            Arrays.<String>asList(),
-            true);
+            Arrays.<String>asList());
 
     @Override
     public ToolDescriptor descriptor() {

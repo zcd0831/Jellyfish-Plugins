@@ -109,10 +109,6 @@ class ShellPluginLoadingTest {
         List<String> names = new ArrayList<String>();
         for (ToolDescriptor descriptor : extensions.descriptors(ToolCallRequest.class, ToolDescriptor.class)) {
             names.add(descriptor.getName());
-            if (ShellTool.TOOL_NAME.equals(descriptor.getName())) {
-                // 声明成只读会让 PLAN 模式放行它，而命令行能写任何文件
-                assertTrue(!descriptor.isReadOnly(), "shell 不能声明为只读工具");
-            }
         }
         assertEquals(1, names.size(), names.toString());
         assertTrue(names.contains(ShellTool.TOOL_NAME), names.toString());
@@ -181,6 +177,6 @@ class ShellPluginLoadingTest {
     private PF4JPluginManager newManager() {
         PluginContextFactory contexts = new PluginContextFactory(extensions, eventChannel, registry,
                 new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class));
-        return new PF4JPluginManager(contexts, PluginRuntimeConfig.ofRoots(pluginsRoot));
+        return new PF4JPluginManager(contexts, PluginRuntimeConfig.ofRoots(pluginsRoot), eventChannel);
     }
 }

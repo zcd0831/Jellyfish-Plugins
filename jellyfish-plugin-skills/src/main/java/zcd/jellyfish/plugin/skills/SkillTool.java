@@ -26,8 +26,8 @@ import java.util.Map;
  * 目录里现扫出来的、随时会变。把清单放进 enum 就意味着「新增一个 skill 要重新注册工具」，
  * 而放进提示词贡献则是每轮现算——这与子代理把「可委派类型」放提示词贡献而不是 enum 是同一条理由。
  * <p>
- * <b>只读</b>：本工具只读文件，没有任何副作用，因此在 PLAN 模式下同样可用——
- * 读一份说明本来就不该需要写权限。
+ * <b>没有副作用</b>：本工具只读文件、不改任何东西，因此**值得**被用户写进 PLAN 白名单——
+ * 读一份说明本来就不该需要写权限。注意是否在 PLAN 下可用取决于用户配置，工具自己说了不算。
  * <p>
  * 无状态，可安全复用。
  *
@@ -47,8 +47,7 @@ final class SkillTool implements ExtensionHandler<ToolCallRequest, ToolCallResul
             "加载指定 skill 的完整说明。可用的名称见 system prompt 里的 skills 清单；"
                     + "加载后按正文的指示工作，正文提到的附带文件用 read_file 或 shell 按需读取。",
             parameters(),
-            Arrays.asList("name"),
-            true);
+            Arrays.asList("name"));
 
     /** skill 目录缓存。 */
     private final SkillCatalog catalog;

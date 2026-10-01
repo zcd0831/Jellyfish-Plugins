@@ -52,7 +52,7 @@ public final class ScriptManifest {
             "contributions", "events");
 
     /** 工具允许的键。 */
-    private static final Set<String> TOOL_KEYS = keys("name", "description", "parameters", "required", "readOnly");
+    private static final Set<String> TOOL_KEYS = keys("name", "description", "parameters", "required");
 
     /** 命令允许的键。 */
     private static final Set<String> COMMAND_KEYS = keys("name", "descriptor", "hasOptions");
@@ -240,7 +240,7 @@ public final class ScriptManifest {
                 throw new JellyfishException(where + " 工具名重复: " + name);
             }
             tools.add(new Tool(name, text(element, "description"), parameters(element, where),
-                    required(element, where), bool(element, "readOnly", false)));
+                    required(element, where)));
         }
         return tools;
     }
@@ -603,9 +603,6 @@ public final class ScriptManifest {
         /** 必填参数名。 */
         private final List<String> required;
 
-        /** 是否为只读工具。 */
-        private final boolean readOnly;
-
         /**
          * 构造工具声明。
          *
@@ -613,15 +610,12 @@ public final class ScriptManifest {
          * @param description 用途描述
          * @param parameters  参数 Schema
          * @param required    必填参数名
-         * @param readOnly    是否只读
          */
-        private Tool(String name, String description, Map<String, Object> parameters, List<String> required,
-                     boolean readOnly) {
+        private Tool(String name, String description, Map<String, Object> parameters, List<String> required) {
             this.name = name;
             this.description = description;
             this.parameters = parameters;
             this.required = required;
-            this.readOnly = readOnly;
         }
 
         /**
@@ -660,21 +654,9 @@ public final class ScriptManifest {
             return required;
         }
 
-        /**
-         * 判断是否为只读工具。
-         * <p>
-         * 它参与内核 PLAN 模式的只读白名单，因此缺省为 {@code false}（可写）——
-         * 与「只读是显式选择」同口径，误声明只读等于给了模型一个绕过 PLAN 的后门。
-         *
-         * @return 只读返回 {@code true}
-         */
-        public boolean readOnly() {
-            return readOnly;
-        }
-
         @Override
         public String toString() {
-            return "Tool{name=" + name + ", readOnly=" + readOnly + '}';
+            return "Tool{name=" + name + '}';
         }
     }
 

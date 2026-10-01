@@ -3,7 +3,7 @@
   "tools": [
     {
       "name": "hello_greet",
-      "description": "按名字打招呼；这是只读工具",
+      "description": "按名字打招呼",
       "parameters": {
         "name": {
           "type": "string",
@@ -12,8 +12,7 @@
       },
       "required": [
         "name"
-      ],
-      "readOnly": true
+      ]
     },
     {
       "name": "hello_remember",
@@ -26,8 +25,7 @@
       },
       "required": [
         "note"
-      ],
-      "readOnly": false
+      ]
     }
   ],
   "commands": [

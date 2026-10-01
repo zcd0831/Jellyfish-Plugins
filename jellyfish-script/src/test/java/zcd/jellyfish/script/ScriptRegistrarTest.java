@@ -75,13 +75,12 @@ class ScriptRegistrarTest {
         });
 
         ScriptRegistration registration = registrar.register(pluginContext(), script("jira",
-                "{\"entry\":\"m.py\",\"tools\":[{\"name\":\"jira_issue\",\"readOnly\":true}]}"));
+                "{\"entry\":\"m.py\",\"tools\":[{\"name\":\"jira_issue\"}]}"));
 
         assertEquals(1, registration.registeredCount());
         List<ToolDescriptor> descriptors = extensions.descriptors(ToolCallRequest.class, ToolDescriptor.class);
         assertEquals(1, descriptors.size());
         assertEquals("jira_issue", descriptors.get(0).getName());
-        assertTrue(descriptors.get(0).isReadOnly());
 
         ToolCallResult result = extensions.invoke(extensions.handler(ToolCallRequest.class, "jira_issue"),
                 new ToolCallRequest("jira_issue", null, "s-1"));

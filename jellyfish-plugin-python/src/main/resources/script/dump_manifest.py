@@ -88,7 +88,6 @@ def _normalize_tool(tool):
         "description": tool.get("description") or "",
         "parameters": tool.get("parameters") or {},
         "required": tool.get("required") or [],
-        "readOnly": bool(tool.get("readOnly")),
     }
 
 

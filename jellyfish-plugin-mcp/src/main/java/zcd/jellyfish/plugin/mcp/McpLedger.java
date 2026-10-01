@@ -91,7 +91,7 @@ final class McpLedger {
                 break;
             }
             text.append("  - ").append(tool)
-                    .append(registry.isReadOnly(tool) ? "（只读）" : "").append('\n');
+                    .append(registry.isReadOnly(tool) ? "（用户声明只读）" : "").append('\n');
             listed++;
         }
     }

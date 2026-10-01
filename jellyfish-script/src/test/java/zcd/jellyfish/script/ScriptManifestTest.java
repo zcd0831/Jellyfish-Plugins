@@ -32,7 +32,7 @@ class ScriptManifestTest {
         ScriptManifest manifest = parse("{"
                 + "\"id\":\"jira\",\"entry\":\"main.py\","
                 + "\"tools\":[{\"name\":\"jira_issue\",\"description\":\"读或改\","
-                + "\"parameters\":{\"key\":{\"type\":\"string\"}},\"required\":[\"key\"],\"readOnly\":true}],"
+                + "\"parameters\":{\"key\":{\"type\":\"string\"}},\"required\":[\"key\"]}],"
                 + "\"commands\":[{\"name\":\"jira\",\"descriptor\":{\"summary\":\"操作\",\"usage\":\"<key>\","
                 + "\"aliases\":[\"j\"]},\"hasOptions\":true}],"
                 + "\"contributions\":[\"prompt\",\"status_line\"],"
@@ -42,7 +42,6 @@ class ScriptManifestTest {
         assertEquals("main.py", manifest.entry());
         assertEquals(1, manifest.tools().size());
         assertEquals("jira_issue", manifest.tools().get(0).name());
-        assertTrue(manifest.tools().get(0).readOnly());
         assertEquals(1, manifest.tools().get(0).required().size());
         assertEquals(1, manifest.commands().size());
         assertTrue(manifest.commands().get(0).hasOptions());
@@ -143,9 +142,7 @@ class ScriptManifestTest {
 
     @Test
     @DisplayName("工具字段类型不对应报错")
-    void parse_should_rejectWrongFieldType_when_readOnlyIsNotBoolean() {
-        assertThrows(JellyfishException.class,
-                () -> parse("{\"entry\":\"main.py\",\"tools\":[{\"name\":\"t\",\"readOnly\":\"yes\"}]}"));
+    void parse_should_rejectWrongFieldType_when_requiredOrParametersIsMalformed() {
         assertThrows(JellyfishException.class,
                 () -> parse("{\"entry\":\"main.py\",\"tools\":[{\"name\":\"t\",\"required\":\"key\"}]}"));
         assertThrows(JellyfishException.class,
@@ -153,11 +150,14 @@ class ScriptManifestTest {
     }
 
     @Test
-    @DisplayName("readOnly 缺省为 false，只读必须是显式选择")
-    void parse_should_defaultReadOnlyToFalse_when_flagIsAbsent() {
-        ScriptManifest manifest = parse("{\"entry\":\"main.py\",\"tools\":[{\"name\":\"t\"}]}");
+    @DisplayName("readOnly 已是未知键：写它会当场报错，而不是被静默忽略")
+    void parse_should_rejectReadOnly_when_toolDeclaresIt() {
+        // 只读白名单的唯一来源是用户配置，工具自己声明没有作用；静默忽略会让脚本作者
+        // 以为「我声明了只读」，实际却什么都没发生——这正是最难排查的一类失败
+        JellyfishException failure = assertThrows(JellyfishException.class,
+                () -> parse("{\"entry\":\"main.py\",\"tools\":[{\"name\":\"t\",\"readOnly\":true}]}"));
 
-        assertFalse(manifest.tools().get(0).readOnly());
+        assertTrue(failure.getMessage().contains("readOnly"), failure.getMessage());
     }
 
     @Test

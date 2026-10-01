@@ -14,8 +14,12 @@ import java.util.Map;
  * <b>原始名与展开名都要留着</b>：内核看到的是展开名（工具名要去重），而 {@code tools/call} 时必须
  * 把原始名发回给 server。少了任何一个都会落进「拿显示名去调用」这类越查越远的错误。
  * <p>
- * <b>只读标记在这里就算好</b>：它由「server 的 hint」与「用户配置的只读清单」共同决定，
+ * <b>只读标记在这里就算好</b>：它<b>只</b>由用户配置的只读清单（{@code readOnlyTools}）决定——
+ * server 自填的 {@code readOnlyHint} 已不再采纳（不该由不受信的第三方进程决定我们放宽什么），
  * 而权限拦截那一侧只看结果。把判定散到两处，迟早会出现「清单里算只读、拦截时算可写」。
+ * <p>
+ * 它与内核的 PLAN 白名单<b>无关</b>：那个白名单的唯一来源是内核侧的
+ * {@code plugins.configurations.<pluginId>.readOnlyTools}。本字段只驱动本插件的「写类工具要审批」。
  * <p>
  * 不可变，可安全跨线程传递。
  *
@@ -41,7 +45,7 @@ final class McpToolDefinition {
     /** 必填参数名。 */
     private final List<String> required;
 
-    /** 是否为只读工具。 */
+    /** 是否为用户声明的只读工具（只驱动本插件的审批策略，不进内核 PLAN 白名单）。 */
     private final boolean readOnly;
 
     /**
@@ -53,7 +57,7 @@ final class McpToolDefinition {
      * @param description   工具描述
      * @param parameters    参数 Schema properties
      * @param required      必填参数名
-     * @param readOnly      是否为只读工具
+     * @param readOnly      是否为用户声明的只读工具
      */
     McpToolDefinition(String serverId, String originalName, String qualifiedName, String description,
                       Map<String, Object> parameters, List<String> required, boolean readOnly) {
@@ -125,9 +129,9 @@ final class McpToolDefinition {
     }
 
     /**
-     * 判断是否为只读工具。
+     * 判断是否为用户声明的只读工具。
      *
-     * @return 只读返回 {@code true}
+     * @return 用户声明为只读时返回 {@code true}
      */
     boolean readOnly() {
         return readOnly;
@@ -144,7 +148,7 @@ final class McpToolDefinition {
     ToolDescriptor descriptor() {
         String label = "[MCP:" + serverId + "] " + (description == null || description.trim().isEmpty()
                 ? originalName : description.trim());
-        return new ToolDescriptor(qualifiedName, label, parameters, required, readOnly);
+        return new ToolDescriptor(qualifiedName, label, parameters, required);
     }
 
     @Override

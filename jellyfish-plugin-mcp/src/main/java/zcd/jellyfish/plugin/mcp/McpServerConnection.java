@@ -490,7 +490,7 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
             }
             used.put(qualified, original);
             definitions.add(new McpToolDefinition(config.id(), original, qualified,
-                    descriptionOf(node), parametersOf(node), requiredOf(node), isReadOnly(node, original)));
+                    descriptionOf(node), parametersOf(node), requiredOf(node), config.isDeclaredReadOnly(original)));
         }
         return Collections.unmodifiableList(definitions);
     }
@@ -551,25 +551,6 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
      */
     private static List<String> requiredOf(JsonNode node) {
         return McpJson.stringList(inputSchemaOf(node), "required");
-    }
-
-    /**
-     * 判定只读。
-     * <p>
-     * <b>hint 是建议，用户配置是声明，两者取「或」，而缺省是「可写」</b>：
-     * {@code readOnlyHint} 由 server 自己填，可能填错；{@code readOnlyTools} 是用户写的。
-     * 任一方认为只读就按只读处理——只读的代价只是「少弹一次审批框」，而误判的方向如果是反的
-     * （把一个真会改东西的工具当成只读），代价是一个静默的副作用。
-     * 因此这里绝不做「没声明就当只读」那种便利推断。
-     *
-     * @param node     工具节点
-     * @param original 原始工具名
-     * @return 只读返回 {@code true}
-     */
-    private boolean isReadOnly(JsonNode node, String original) {
-        JsonNode annotations = McpJson.childObject(node, "annotations");
-        boolean hinted = McpJson.bool(annotations, "readOnlyHint", false);
-        return hinted || config.isDeclaredReadOnly(original);
     }
 
     /**
