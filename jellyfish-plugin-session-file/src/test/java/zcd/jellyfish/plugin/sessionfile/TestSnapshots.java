@@ -2,6 +2,8 @@ package zcd.jellyfish.plugin.sessionfile;
 
 import zcd.jellyfish.api.extension.PermissionMode;
 import zcd.jellyfish.api.extension.SessionCompactionSnapshot;
+import zcd.jellyfish.api.extension.SessionExtensionEntry;
+import zcd.jellyfish.api.extension.SessionKind;
 import zcd.jellyfish.api.extension.SessionMessageSnapshot;
 import zcd.jellyfish.api.extension.ToolMetadata;
 import zcd.jellyfish.api.extension.SessionSnapshot;
@@ -28,6 +30,11 @@ final class TestSnapshots {
 
     /**
      * 构造一个字段尽量填满的会话快照。
+     * <p>
+     * <b>为什么这里必须用全字段构造器而不是 {@code SessionSnapshot.of(...)}</b>：这个夹具是
+     * {@link SnapshotJsonTest} 往返比对的唯一输入，用兼容入口就等于「四个新字段恒为 null」，
+     * 而后加字段读不回来的表现恰恰是「文件写出来了，重启后那个属性悄悄回到默认值」——
+     * 那种失真只有夹具填满才可能被发现。
      *
      * @param sessionId 会话标识
      * @return 会话快照
@@ -45,7 +52,10 @@ final class TestSnapshots {
                 SessionMessageSnapshot.of("m-4", 4L, "assistant", "读完了", null, null, null, null));
         return new SessionSnapshot(sessionId, 100L, 200L, "标题", "coder", "openai", "gpt-4o",
                 PermissionMode.PLAN, messages, new SessionUsageSnapshot(7L, 8L, 15L, 4L, 4L, 0L),
-                new SessionCompactionSnapshot("早前对话的摘要", "m-2", 300L, 4));
+                new SessionCompactionSnapshot("早前对话的摘要", "m-2", 300L, 4),
+                SessionKind.FORKED, "session-0", "m-2",
+                Collections.singletonList(new SessionExtensionEntry("todo::items",
+                        Collections.<String, Object>singletonMap("count", Integer.valueOf(3)), 250L)));
     }
 
     /**
