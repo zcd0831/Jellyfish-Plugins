@@ -19,6 +19,46 @@ mvn -q -Pshell-it test              # shell 插件端到端（真 /bin/sh，会�
 mvn -q -Pmcp-it test                # MCP 插件端到端（真 fork 进程跑仓库自带的 echo server）
 ```
 
+## 内核升级后要做的检查
+
+内核一侧改了 `jellyfish-api` 之后，按顺序跑下面几条，**只有全绿才算真的没问题**：
+
+```bash
+# 0. 先把新内核装进本地仓库：本仓库是独立的 reactor，插件的 api 从这里取（见下）
+(cd ../Jellyfish && mvn -q install -DskipTests)
+
+# 1. 必须 clean
+mvn -q clean package
+
+# 2. 三个端到端 profile 一个都不能漏
+mvn -q -Pshell-it test
+mvn -q -Pmcp-it test
+mvn -q -Pscript-it test
+```
+
+- **第 0 步不能省**：本仓库是独立的 reactor，`jellyfish-api` / `jellyfish-infra` 不来自内核源码树，而是本地
+  Maven 仓库里那一份（`mvn -o -pl <某模块> dependency:build-classpath` 可以看到路径）。忘了这一步的表现是
+  「内核明明改了，插件这边编译却看不到」。
+- **必须 `clean`，不能只看 `mvn package`**：增量编译会复用按旧 `jellyfish-api` 编出的 `target/`，
+  于是**编译问题被伪装成运行期问题**。实例：内核给 `SessionSnapshot` 加四个字段之后，
+  不带 clean 跑报的是 11 条 `NoSuchMethodError`，看着像「新旧 api 运行期不兼容」；clean 之后才是真相
+  （构造器参数个数不匹配，是编译问题）。
+- **三个 `-P*-it` 一个都不能漏**：`mvn test` / `mvn package` **不跑 `*IT`**，坏掉的端到端目标不会被它们发现。
+  实例：`jellyfish.test.examples` 的路径多退了一级，`PythonScriptIT` 四条用例全红，而 `mvn package` 一直绿。
+- **引用 api 的值类型优先用静态工厂；测试夹具反过来，必须用全字段构造器**：跨边界值类型规定「恰好一个可见
+  构造器」（Jackson 反序列化要求），**新增字段只能加静态工厂、不加兼容构造器**。所以用 `new` 的代码会在内核
+  加字段时立刻编不过，用 `of(...)` 的不用改——兼容工厂替新字段补缺省值。**夹具是刻意的例外，也正是最要紧的
+  那一处**：夹具要填满全部字段，否则「后加字段读不回来」的失真会被静默吞掉——往返测试照样全绿，而现场是
+  「文件写出来了，重启后那个属性悄悄回到默认值」。
+- **`jellyfish-api` 是 `provided`，插件 jar 里不含它的类**：因此插件拿到的值类型永远是**运行期内核那一份**，
+  内核给值类型加字段时插件**什么都不用做**。实测：改造前打的旧插件 jar 在新内核上照样写出 15 个字段并被正确
+  读回。推论：**shade 的 `includes` 里绝不能出现 `jellyfish-api`**——那会让插件带着旧版本的值类型跑，
+  新字段静默丢失。
+- **老插件「什么都不做」是受支持的形态**：新增扩展点的兼容底线是「0 个 handler 时内核走一条与改造前逐字段
+  一致的路径」，因此用不上新点就不要动既有注册——为了用新点而改既有注册才是有风险的那一侧。
+  契约文档都在内核仓库（`docs/constraints/extensions.md` 的「新增扩展点的公共约定」与
+  `docs/design/extension-points.md` 的逐条决策），本仓库不重写一份。
+
 ## 官方插件一览
 
 官方插件（PF4J 是「一个 jar 一个 `plugin.properties`」）：
@@ -133,6 +173,13 @@ mvn -q -Pmcp-it test                # MCP 插件端到端（真 fork 进程跑�
 - 断言使用 JUnit5 `Assertions` 或 AssertJ，异常用 `assertThrows`。
 - 多组输入用 `@ParameterizedTest`，覆盖正常、边界、异常场景。
 - 单元测试不启动 Spring 容器，不访问数据库、网络等真实外部资源。
+- **构造内核服务（`PluginContextFactory` / `PluginContextImpl`）时用不到的依赖传桩**：本仓库的测试用真实的
+  `ExtensionRegistry` / `EventChannel`（注册与派发走的就是内核那条路径，换成假的就只是验证「我以为内核会怎么查」），
+  但 `PluginContextFactory` 的 `RuntimeInfoHolder` / `ActionQueue` / `SessionManager` 对多数用例毫无意义，
+  直接 `Mockito.mock(SessionManager.class)`。这条常被写反：**内核服务里真正被测的那部分用真的，其余用桩**，
+  不要因为「反正是测试」就把整条链路都换成假的。
+  推论：内核给这类服务的构造器加依赖时，本仓库会有一批用例同时编不过——那是设计上应该发生的事（见「内核升级后要做的检查」），
+  按桩补齐即可，不要为了少改几处去给内核加「测试专用」的便捷构造器。
 
 ## Git 约定
 
