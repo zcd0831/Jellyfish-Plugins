@@ -18,6 +18,8 @@ import zcd.jellyfish.api.plugin.PluginContext;
 import zcd.jellyfish.api.plugin.PluginDeclaration;
 import zcd.jellyfish.api.plugin.PluginOwnerNamespace;
 import zcd.jellyfish.infra.action.ActionQueue;
+import zcd.jellyfish.infra.metrics.MetricsRegistry;
+import zcd.jellyfish.infra.shell.ShellIngress;
 import zcd.jellyfish.infra.event.EventChannel;
 import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
@@ -63,7 +65,7 @@ class ScriptRegistrarTest {
 
     /** 上下文工厂。 */
     private final PluginContextFactory factory = new PluginContextFactory(extensions, events, registry,
-            new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class));
+            new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry()));
 
     @Test
     @DisplayName("工具应按路由键注册，处理器转发到脚本并在返回时解出结果")

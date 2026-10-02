@@ -13,6 +13,8 @@ import zcd.jellyfish.api.extension.CommandResult;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolDescriptor;
 import zcd.jellyfish.infra.action.ActionQueue;
+import zcd.jellyfish.infra.metrics.MetricsRegistry;
+import zcd.jellyfish.infra.shell.ShellIngress;
 import zcd.jellyfish.infra.event.EventChannel;
 import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
@@ -293,7 +295,7 @@ class NodePluginLoadingTest {
         }
         configurations.put(PLUGIN_ID, node);
         PluginContextFactory contexts = new PluginContextFactory(extensions, eventChannel, registry,
-                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class));
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry()));
         return new PF4JPluginManager(contexts, new PluginRuntimeConfig(
                 java.util.Collections.singletonList(pluginsRoot), null, null, configurations), eventChannel);
     }

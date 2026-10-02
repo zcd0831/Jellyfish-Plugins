@@ -10,6 +10,8 @@ import org.pf4j.PluginState;
 import zcd.jellyfish.api.extension.SessionPersistRequest;
 import zcd.jellyfish.api.extension.SessionRestoreRequest;
 import zcd.jellyfish.infra.action.ActionQueue;
+import zcd.jellyfish.infra.metrics.MetricsRegistry;
+import zcd.jellyfish.infra.shell.ShellIngress;
 import zcd.jellyfish.infra.event.EventChannel;
 import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
@@ -148,7 +150,7 @@ class SessionFilePluginLoadingTest {
                 Collections.<String, Map<String, Object>>singletonMap(PLUGIN_ID, configuration);
         return new PF4JPluginManager(new PluginContextFactory(
                 extensions, eventChannel, registry,
-                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class)),
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry())),
                 new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations),
                 eventChannel);
     }

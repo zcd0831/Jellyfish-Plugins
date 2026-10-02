@@ -14,6 +14,8 @@ import zcd.jellyfish.api.extension.PromptContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
 import zcd.jellyfish.infra.action.ActionQueue;
+import zcd.jellyfish.infra.metrics.MetricsRegistry;
+import zcd.jellyfish.infra.shell.ShellIngress;
 import zcd.jellyfish.infra.plugin.PF4JPluginManager;
 import zcd.jellyfish.infra.plugin.PluginContextFactory;
 import zcd.jellyfish.infra.plugin.PluginRuntimeConfig;
@@ -375,7 +377,7 @@ class NodeScriptIT {
         configurations.put(PLUGIN_ID, node);
         manager = new PF4JPluginManager(new PluginContextFactory(
                 extensions, events, registry,
-                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class)),
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry())),
                 new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations),
                 events);
         manager.bootstrap();

@@ -58,6 +58,13 @@ mvn -q -Pscript-it test
   一致的路径」，因此用不上新点就不要动既有注册——为了用新点而改既有注册才是有风险的那一侧。
   契约文档都在内核仓库（`docs/constraints/extensions.md` 的「新增扩展点的公共约定」与
   `docs/design/extension-points.md` 的逐条决策），本仓库不重写一份。
+- **插件往外壳推内容走 `PluginContext.present(ShellContribution)`，不要新建一条通道**：
+  它能把一条临时通知（`NOTICE`）或一次「我贡献的内容脏了」（`INVALIDATED`）推给活着的外壳，
+  而**不需要有回合在跑**。三条不能忘的边界（详见 `docs/constraints/extensions.md`）：
+  它是**展示数据**，不进模型上下文、不落盘、不产生 `LlmMessage`；它**可丢**
+  （每 owner 有界、同 key 可合并），因此 `DROPPED_QUEUE_FULL` 不能当失败去重试；
+  `SESSION` scope 要求会话已存在，内核**不会**因此新建会话。
+  面板与状态栏的**内容**仍走拉取（`PanelContributionRequest` / `StatusLineContributionRequest`）。
 
 ## 官方插件一览
 

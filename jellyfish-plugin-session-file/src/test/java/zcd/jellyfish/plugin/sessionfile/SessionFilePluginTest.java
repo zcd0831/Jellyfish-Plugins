@@ -14,6 +14,8 @@ import zcd.jellyfish.api.extension.SessionSnapshot;
 import zcd.jellyfish.api.plugin.PluginContext;
 import zcd.jellyfish.api.plugin.PluginDeclaration;
 import zcd.jellyfish.infra.action.ActionQueue;
+import zcd.jellyfish.infra.metrics.MetricsRegistry;
+import zcd.jellyfish.infra.shell.ShellIngress;
 import zcd.jellyfish.infra.event.EventChannel;
 import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
@@ -190,7 +192,7 @@ class SessionFilePluginTest {
         configuration.put(PluginConfig.KEY_SESSION_DIR, tempDir.toString());
         configuration.put(PluginConfig.KEY_GIT_ENABLED, gitEnabled);
         PluginContext context = new PluginContextFactory(extensions, eventChannel, registry,
-                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class))
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry()))
                 .create(PluginDeclaration.of(PLUGIN_ID, configuration));
         new SessionFilePlugin().start(context);
     }
