@@ -33,7 +33,18 @@ enum TodoStatus {
     IN_PROGRESS("in_progress", "[~] "),
 
     /** 已完成。 */
-    COMPLETED("completed", "[x] ");
+    COMPLETED("completed", "[x] "),
+
+    /**
+     * 卡住：认领过它的人试过，做不了。
+     * <p>
+     * <b>为什么需要一个「做不了」</b>：没有它，一条做不了的活只能一直停在 {@code pending}，
+     * 于是一批一批的子代理反复把它领走、又反复失败——抢单式协作最容易烧钱的地方就是这个。
+     * 它既不是「已完成」，也不是「可认领」：谁都不能再领，直到有人把它放回或换做法。
+     * <p>
+     * 原因记在 {@link TodoItem#reason()} 上：不写为什么，「卡住」与「没人做」在人看来是一样的。
+     */
+    BLOCKED("blocked", "[!] ");
 
     /** 模型与待办文件里使用的取值。 */
     private final String wireName;

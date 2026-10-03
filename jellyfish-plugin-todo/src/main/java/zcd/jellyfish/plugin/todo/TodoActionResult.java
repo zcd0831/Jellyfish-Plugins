@@ -27,8 +27,16 @@ final class TodoActionResult {
         /** 那一条已被别的 run 认领。 */
         TAKEN,
 
-        /** 没有可认领的待办（只剩认领会产生这个结果）。 */
-        NONE_PENDING
+        /** 没有可认领的待办（只有认领会产生这个结果）。 */
+        NONE_PENDING,
+
+        /**
+         * 那条待办现在的状态不接受这个动作。
+         * <p>
+         * 目前只有一种情形：对一条**已完成**的条目执行「放回」或「卡住」——
+         * 静默把它从「已完成」退回未完成，等于悄悄撤销掉一件已经做完的事。
+         */
+        WRONG_STATE
     }
 
     /** 结果码。 */
@@ -66,6 +74,20 @@ final class TodoActionResult {
      */
     static TodoActionResult failed(Code code) {
         return new TodoActionResult(code, null);
+    }
+
+    /**
+     * 构造带上下文的失败结果。
+     * <p>
+     * 失败时也带条目，是为了让消息能说清「它现在是什么状态」——
+     * 只说「不能这么做」而不同时说清现状，模型只能靠猜。
+     *
+     * @param code 结果码，不可为 {@code null} 且不可为 {@link Code#OK}
+     * @param item 动作原本针对的那一条，可为 {@code null}
+     * @return 结果，保证非 {@code null}
+     */
+    static TodoActionResult failed(Code code, TodoItem item) {
+        return new TodoActionResult(code, item);
     }
 
     /**

@@ -56,6 +56,6 @@ class TodoStatusTest {
     @Test
     @DisplayName("允许取值集合从枚举自身拼出来，报错消息不会漏改")
     void allowedNames_should_listEveryWireName() {
-        assertEquals("pending、in_progress 或 completed", TodoStatus.allowedNames());
+        assertEquals("pending、in_progress、completed 或 blocked", TodoStatus.allowedNames());
     }
 }

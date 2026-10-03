@@ -67,9 +67,14 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
         Map<String, Object> itemProperties = new LinkedHashMap<String, Object>();
         itemProperties.put("content", property("string", "待办内容，一句话说清要做什么"));
         Map<String, Object> status = property("string",
-                "pending 表示还没轮到它，in_progress 表示此刻正在做的就是这一项，completed 表示已完成");
+                "pending 表示还没轮到它，in_progress 表示此刻正在做的就是这一项，completed 表示已完成，"
+                        + "blocked 表示认领过它的人试过、做不了（这时应在 reason 里写明为什么）");
         status.put("enum", wiredNames());
         itemProperties.put("status", status);
+        Map<String, Object> reason = property("string",
+                "只有 status 为 blocked 时才有意义：它为什么做不了。写具体一点，"
+                        + "人和父回合要靠它决定下一步");
+        itemProperties.put("reason", reason);
 
         Map<String, Object> itemSchema = new LinkedHashMap<String, Object>();
         itemSchema.put("type", "object");
@@ -128,7 +133,8 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
             if (!(content instanceof String) || ((String) content).trim().isEmpty()) {
                 throw new JellyfishException("todos 每一项的 content 必须是非空字符串，实际为 " + describe(content));
             }
-            items.add(new TodoItem((String) content, status(item.get("status"))));
+            items.add(new TodoItem((String) content, status(item.get("status")),
+                    null, reason(item.get("reason"))));
         }
         return items;
     }
@@ -151,6 +157,24 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
                     + "，实际为 " + describe(raw));
         }
         return status;
+    }
+
+    /**
+     * 解析卡住原因。
+     * <p>
+     * 与状态取值不同，它<b>不做枚举校验</b>：只有卡住时才有意义，写在别的状态上只是冗余，
+     * 为它报错会把一次本来正确的整表写入整批拒掉——那正是 state 那条路踩过的坑。
+     * 空白按「没写」处理。
+     *
+     * @param raw {@code reason} 参数原值，可为 {@code null}
+     * @return 原因文本；没写时返回 {@code null}
+     */
+    private static String reason(Object raw) {
+        if (!(raw instanceof String)) {
+            return null;
+        }
+        String text = ((String) raw).trim();
+        return text.isEmpty() ? null : text;
     }
 
     /**

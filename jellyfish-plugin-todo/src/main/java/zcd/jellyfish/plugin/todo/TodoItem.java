@@ -41,6 +41,9 @@ final class TodoItem {
     /** 认领这一条的 run 标识；尚未被认领时为 {@code null}。 */
     private final String owner;
 
+    /** 卡住的原因；只在 {@link TodoStatus#BLOCKED} 时有值。 */
+    private final String reason;
+
     /**
      * 构造待办。
      *
@@ -61,12 +64,26 @@ final class TodoItem {
      * @throws JellyfishException 内容为空白时抛出
      */
     TodoItem(String content, TodoStatus status, String owner) {
+        this(content, status, owner, null);
+    }
+
+    /**
+     * 构造完整待办。
+     *
+     * @param content 待办内容，不可为空白
+     * @param status  待办状态，可为 {@code null}（按未开始处理）
+     * @param owner   认领这一条的 run 标识，可为 {@code null}（尚未被认领）
+     * @param reason  卡住的原因，可为 {@code null}（没卡住时不该有值）
+     * @throws JellyfishException 内容为空白时抛出
+     */
+    TodoItem(String content, TodoStatus status, String owner, String reason) {
         if (content == null || content.trim().isEmpty()) {
             throw new JellyfishException("todo content must not be blank");
         }
         this.content = content;
         this.status = status == null ? TodoStatus.PENDING : status;
         this.owner = owner;
+        this.reason = reason;
     }
 
     /**
@@ -84,8 +101,9 @@ final class TodoItem {
     TodoItem(@JsonProperty("content") String content,
              @JsonProperty("status") String status,
              @JsonProperty("done") Boolean done,
-             @JsonProperty("owner") String owner) {
-        this(content, resolveStatus(status, done), owner);
+             @JsonProperty("owner") String owner,
+             @JsonProperty("reason") String reason) {
+        this(content, resolveStatus(status, done), owner, reason);
     }
 
     /**
@@ -144,17 +162,28 @@ final class TodoItem {
     }
 
     /**
-     * 生成一条状态与认领者已改的新待办。
+     * 获取卡住的原因。
+     *
+     * @return 原因；没卡住时为 {@code null}
+     */
+    @JsonProperty("reason")
+    String reason() {
+        return reason;
+    }
+
+    /**
+     * 生成一条状态、认领者与原因已改的新待办。
      * <p>
      * 内容不变，因此这是「同一条待办换了状态」而不是「新的一条」——
-     * 认领与完成都只该改这两件事。
+     * 认领、完成、放回、卡住都只该改这三件事。
      *
      * @param newStatus 新状态
      * @param newOwner  新的认领者，可为 {@code null}（表示不带认领者）
+     * @param newReason 新的卡住原因，可为 {@code null}
      * @return 新待办，保证非 {@code null}
      */
-    TodoItem with(TodoStatus newStatus, String newOwner) {
-        return new TodoItem(content, newStatus, newOwner);
+    TodoItem with(TodoStatus newStatus, String newOwner, String newReason) {
+        return new TodoItem(content, newStatus, newOwner, newReason);
     }
 
     /**
@@ -170,6 +199,7 @@ final class TodoItem {
     @Override
     public String toString() {
         return "TodoItem{status=" + status.wireName() + ", content=" + content
-                + (owner == null ? "" : ", owner=" + owner) + '}';
+                + (owner == null ? "" : ", owner=" + owner)
+                + (reason == null ? "" : ", reason=" + reason) + '}';
     }
 }

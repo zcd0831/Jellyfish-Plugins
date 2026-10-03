@@ -64,7 +64,7 @@ class TodoWriteToolTest {
     void descriptor_should_declareEveryStatus() {
         ToolDescriptor descriptor = TodoWriteTool.descriptor();
 
-        assertEquals(Arrays.asList("pending", "in_progress", "completed"), statusEnum(descriptor));
+        assertEquals(Arrays.asList("pending", "in_progress", "completed", "blocked"), statusEnum(descriptor));
     }
 
     @Test
@@ -200,7 +200,7 @@ class TodoWriteToolTest {
         JellyfishException error = assertThrows(JellyfishException.class,
                 () -> tool.handle(request("s-1", item("写文档", "doing"))));
 
-        assertEquals("todos 的 status 只能是 pending、in_progress 或 completed，实际为 \"doing\"",
+        assertEquals("todos 的 status 只能是 pending、in_progress、completed 或 blocked，实际为 \"doing\"",
                 error.getMessage());
     }
 

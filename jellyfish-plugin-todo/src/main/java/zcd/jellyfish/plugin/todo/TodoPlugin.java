@@ -24,8 +24,9 @@ import java.nio.file.Path;
  * <b>五个面各占一个扩展点，且都不需要新扩展点</b>：
  * <ul>
  *     <li>{@code todo_write} 工具 → {@link ToolCallRequest}，模型写待办的唯一入口；</li>
- *     <li>{@code todo_claim} / {@code todo_done} 工具 → {@link ToolCallRequest}，子代理认领与完成；
- *     它们与父回合读写的是<b>同一份</b>清单（子代理落在父会话上，见 {@code TodoScope}）；</li>
+ *     <li>{@code todo_claim} / {@code todo_done} / {@code todo_release} / {@code todo_block} 工具 →
+ *     {@link ToolCallRequest}，子代理认领、完成、放回与记成卡住；它们与父回合读写的是<b>同一份</b>清单
+ *     （子代理落在父会话上，见 {@code TodoScope}）；</li>
  *     <li>{@code /todo} 命令 → {@link CommandRequest}，给人看的只读清单；</li>
  *     <li>待办随本轮用户消息送达 → {@link TurnContextRequest}，让模型每轮都看得见自己的计划；
  *     <b>而不是往 system prompt 里注</b>——待办是会话中途反复改写的状态，放进缓存前缀的第 0 个 token
@@ -81,6 +82,10 @@ public final class TodoPlugin implements JellyfishPlugin {
                 new TodoClaimTool(store));
         registerStateChangingTool(context, TodoDoneTool.NAME, TodoDoneTool.descriptor(),
                 new TodoDoneTool(store));
+        registerStateChangingTool(context, TodoReleaseTool.NAME, TodoReleaseTool.descriptor(),
+                new TodoReleaseTool(store));
+        registerStateChangingTool(context, TodoBlockTool.NAME, TodoBlockTool.descriptor(),
+                new TodoBlockTool(store));
         LOG.info("待办插件已启动: dir={}", directory);
     }
 

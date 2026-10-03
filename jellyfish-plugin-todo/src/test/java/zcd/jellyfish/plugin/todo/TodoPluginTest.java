@@ -81,13 +81,15 @@ class TodoPluginTest {
     }
 
     @Test
-    @DisplayName("五个面各注册一次，另注册三个工具与会话删除清理")
+    @DisplayName("五个面各注册一次，另注册五个工具与会话删除清理")
     void start_should_registerAllCapabilities() {
         assertEquals(1, extensions.bindings(CommandRequest.class, "todo").size());
         assertEquals(1, extensions.bindings(ToolCallRequest.class, TodoWriteTool.NAME).size());
         // 共享协作面：子代理认领与完成，与父回合读写同一份清单
         assertEquals(1, extensions.bindings(ToolCallRequest.class, TodoClaimTool.NAME).size());
         assertEquals(1, extensions.bindings(ToolCallRequest.class, TodoDoneTool.NAME).size());
+        assertEquals(1, extensions.bindings(ToolCallRequest.class, TodoReleaseTool.NAME).size());
+        assertEquals(1, extensions.bindings(ToolCallRequest.class, TodoBlockTool.NAME).size());
         assertEquals(1, extensions.bindings(TurnContextRequest.class, null).size());
         assertEquals(1, extensions.bindings(StatusLineContributionRequest.class, null).size());
         assertEquals(1, extensions.bindings(PanelContributionRequest.class, null).size());

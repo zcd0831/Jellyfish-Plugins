@@ -304,4 +304,119 @@ class TodoStoreTest {
         }
         return items;
     }
+    @Test
+    @DisplayName("做完再领：同一个 run 完成一条后可以接着领下一条")
+    void claim_should_allowNextClaim_afterDone() {
+        store.replace("s-1", items("甲", "乙"));
+
+        TodoItem first = store.claim("s-1", "run-1").getItem();
+        store.complete("s-1", first.content(), "run-1");
+        TodoItem second = store.claim("s-1", "run-1").getItem();
+
+        // 这条是「worker 连着干活」的全部机制：没有任何额外开关，只是一条不变量
+        assertNotNull(second);
+        assertEquals("乙", second.content());
+        assertEquals("run-1", second.owner());
+    }
+
+    @Test
+    @DisplayName("卡住：记下原因、保留认领者，且不再被任何 run 认领")
+    void block_should_recordReasonAndStopClaims() {
+        store.replace("s-1", items("甲", "乙"));
+        store.claim("s-1", "run-1");
+
+        TodoActionResult result = store.block("s-1", "甲", "run-1", "需要写权限，当前会话是只读");
+
+        assertTrue(result.isOk());
+        TodoItem blocked = store.itemsOf("s-1").get(0);
+        assertEquals(TodoStatus.BLOCKED, blocked.status());
+        assertEquals("需要写权限，当前会话是只读", blocked.reason());
+        assertEquals("run-1", blocked.owner(), "谁卡的也是信息");
+        // 下一个 run 领到的是另一条：卡住的活不会被反复领走反复失败
+        assertEquals("乙", store.claim("s-1", "run-2").getItem().content());
+    }
+
+    @Test
+    @DisplayName("卡住：原因是必填的，空白当场拒绝")
+    void block_should_requireReason() {
+        store.replace("s-1", items("甲"));
+
+        assertThrows(JellyfishException.class, () -> store.block("s-1", "甲", null, "   "));
+        assertEquals(TodoStatus.PENDING, store.itemsOf("s-1").get(0).status());
+    }
+
+    @Test
+    @DisplayName("放回：清掉认领者、回到未开始，随后别人可以认领")
+    void release_shouldReturnToPool() {
+        store.replace("s-1", items("甲"));
+        store.claim("s-1", "run-1");
+
+        TodoActionResult result = store.release("s-1", "甲", "run-1");
+
+        assertTrue(result.isOk());
+        TodoItem released = store.itemsOf("s-1").get(0);
+        assertEquals(TodoStatus.PENDING, released.status());
+        assertNull(released.owner());
+        assertEquals("run-2", store.claim("s-1", "run-2").getItem().owner());
+    }
+
+    @Test
+    @DisplayName("放回：已完成的不接受退回——那是悄悄撤销一件已经做完的事")
+    void release_should_rejectCompleted() {
+        store.replace("s-1", Arrays.asList(new TodoItem("甲", TodoStatus.COMPLETED)));
+
+        TodoActionResult result = store.release("s-1", "甲", null);
+
+        assertEquals(TodoActionResult.Code.WRONG_STATE, result.getCode());
+        assertEquals(TodoStatus.COMPLETED, store.itemsOf("s-1").get(0).status());
+    }
+
+    @Test
+    @DisplayName("放回与卡住：别人认领着的条目一律拒绝")
+    void releaseAndBlock_should_rejectItemOwnedByOther() {
+        store.replace("s-1", items("甲"));
+        store.claim("s-1", "run-1");
+
+        assertEquals(TodoActionResult.Code.TAKEN, store.release("s-1", "甲", "run-2").getCode());
+        assertEquals(TodoActionResult.Code.TAKEN, store.block("s-1", "甲", "run-2", "做不了").getCode());
+        assertEquals(TodoStatus.IN_PROGRESS, store.itemsOf("s-1").get(0).status());
+    }
+
+    @Test
+    @DisplayName("完成：父回合不能替别人签字——「做完了」由做过的人说")
+    void complete_should_rejectParentTurnOnClaimedItem() {
+        store.replace("s-1", items("甲"));
+        store.claim("s-1", "run-1");
+
+        TodoActionResult result = store.complete("s-1", "甲", null);
+
+        assertEquals(TodoActionResult.Code.TAKEN, result.getCode());
+        assertEquals(TodoStatus.IN_PROGRESS, store.itemsOf("s-1").get(0).status());
+    }
+
+    @Test
+    @DisplayName("放回与卡住：父回合（没有 run）可以收拾任何一条")
+    void releaseAndBlock_should_allowParentTurn() {
+        store.replace("s-1", items("甲", "乙"));
+        store.claim("s-1", "run-1");
+
+        assertTrue(store.block("s-1", "甲", null, "需求本身矛盾，等人确认").isOk());
+        assertTrue(store.release("s-1", "乙", null).isOk());
+        assertEquals(TodoStatus.BLOCKED, store.itemsOf("s-1").get(0).status());
+        assertEquals(TodoStatus.PENDING, store.itemsOf("s-1").get(1).status());
+    }
+
+    @Test
+    @DisplayName("父回合重写清单不丢掉卡住的原因：模型看不见的那部分状态按内容继承")
+    void replace_should_inheritBlockReason() {
+        store.replace("s-1", items("甲"));
+        store.block("s-1", "甲", null, "缺权限");
+
+        // 父回合重写时只抄了内容与状态（原因它没抄），原因应当被继承下来
+        List<TodoItem> rewritten = store.replace("s-1", Arrays.asList(
+                new TodoItem("甲", TodoStatus.BLOCKED)));
+
+        assertEquals(TodoStatus.BLOCKED, rewritten.get(0).status());
+        assertEquals("缺权限", rewritten.get(0).reason());
+    }
 }

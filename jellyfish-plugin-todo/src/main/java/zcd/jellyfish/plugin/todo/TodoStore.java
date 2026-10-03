@@ -103,8 +103,10 @@ final class TodoStore {
     /**
      * 认领第一条还没人做的待办。
      * <p>
-     * <b>一个 run 只认领一条</b>：已经认领过的（且还没做完）直接返回那一条，而不是再领一条。
-     * 没有这条约束时，一个子代理多调一次就会把两件事都揽到自己名下，而它的提示词里只写了其中一件。
+     * <b>不变量是「同一 run 至多一条未了结的认领」</b>：手上还有没做完的那条就直接返回它，
+     * 而不是再领一条（否则一个子代理多调一次就会把两件事都揽到自己名下，而它的提示词里只写了其中一件）。
+     * **做完之后可以接着领下一条**：{@link #complete} 会把状态改成已完成，于是下一次调用不再命中
+     * 「未了结」那一支，自然就去领新的。worker 连着干活因此不需要任何额外机制。
      * <p>
      * <b>认领不到不等待、不重试</b>：立即返回 {@link TodoActionResult.Code#NONE_PENDING}。
      * 等待会让「这个 run 要跑多久」变得不可预测，而那是拉取式工作队列的形状——本项目明确不做。
@@ -122,6 +124,7 @@ final class TodoStore {
         List<TodoItem> items = itemsOf(key);
         for (TodoItem item : items) {
             if (item.ownedBy(runId) && item.status() == TodoStatus.IN_PROGRESS) {
+                // 未了结的那条优先：已经领了还在做，就不该再领第二条
                 return TodoActionResult.ok(item);
             }
         }
@@ -129,7 +132,7 @@ final class TodoStore {
             TodoItem item = items.get(i);
             if (item.status() == TodoStatus.PENDING && item.owner() == null) {
                 List<TodoItem> updated = new ArrayList<TodoItem>(items);
-                TodoItem claimed = item.with(TodoStatus.IN_PROGRESS, runId);
+                TodoItem claimed = item.with(TodoStatus.IN_PROGRESS, runId, null);
                 updated.set(i, claimed);
                 persist(key, updated);
                 return TodoActionResult.ok(claimed);
@@ -146,6 +149,10 @@ final class TodoStore {
      * <p>
      * <b>归属判定</b>：别人正认领着的条目不允许被改（{@link TodoActionResult.Code#TAKEN}），
      * 而无主的条目谁都可以标完成——父回合的模型在回收计划时就属于这种情况。
+     * <p>
+     * <b>为什么父回合不能替 worker 说「做完了」</b>：放回与卡住是清理（{@link #release} / {@link #block}
+     * 都允许协调者），而完成是一个关于工作结果的声明。父回合若确实知道它做完了，正确动作是整表覆盖
+     * （它手上有结论），而不是替别人签字。
      *
      * @param sessionId 会话标识，不可为空白且需可安全作为文件名
      * @param content   待办内容，不可为空白
@@ -155,20 +162,18 @@ final class TodoStore {
      */
     synchronized TodoActionResult complete(String sessionId, String content, String runId) {
         String key = requireSafeFileName(sessionId);
-        if (content == null || content.trim().isEmpty()) {
-            throw new JellyfishException("待办内容不能为空");
-        }
+        String text = requireContent(content);
         List<TodoItem> items = itemsOf(key);
         for (int i = 0; i < items.size(); i++) {
             TodoItem item = items.get(i);
-            if (!item.content().equals(content)) {
+            if (!item.content().equals(text)) {
                 continue;
             }
             if (item.owner() != null && !item.ownedBy(runId)) {
                 return TodoActionResult.failed(TodoActionResult.Code.TAKEN);
             }
             List<TodoItem> updated = new ArrayList<TodoItem>(items);
-            TodoItem done = item.with(TodoStatus.COMPLETED, item.owner());
+            TodoItem done = item.with(TodoStatus.COMPLETED, item.owner(), null);
             updated.set(i, done);
             persist(key, updated);
             return TodoActionResult.ok(done);
@@ -177,13 +182,136 @@ final class TodoStore {
     }
 
     /**
+     * 把一条待办放回去：清掉认领者并回到未开始，让谁都能接。
+     * <p>
+     * <b>与「卡住」的区别</b>：放回说的是「我没做它」（领错了、没时间、被叫去做别的），
+     * 卡住说的是「它做不了」。人看到这两种情况要做的事完全不同，因此是两个动作而不是一个。
+     * <p>
+     * <b>谁可以放回</b>：认领者自己，或没有 run 上下文的父回合（收拾残局）。
+     * 已完成的不接受放回：那是悄悄撤销一件已经做完的事。
+     *
+     * @param sessionId 会话标识，不可为空白且需可安全作为文件名
+     * @param content   待办内容，不可为空白
+     * @param runId     调用方的 run 标识，可为 {@code null}（父回合不在任何 run 上）
+     * @return 放回结果，保证非 {@code null}
+     * @throws JellyfishException 会话标识非法、内容为空白或落盘失败时抛出
+     */
+    synchronized TodoActionResult release(String sessionId, String content, String runId) {
+        String key = requireSafeFileName(sessionId);
+        String text = requireContent(content);
+        List<TodoItem> items = itemsOf(key);
+        for (int i = 0; i < items.size(); i++) {
+            TodoItem item = items.get(i);
+            if (!item.content().equals(text)) {
+                continue;
+            }
+            TodoActionResult.Code failure = movableFailure(item, runId);
+            if (failure != null) {
+                return TodoActionResult.failed(failure, item);
+            }
+            List<TodoItem> updated = new ArrayList<TodoItem>(items);
+            TodoItem released = item.with(TodoStatus.PENDING, null, null);
+            updated.set(i, released);
+            persist(key, updated);
+            return TodoActionResult.ok(released);
+        }
+        return TodoActionResult.failed(TodoActionResult.Code.NOT_FOUND);
+    }
+
+    /**
+     * 把一条待办记成卡住，并写下为什么。
+     * <p>
+     * 卡住的条目**不再被认领**（认领只找未开始的），因此它不会在后续批次里被反复领走、反复失败——
+     * 那正是抢单式协作最容易烧钱的地方。要让它重新可做，得有人先 {@link #release} 它（换个做法）
+     * 或者用整表重写改掉这条。
+     * <p>
+     * 认领者保留：谁卡的也是信息，而原因文本才是人做决定时真正要看的东西。
+     *
+     * @param sessionId 会话标识，不可为空白且需可安全作为文件名
+     * @param content   待办内容，不可为空白
+     * @param runId     调用方的 run 标识，可为 {@code null}（父回合不在任何 run 上）
+     * @param reason    卡住的原因，不可为空白
+     * @return 卡住结果，保证非 {@code null}
+     * @throws JellyfishException 会话标识非法、内容或原因为空白、或落盘失败时抛出
+     */
+    synchronized TodoActionResult block(String sessionId, String content, String runId, String reason) {
+        String key = requireSafeFileName(sessionId);
+        String text = requireContent(content);
+        if (reason == null || reason.trim().isEmpty()) {
+            throw new JellyfishException("卡住一条待办必须说明原因");
+        }
+        List<TodoItem> items = itemsOf(key);
+        for (int i = 0; i < items.size(); i++) {
+            TodoItem item = items.get(i);
+            if (!item.content().equals(text)) {
+                continue;
+            }
+            TodoActionResult.Code failure = movableFailure(item, runId);
+            if (failure != null) {
+                return TodoActionResult.failed(failure, item);
+            }
+            List<TodoItem> updated = new ArrayList<TodoItem>(items);
+            TodoItem blocked = item.with(TodoStatus.BLOCKED, item.owner(), reason.trim());
+            updated.set(i, blocked);
+            persist(key, updated);
+            return TodoActionResult.ok(blocked);
+        }
+        return TodoActionResult.failed(TodoActionResult.Code.NOT_FOUND);
+    }
+
+    /**
+     * 校验内容非空白。
+     *
+     * @param content 待办内容，可为 {@code null}
+     * @return 去空白后的内容，保证非空白
+     * @throws JellyfishException 内容为空白时抛出
+     */
+    private static String requireContent(String content) {
+        if (content == null || content.trim().isEmpty()) {
+            throw new JellyfishException("待办内容不能为空");
+        }
+        return content;
+    }
+
+    /**
+     * 判定调用方能不能清理这一条（放回与卡住共用）。
+     * <p>
+     * <b>「没有 run 上下文」= 协调者视角</b>（父回合的模型，或外壳发起的调用），它对这个协作空间里的
+     * 任何一条都有处置权——这正是「worker 死了留下一条进行中」的解法：人/父回合看见就能放回去换人做。
+     * 而**有** run 上下文时它只是一个 worker，只能动自己认领的那条（无主的也可以，与完成同口径）。
+     * <p>
+     * <b>完成不走这条判定</b>：见 {@link #complete}——「做完了」是一个关于工作结果的声明，
+     * 该由做过的人说，或由明确重写计划的人说（整表覆盖）。
+     *
+     * @param item  目标条目，不可为 {@code null}
+     * @param runId 调用方的 run 标识，可为 {@code null}
+     * @return 不能清理时返回失败码；可以清理返回 {@code null}
+     */
+    private static TodoActionResult.Code movableFailure(TodoItem item, String runId) {
+        if (item.status() == TodoStatus.COMPLETED) {
+            return TodoActionResult.Code.WRONG_STATE;
+        }
+        if (runId == null || runId.trim().isEmpty()) {
+            return null;
+        }
+        if (item.owner() != null && !item.ownedBy(runId)) {
+            return TodoActionResult.Code.TAKEN;
+        }
+        return null;
+    }
+
+    /**
      * 让新列表继承上一份里已有的认领。
      * <p>
-     * <b>为什么必须有这一步</b>：父回合的模型是用「整表覆盖」写计划的，它看不到认领者，写回来的条目
-     * 自然不带 owner。若不做继承，父回合随手一次重写就会把正在干活的子代理的认领抹掉，
-     * 于是另一个 run 可能领到同一件事，而第一个 run 的 {@code todo_done} 会突然「不是你的了」。
+     * <b>为什么必须有这一步</b>：父回合的模型是用「整表覆盖」写计划的，而它看不到认领者、
+     * 也可能懒得抄卡住的原因，写回来的条目自然不带这些。若不做继承，父回合随手一次重写就会把
+     * 正在干活的子代理的认领抹掉（于是另一个 run 可能领到同一件事，而第一个 run 的
+     * {@code todo_done} 会突然「不是你的了」），或者让一条卡住的活丢掉原因、看起来像没人做。
      * <p>
-     * <b>认领是黏的</b>：内容没变、且上一份里已被认领的条目，其状态不会被一次重写改回「未开始」——
+     * <b>黏的是「模型看不见的那部分状态」</b>：内容没变时，认领者按内容继承；卡住的原因同理
+     * （只在新条目自己没写原因、且状态仍是卡住时继承）。
+     * <p>
+     * <b>认领还是黏的</b>：上一份里已被认领的条目，其状态不会被一次重写改回「未开始」——
      * 那等于把一件正在做的事重新放回池子里。模型照样可以把它标成完成（那是明确的意图）。
      *
      * @param previous 上一份列表，不可为 {@code null}
@@ -196,28 +324,35 @@ final class TodoStore {
         }
         List<TodoItem> merged = new ArrayList<TodoItem>(incoming.size());
         for (TodoItem item : incoming) {
-            TodoItem owner = findUnclaimedOwner(previous, item.content());
-            if (owner == null) {
+            TodoItem sticky = findSticky(previous, item.content());
+            if (sticky == null) {
                 merged.add(item);
                 continue;
             }
-            boolean keepInProgress = owner.status() == TodoStatus.IN_PROGRESS
+            boolean keepInProgress = sticky.status() == TodoStatus.IN_PROGRESS
                     && item.status() == TodoStatus.PENDING;
-            merged.add(item.with(keepInProgress ? TodoStatus.IN_PROGRESS : item.status(), owner.owner()));
+            String reason = item.reason() == null && item.status() == TodoStatus.BLOCKED
+                    ? sticky.reason() : item.reason();
+            merged.add(item.with(keepInProgress ? TodoStatus.IN_PROGRESS : item.status(),
+                    sticky.owner(), reason));
         }
         return merged;
     }
 
     /**
-     * 在上一份列表里找同内容且带认领者的那一条。
+     * 在上一份列表里找同内容、且带着「模型看不见的状态」的那一条。
+     * <p>
+     * 判据是「有认领者或有卡住原因」——两者都是别人写下的、而整表覆盖的模型看不到的东西。
+     * 只判认领者是不够的：父回合自己卡住一条（那时没有认领者）之后，原因照样会被下一次重写丢掉。
      *
      * @param previous 上一份列表，不可为 {@code null}
      * @param content  待办内容，不可为 {@code null}
-     * @return 带认领者的那一条；没有时返回 {@code null}
+     * @return 那一条；没有时返回 {@code null}
      */
-    private static TodoItem findUnclaimedOwner(List<TodoItem> previous, String content) {
+    private static TodoItem findSticky(List<TodoItem> previous, String content) {
         for (TodoItem item : previous) {
-            if (item.owner() != null && item.content().equals(content)) {
+            boolean sticky = item.owner() != null || item.reason() != null;
+            if (sticky && item.content().equals(content)) {
                 return item;
             }
         }

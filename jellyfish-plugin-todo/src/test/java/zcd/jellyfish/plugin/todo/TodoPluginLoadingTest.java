@@ -99,7 +99,7 @@ class TodoPluginLoadingTest {
     }
 
     @Test
-    @DisplayName("启动后 /todo 命令、三个工具、提示词贡献、状态栏贡献与面板贡献都应可路由")
+    @DisplayName("启动后 /todo 命令、五个工具、提示词贡献、状态栏贡献与面板贡献都应可路由")
     void bootstrap_should_registerAllCapabilities() throws IOException {
         installPlugin();
 
@@ -124,6 +124,8 @@ class TodoPluginLoadingTest {
         assertTrue(tools.contains(TodoWriteTool.NAME), tools.toString());
         assertTrue(tools.contains(TodoClaimTool.NAME), tools.toString());
         assertTrue(tools.contains(TodoDoneTool.NAME), tools.toString());
+        assertTrue(tools.contains(TodoReleaseTool.NAME), tools.toString());
+        assertTrue(tools.contains(TodoBlockTool.NAME), tools.toString());
 
         assertEquals(1, extensions.handlers(TurnContextRequest.class, null).size());
         assertEquals(1, extensions.handlers(PanelContributionRequest.class, null).size());
@@ -142,6 +144,8 @@ class TodoPluginLoadingTest {
         assertTrue(extensions.handlers(ToolCallRequest.class, TodoWriteTool.NAME).isEmpty());
         assertTrue(extensions.handlers(ToolCallRequest.class, TodoClaimTool.NAME).isEmpty());
         assertTrue(extensions.handlers(ToolCallRequest.class, TodoDoneTool.NAME).isEmpty());
+        assertTrue(extensions.handlers(ToolCallRequest.class, TodoReleaseTool.NAME).isEmpty());
+        assertTrue(extensions.handlers(ToolCallRequest.class, TodoBlockTool.NAME).isEmpty());
         assertTrue(extensions.handlers(CommandRequest.class, "todo").isEmpty());
         assertTrue(extensions.handlers(TurnContextRequest.class, null).isEmpty());
         assertTrue(extensions.handlers(StatusLineContributionRequest.class, null).isEmpty());
