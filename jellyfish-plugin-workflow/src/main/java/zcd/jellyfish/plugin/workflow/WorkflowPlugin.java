@@ -2,6 +2,8 @@ package zcd.jellyfish.plugin.workflow;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import zcd.jellyfish.api.event.notification.UiInvalidatedEvent;
+import zcd.jellyfish.api.extension.PanelContributionRequest;
 import zcd.jellyfish.api.extension.PromptContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.plugin.JellyfishPlugin;
@@ -38,11 +40,36 @@ public final class WorkflowPlugin implements JellyfishPlugin {
     @Override
     public void start(PluginContext context) {
         SubAgentPort port = context.delegations();
-        // 先装配引擎再注册工具：处理器一旦注册就可能被调用，依赖必须已经就绪
-        WorkflowEngine engine = new WorkflowEngine(port);
+        // 先装配台账与引擎再注册：处理器一旦注册就可能被调用，依赖必须已经就绪
+        WorkflowTracker tracker = new WorkflowTracker(invalidator(context));
+        WorkflowEngine engine = new WorkflowEngine(port, tracker);
         context.handle(ToolCallRequest.class, WorkflowTool.NAME, WorkflowTool.descriptor(),
                 new WorkflowTool(engine));
         context.contribute(PromptContributionRequest.class, new WorkflowGuidance());
+        context.contribute(PanelContributionRequest.class, new WorkflowPanel(tracker));
         LOG.info("编排插件已启动: tool={}", WorkflowTool.NAME);
+    }
+
+    /**
+     * 构造「编排状态变了，请外壳重新拉一次面板」的通知。
+     * <p>
+     * <b>为什么必须发</b>：外壳只在缓存失效时收集面板，而「某一步跑完了」发生在回合内部的工具调用里，
+     * 外壳自己看不到。没有这条通知，面板会在编排结束后才第一次出现——那时它已经空了。
+     * <p>
+     * <b>为什么失败只记日志</b>：插件被停止时上下文已失效，{@code emit} 会当场抛错。
+     * 那时面板停在最后一帧是正确的，而<b>编排本身不该因为一次界面刷新失败而失败</b>——
+     * 这是展示与业务的分界，不是同一条成败线。
+     *
+     * @param context 插件上下文
+     * @return 回调，保证非 {@code null}
+     */
+    private static Runnable invalidator(final PluginContext context) {
+        return () -> {
+            try {
+                context.emit(new UiInvalidatedEvent());
+            } catch (RuntimeException e) {
+                LOG.debug("编排状态失效通知未发出（插件已停止？）：{}", e.getMessage());
+            }
+        };
     }
 }

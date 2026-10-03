@@ -50,7 +50,7 @@ class WorkflowToolTest {
     @Test
     @DisplayName("没有会话上下文时拒绝：子代理结果要归到某个会话上")
     void handle_shouldRejectWithoutSession() {
-        WorkflowTool tool = new WorkflowTool(new WorkflowEngine(SubAgentPort.unavailable()));
+        WorkflowTool tool = new WorkflowTool(new WorkflowEngine(SubAgentPort.unavailable(), tracker()));
 
         JellyfishException error = assertThrows(JellyfishException.class,
                 () -> tool.handle(new ToolCallRequest(WorkflowTool.NAME, arguments())));
@@ -61,7 +61,7 @@ class WorkflowToolTest {
     @Test
     @DisplayName("spec 非法时把校验消息原样抛出（模型据此改参数）")
     void handle_shouldSurfaceSpecValidationErrors() {
-        WorkflowTool tool = new WorkflowTool(new WorkflowEngine(SubAgentPort.unavailable()));
+        WorkflowTool tool = new WorkflowTool(new WorkflowEngine(SubAgentPort.unavailable(), tracker()));
 
         JellyfishException error = assertThrows(JellyfishException.class,
                 () -> tool.handle(request(new LinkedHashMap<String, Object>())));
@@ -73,7 +73,7 @@ class WorkflowToolTest {
     @DisplayName("正常跑完：首行是结论、随后是聚合正文、元数据里没有终态标记")
     void handle_shouldRenderSuccess() {
         WorkflowTool tool = new WorkflowTool(new WorkflowEngine(
-                fixedPort(DelegationResult.completed("run-1", "调研结论", 3, 120L))));
+                fixedPort(DelegationResult.completed("run-1", "调研结论", 3, 120L)), tracker()));
 
         ToolCallResult result = tool.handle(request(arguments()));
 
@@ -91,7 +91,8 @@ class WorkflowToolTest {
     @DisplayName("有步骤没跑成：首行点明是哪一个，末尾给出原因，并打上终态标记")
     void handle_shouldRenderFailure() {
         WorkflowTool tool = new WorkflowTool(new WorkflowEngine(
-                fixedPort(DelegationResult.rejected("子代理委派已被禁用（jellyfish.json 的 subAgent.enabled）"))));
+                fixedPort(DelegationResult.rejected("子代理委派已被禁用（jellyfish.json 的 subAgent.enabled）")),
+                tracker()));
 
         ToolCallResult result = tool.handle(request(arguments()));
 
@@ -101,6 +102,17 @@ class WorkflowToolTest {
         assertTrue(text.contains("已被禁用"), text);
         assertEquals("WORKFLOW_INCOMPLETE", result.getMetadata().get(ToolMetadata.KEY_TERMINAL));
         assertFalse(WorkflowSpecParser.isSuccess(DelegationResult.rejected("x")));
+    }
+
+    /**
+     * 构造一个不带回调的台账：本测试只关心渲染结果，不观察面板状态。
+     *
+     * @return 台账
+     */
+    private static WorkflowTracker tracker() {
+        return new WorkflowTracker(() -> {
+            // 本测试不观察状态变化通知
+        });
     }
 
     /**

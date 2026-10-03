@@ -48,13 +48,18 @@ final class WorkflowEngine {
     /** 子代理委派端口，来自内核。 */
     private final SubAgentPort port;
 
+    /** 编排台账：把每一步的状态写出去，供面板读取。 */
+    private final WorkflowTracker tracker;
+
     /**
      * 构造引擎。
      *
-     * @param port 子代理委派端口，不可为 {@code null}
+     * @param port    子代理委派端口，不可为 {@code null}
+     * @param tracker 编排台账，不可为 {@code null}
      */
-    WorkflowEngine(SubAgentPort port) {
+    WorkflowEngine(SubAgentPort port, WorkflowTracker tracker) {
         this.port = port;
+        this.tracker = tracker;
     }
 
     /**
@@ -68,6 +73,28 @@ final class WorkflowEngine {
      * @throws JellyfishException 子代理类型未知等准入问题由内核以结果形式回报，不会抛到这里
      */
     WorkflowRun run(WorkflowSpec spec, String parentSessionId, CancellationToken token, ToolOutputSink sink) {
+        // 先登记再干活：面板从一开始就能显示「还剩哪些步骤没跑」，否则它会像在倒退
+        String workflowId = tracker.started(parentSessionId, spec);
+        try {
+            return execute(spec, parentSessionId, token, sink, workflowId);
+        } finally {
+            // 跑完即移除：面板展示的是「此刻在跑什么」，历史另有归档
+            tracker.finished(workflowId);
+        }
+    }
+
+    /**
+     * 执行编排的主体。
+     *
+     * @param spec            校验过的 spec
+     * @param parentSessionId 父会话标识
+     * @param token           取消令牌
+     * @param sink            工具输出旁路，可为 {@code null}
+     * @param workflowId      台账标识
+     * @return 全部结局，保证非 {@code null}
+     */
+    private WorkflowRun execute(WorkflowSpec spec, String parentSessionId, CancellationToken token,
+                                ToolOutputSink sink, String workflowId) {
         Map<String, WorkflowStep> byId = new LinkedHashMap<String, WorkflowStep>();
         for (WorkflowStep step : spec.getSteps()) {
             byId.put(step.getId(), step);
@@ -88,6 +115,7 @@ final class WorkflowEngine {
                 if (token.isCancelled()) {
                     StepOutcome stopped = StepOutcome.cancelled(step);
                     decided.put(step.getId(), stopped);
+                    tracker.stepFinished(workflowId, step.getId(), StepState.SKIPPED);
                     report(sink, stopped);
                     continue;
                 }
@@ -95,16 +123,20 @@ final class WorkflowEngine {
                 if (blocked != null) {
                     StepOutcome skipped = StepOutcome.notRun(step, blocked);
                     decided.put(step.getId(), skipped);
+                    tracker.stepFinished(workflowId, step.getId(), StepState.SKIPPED);
                     report(sink, skipped);
                     continue;
                 }
                 progress(sink, "  · " + step.getId() + "（" + step.getAgent() + "）开始\n");
+                tracker.stepStarted(workflowId, step.getId());
                 running.put(step.getId(), port.spawn(new DelegationRequest(parentSessionId, step.getAgent(),
                         step.getPrompt(), token)));
             }
             for (Map.Entry<String, DelegationHandle> entry : running.entrySet()) {
                 StepOutcome outcome = StepOutcome.run(byId.get(entry.getKey()), entry.getValue().await());
                 decided.put(entry.getKey(), outcome);
+                tracker.stepFinished(workflowId, entry.getKey(),
+                        outcome.succeeded() ? StepState.DONE : StepState.FAILED);
                 report(sink, outcome);
             }
         }
@@ -117,6 +149,7 @@ final class WorkflowEngine {
         String aggregate = collect(ordered);
         DelegationResult synthesis = null;
         if (spec.getAggregateMode() == AggregateMode.SUMMARIZE) {
+            tracker.summarising(workflowId);
             synthesis = summarize(spec, parentSessionId, token, sink, aggregate);
             if (synthesis != null && synthesis.hasText()) {
                 aggregate = synthesis.getText().trim();

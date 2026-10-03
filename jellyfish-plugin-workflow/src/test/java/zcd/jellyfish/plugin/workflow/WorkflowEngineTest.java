@@ -48,7 +48,7 @@ class WorkflowEngineTest {
                 step("c", "scout", "c", null, null)));
 
         // When
-        WorkflowRun run = new WorkflowEngine(port).run(spec, "s-1", CancellationToken.NONE, null);
+        WorkflowRun run = new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
 
         // Then：三个派生都在任何等待之前
         assertEquals(Arrays.asList("spawn:a", "spawn:b", "spawn:c", "await:a", "await:b", "await:c"),
@@ -65,7 +65,7 @@ class WorkflowEngineTest {
                 step("a", "scout", "a", null, null),
                 step("c", "scout", "c", Arrays.asList("a"), null)));
 
-        new WorkflowEngine(port).run(spec, "s-1", CancellationToken.NONE, null);
+        new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
 
         assertEquals(Arrays.asList("spawn:a", "await:a", "spawn:c", "await:c"), port.getTrace());
     }
@@ -79,7 +79,7 @@ class WorkflowEngineTest {
                 step("a", "scout", "a", null, null),
                 step("b", "planner", "b", Arrays.asList("a"), "on_success")));
 
-        WorkflowRun run = new WorkflowEngine(port).run(spec, "s-1", CancellationToken.NONE, null);
+        WorkflowRun run = new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
 
         assertFalse(port.getTrace().contains("spawn:b"), port.getTrace().toString());
         StepOutcome skipped = run.getSteps().get(1);
@@ -97,7 +97,7 @@ class WorkflowEngineTest {
                 step("a", "scout", "a", null, null),
                 step("fix", "planner", "fix", Arrays.asList("a"), "on_failure")));
 
-        WorkflowRun run = new WorkflowEngine(port).run(spec, "s-1", CancellationToken.NONE, null);
+        WorkflowRun run = new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
 
         assertTrue(port.getTrace().contains("spawn:fix"), port.getTrace().toString());
         assertTrue(run.getSteps().get(1).succeeded());
@@ -111,7 +111,7 @@ class WorkflowEngineTest {
                 step("a", "scout", "a", null, null),
                 step("fix", "planner", "fix", Arrays.asList("a"), "on_failure")));
 
-        WorkflowRun run = new WorkflowEngine(port).run(spec, "s-1", CancellationToken.NONE, null);
+        WorkflowRun run = new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
 
         assertFalse(port.getTrace().contains("spawn:fix"), port.getTrace().toString());
         assertEquals("前置步骤没有失败", run.getSteps().get(1).getNotRunReason());
@@ -126,7 +126,7 @@ class WorkflowEngineTest {
                 step("a", "scout", "a", null, null),
                 step("b", "scout", "b", null, null)));
 
-        WorkflowRun run = new WorkflowEngine(port).run(spec, "s-1", CancellationToken.NONE, null);
+        WorkflowRun run = new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
 
         assertTrue(port.getTrace().contains("spawn:b"), port.getTrace().toString());
         assertTrue(run.getSteps().get(1).succeeded());
@@ -143,7 +143,7 @@ class WorkflowEngineTest {
                 step("b", "scout", "b", null, null),
                 step("a", "scout", "a", null, null)));
 
-        WorkflowRun run = new WorkflowEngine(port).run(spec, "s-1", CancellationToken.NONE, null);
+        WorkflowRun run = new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
 
         assertEquals("## b（scout）\n第二段\n\n## a（scout）\n第一段", run.getAggregate());
     }
@@ -157,7 +157,7 @@ class WorkflowEngineTest {
         WorkflowSpec spec = new WorkflowSpec("t", steps(step("a", "scout", "a", null, null)),
                 AggregateMode.SUMMARIZE, "planner");
 
-        WorkflowRun run = new WorkflowEngine(port).run(spec, "s-1", CancellationToken.NONE, null);
+        WorkflowRun run = new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
 
         // 汇总是一次真实的委派：材料里必须带上前面的正文，否则它只能凭空编
         DelegationRequest synthesis = port.getRequests().get(port.getRequests().size() - 1);
@@ -178,7 +178,7 @@ class WorkflowEngineTest {
         WorkflowSpec spec = new WorkflowSpec("t", steps(step("a", "scout", "a", null, null)),
                 AggregateMode.SUMMARIZE, "planner");
 
-        WorkflowRun run = new WorkflowEngine(port).run(spec, "s-1", CancellationToken.NONE, null);
+        WorkflowRun run = new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
 
         assertNull(run.getSynthesis());
         assertEquals("", run.getAggregate());
@@ -203,7 +203,7 @@ class WorkflowEngineTest {
             }
         };
 
-        WorkflowRun run = new WorkflowEngine(port).run(spec, "s-1", cancelled, null);
+        WorkflowRun run = new WorkflowEngine(port, tracker()).run(spec, "s-1", cancelled, null);
 
         assertTrue(port.getTrace().isEmpty(), port.getTrace().toString());
         assertEquals(StepOutcome.CANCELLED_REASON, run.getSteps().get(0).getNotRunReason());
@@ -227,7 +227,7 @@ class WorkflowEngineTest {
             }
         };
 
-        new WorkflowEngine(port).run(spec(steps(step("a", "scout", "a", null, null))), "s-1", token, null);
+        new WorkflowEngine(port, tracker()).run(spec(steps(step("a", "scout", "a", null, null))), "s-1", token, null);
 
         assertSame(token, port.getRequests().get(0).getCancellationToken());
     }
@@ -239,7 +239,7 @@ class WorkflowEngineTest {
         port.answer("a", DelegationResult.rejected("子代理委派已被禁用（jellyfish.json 的 subAgent.enabled）"));
         WorkflowSpec spec = spec(steps(step("a", "scout", "a", null, null)));
 
-        WorkflowRun run = new WorkflowEngine(port).run(spec, "s-1", CancellationToken.NONE, null);
+        WorkflowRun run = new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
 
         assertTrue(run.hasFailure());
         assertTrue(run.firstFailure().getResult().getError().contains("已被禁用"));
@@ -251,12 +251,23 @@ class WorkflowEngineTest {
         RecordingPort port = new RecordingPort();
         RecordingSink sink = new RecordingSink();
 
-        new WorkflowEngine(port).run(spec(steps(step("a", "scout", "a", null, null))), "s-1",
+        new WorkflowEngine(port, tracker()).run(spec(steps(step("a", "scout", "a", null, null))), "s-1",
                 CancellationToken.NONE, sink);
 
         String text = sink.text();
         assertTrue(text.contains("a（scout）开始"), text);
         assertTrue(text.contains("a 完成"), text);
+    }
+
+    /**
+     * 构造一个不带回调的台账：本测试只关心调度顺序，不观察面板状态。
+     *
+     * @return 台账
+     */
+    private static WorkflowTracker tracker() {
+        return new WorkflowTracker(() -> {
+            // 本测试不观察状态变化通知
+        });
     }
 
     /**
