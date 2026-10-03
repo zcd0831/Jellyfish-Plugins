@@ -5,7 +5,6 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.PermissionCheckRequest;
-import zcd.jellyfish.api.extension.PermissionMode;
 import zcd.jellyfish.api.extension.PermissionVerdict;
 import zcd.jellyfish.script.ScriptJson;
 
@@ -32,17 +31,16 @@ class PermissionCodecTest {
     private final PermissionCodec codec = new PermissionCodec();
 
     @Test
-    @DisplayName("请求应带 agent、工具名、参数与权限模式")
-    void encodeRequest_should_carryToolArgumentsAndMode() {
+    @DisplayName("请求应带 agent、工具名、参数与会话")
+    void encodeRequest_should_carryToolArgumentsAndSession() {
         PermissionCheckRequest request = new PermissionCheckRequest("coder", "write_file",
-                Collections.<String, Object>singletonMap("path", "/etc/hosts"), PermissionMode.PLAN, "s-1");
+                Collections.<String, Object>singletonMap("path", "/etc/hosts"), "s-1");
 
         JsonNode payload = codec.encodeRequest(request);
 
         assertEquals("coder", payload.get("agentId").asText());
         assertEquals("write_file", payload.get("toolName").asText());
         assertEquals("/etc/hosts", payload.get("arguments").get("path").asText());
-        assertEquals("PLAN", payload.get("mode").asText());
         assertEquals("s-1", payload.get("sessionId").asText());
     }
 

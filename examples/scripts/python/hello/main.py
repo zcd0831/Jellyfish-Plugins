@@ -54,9 +54,9 @@ def _note_count():
 def hello_greet(args, ctx):
     """按名字打招呼。
 
-    这里**没有** ``read_only`` 参数：PLAN 模式下哪些工具可用完全由用户在
-    ``plugins.configurations.jellyfish-plugin-python.readOnlyTools`` 里决定，
-    脚本无法自称只读（那会让白名单只增不减，用户没法把工具拿出来）。
+    这里**没有** ``read_only`` 参数：哪些工具在 plan 模式下可用完全由用户在
+    ``plugins.configurations.jellyfish-plan.readOnlyTools`` 里决定，
+    脚本无法自称只读（那会让名单只增不减，用户没法把工具拿出来）。
     """
     name = args.get("name")
     if not name:
@@ -77,7 +77,7 @@ def hello_greet(args, ctx):
 def hello_remember(args, ctx):
     """把一句话追加到便签里。
 
-    这是**可写**工具：PLAN 模式下它默认被拒绝，除非用户在 ``readOnlyTools`` 里写了它。
+    这是**可写**工具：开启 plan 时它默认被拒绝，除非用户在 ``readOnlyTools`` 里写了它。
     示例故意让两个工具一个有副作用、一个没有，好让 ``/plan`` 下的差别看得见。
     """
     note = args.get("note")

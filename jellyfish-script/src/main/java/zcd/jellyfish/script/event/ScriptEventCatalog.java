@@ -102,7 +102,6 @@ public final class ScriptEventCatalog {
             PermissionDecidedEvent typed = (PermissionDecidedEvent) event;
             return fields("agentId", typed.getAgentId(),
                     "toolName", typed.getToolName(),
-                    "mode", name(typed.getMode()),
                     "outcome", name(typed.getOutcome()),
                     "reason", typed.getReason(),
                     "source", typed.getSource());

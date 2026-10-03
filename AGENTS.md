@@ -81,12 +81,14 @@ mvn -q -Pscript-it test
 | `jellyfish-plugin-skills` | skills：按目录发现 `SKILL.md`，元信息进 system prompt、正文由模型按需用 `skill` 工具加载、附带文件交给已有工具读取。零第三方依赖（frontmatter 手写极简解析，不引 YAML） | api（provided） |
 | `jellyfish-plugin-mcp` | MCP 客户端：stdio 连外部 server，把它的工具以 `mcp__<server>__<tool>` 注册进内核，支持 `tools/list_changed`、`roots`，**不声明也不支持 sampling / elicitation**。自带 Jackson（**shade 进插件包**） | api（provided）、jackson-databind（shade） |
 | `jellyfish-plugin-workflow` | 编排：`workflow` 工具接受声明式 spec（步骤 / 依赖 / 静态条件 / 聚合），按依赖层序并发派生子代理；提示词贡献（例句与选型）+ 编排面板贡献（每步状态）。子代理来自 `PluginContext.delegations()`（内核的委派端口，与 `task` 同一条代码路径）；**零第三方依赖**——spec 从工具参数拿到时已经是 Map / List / String | api（provided） |
+| `jellyfish-plugin-plan` | plan 模式：类型级权限贡献（白名单外的工具一律拒绝）+ `/plan [on|off]` 命令 + 状态栏片段 + 回合上下文提示。开关存**会话扩展条目**（随会话落盘与恢复），白名单来自 `plugins.configurations.jellyfish-plan.readOnlyTools`。**零第三方依赖** | api（provided） |
 | `jellyfish-plugin-node` | Node 桥接插件：与 python 插件同构（同一个 `ScriptBridgePlugin` 骨架），差异只有 `NodeLanguage` 与网关资源 `script/gateway.js`（Node 事件循环）、`script/worker.js`、`script/jellyfish_sdk.js`、`script/script_wire.js`、`script/dump_manifest.js`。**零第三方依赖**（只用 Node 内置模块，因此不需要 npm install） | api（provided）、jellyfish-script（shade） |
 | `jellyfish-plugin-python` | Python 桥接插件：读静态清单完成注册、自带 `/<lang>` 状态命令（含熔断与事件计数）、把每个脚本调用都经熔断装饰器转发、把内核事件推给脚本（`ScriptEventBridge`），把 Python 脚本插件以标准 PF4J 插件的形态接入内核（控制面单进程 + 每脚本一 worker 进程）。网关资源 `script/gateway.py`（单线程 select 事件循环）、`script/worker.py`、`script/jellyfish_sdk.py`（脚本作者唯一的 API）、`script/script_wire.py`（分帧）、`script/dump_manifest.py`（清单生成器，`gateway.py --dump-manifest` 转发同一入口）。示例插件见仓库顶层 `examples/scripts/python/`（`hello` 教学最小集、`jira` 真实形态），**端到端用例直接加载它们**，因此示例不会腐烂 | api（provided）、jellyfish-script（shade） |
 
 源码结构同构：`resources/plugin.properties` + `PluginConfig` + `JellyfishPlugin` 实现 + 各扩展点 handler。
 
-- **官方插件**：tools 五个文件工具（三个只读）；session-file 一会话一 JSON + git（落盘失败上抛、git/坏文件只告警）；todo `todo_write` + `/todo` + 回合上下文/状态栏/面板贡献 + 删除清理（待办块走 `TurnContextRequest` 随本轮用户消息送达，**不进 system prompt**——那是缓存前缀的第 0 个 token，待办每变一次就会作废整个请求）；project 按 `maxInlineBytes`（默认 32 KiB，0=不内联）内联 `AGENTS.md` 原文或只给路径（一会话只读一次）；compact 压缩策略；skills 见下；mcp 见下。
+- **官方插件**：tools 五个文件工具（三个只读）；session-file 一会话一 JSON + git（落盘失败上抛、git/坏文件只告警）；todo `todo_write` + `/todo` + 回合上下文/状态栏/面板贡献 + 删除清理（待办块走 `TurnContextRequest` 随本轮用户消息送达，**不进 system prompt**——那是缓存前缀的第 0 个 token，待办每变一次就会作废整个请求）；plan 见下；project 按 `maxInlineBytes`（默认 32 KiB，0=不内联）内联 `AGENTS.md` 原文或只给路径（一会话只读一次）；compact 压缩策略；skills 见下；mcp 见下。
+- **plan 插件（`jellyfish-plan`）**：模式类授权是**插件**的事——内核没有权限模式字段、没有枚举、没有 `/mode`、没有 `--mode`。四条不可动的边界：① **只拦执行、不换工具清单**（清单进的是缓存前缀里很靠前的位置，换集合会让那一轮之后的前缀全部作废）；② **开关按会话存扩展条目**（`putExtensionEntry`，随会话落盘与恢复，不自建文件），因此**子代理不继承**；③ **白名单为空 = 一个都不许**，拒绝文案必须点明 `plugins.configurations.jellyfish-plan.readOnlyTools` 并配一条「每种配置只喊一次」的 `ConfigWarningEvent`；④ 提示词注入走 `TurnContextRequest`（模式会在会话中途切换，放进 system prompt 等于每次切换都作废整个请求）。
 - **project 插件必须从仓库根目录启动**：查找基准是进程工作目录（与内核 `ToolPaths` 同一处），不做向上查找。
 
 ## 新增一门语言（桥接插件）
@@ -131,7 +133,7 @@ mvn -q -Pscript-it test
 
 - **三层渐进披露各有落点，且第三条不归它管**：名称+描述走 `PromptContributionRequest` 常驻 system prompt（第一层）；正文走 `skill` 工具按需取回（第二层）；正文里提到的附带文件交给已有的 `read_file` / `shell`（第三层）——本插件**不自己执行任何东西**，重复一份只会多出第二条路径解析与权限口径。
 - **清单不写进工具参数的 enum**：`ToolDescriptor` 在注册那一刻就固定，而 skill 是目录里现扫出来的。走提示词贡献则是每轮现算，新增一个 skill 下一轮模型就看得见——与子代理把「可委派类型」放贡献里是同一条理由。
-- **`skill` 工具是只读的**：读一份说明不该需要写权限，因此 PLAN 模式下它同样可用。
+- **`skill` 工具是只读的**：读一份说明不该需要写权限，因此值得把它写进 plan 模式的白名单。
 - **目录默认 `~/.jellyfish/skills` 与 `./.jellyfish/skills`**：与内核的约定目录（全局 `~/.jellyfish/`、项目 `./.jellyfish/`）一致；根目录是有序的，同名 skill 先到者胜（项目级要覆盖用户级就写在前面）。
 - **缺 `description` 的 skill 整条跳过并记问题**：描述是模型选中它的唯一依据，没有它这个 skill 永远不会被加载，让它在清单里占一行废信息反而更难查。
 - **目录缓存按「文件系统签名」失效，不是定时重扫**：签名由各根目录与已发现 skill 的目录 / `SKILL.md` 的修改时间拼成，只做 `stat`。时间判据要么白扫、要么让「改了却不生效」重新出现，而 `/reload` 只重启配置段变了的插件，救不了「改了 `SKILL.md`」。
@@ -142,7 +144,7 @@ mvn -q -Pscript-it test
 - **连接发生在启动之后，且不在启动线程上做完**：工具清单只有连上才知道，而连上要起进程、要握手。全部同步做完，等于让「某个 server 装错了」变成「内核起不来」——与脚本桥接「`start()` 期零进程」同一条纪律。折中是 `startupWaitSeconds`（缺省 5 秒）：等一等让第一轮就有工具，超时就转异步（内核 `ToolCatalog` 每轮现取注册表，工具会自己出现）。
 - **它是注册窗口演进的第一个真实需求**：工具在运行期注册与注销，因此它依赖「注册窗口是插件存活期」那条契约；若改回「只能在 `start()` 内注册」，这个插件就无法以现在的形态存在。
 - **工具名必须带 `mcp__<server>__` 前缀并清洗字符**：名字由 server 决定，server 之间与 server 和内置工具之间都可能重名（`read_file` 就是典型）；而厂商对 function name 有共同约束，带点号的名字会让**整次请求**被拒（不是「这个工具不可用」，是「这一轮对话发不出去」）。超长时保留可读前缀并追加哈希，否则截断会把两个工具变成同一个名字。
-- **只读只认用户声明、缺省可写**：`readOnlyTools` 是用户在 server 配置里写的工具名清单；**server 自填的 `annotations.readOnlyHint` 不再采纳**——那是第三方进程对自己的评价，不该由它决定我们放宽什么。写类工具缺省经 `PermissionCheckRequest` 判为 `ASK`（`askWriteTools` 可关），与 shell 分类器一样是**便利机制而不是安全边界**。注意这里的 `readOnlyTools` **只影响本插件的审批策略**，与内核 PLAN 白名单无关（后者是 `plugins.configurations.<pluginId>.readOnlyTools`，唯一来源是用户配置）。
+- **只读只认用户声明、缺省可写**：`readOnlyTools` 是用户在 server 配置里写的工具名清单；**server 自填的 `annotations.readOnlyHint` 不再采纳**——那是第三方进程对自己的评价，不该由它决定我们放宽什么。写类工具缺省经 `PermissionCheckRequest` 判为 `ASK`（`askWriteTools` 可关），与 shell 分类器一样是**便利机制而不是安全边界**。注意这里的 `readOnlyTools` **只影响本插件的审批策略**，与 plan 插件的名单无关（后者是 `plugins.configurations.jellyfish-plan.readOnlyTools`，唯一来源是用户配置）。
 - **不声明也不支持 sampling / elicitation**：`initialize` 里只声明 `roots`（答得上来），sampling / elicitation 真被请求时回一条明确的 `-32601`。声明了却办不到比不声明更糟：server 会按「客户端支持」去规划它的行为；而不回则会让对面等到它自己的超时。
 - **`tools/list` 必须处理分页**：工具多的 server 会分页返回，只取第一页的表现是「工具少了一大半，而日志里什么异常都没有」。
 - **`tools/list_changed` 的重扫必须转到另一条线程**：通知是在**读线程**上收到的，而重扫要发一个请求并等应答——应答只能由同一条读线程投递。直接在读线程上做就是一条线程等它自己（实测会挂到超时）。

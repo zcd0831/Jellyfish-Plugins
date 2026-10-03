@@ -181,8 +181,8 @@ class ScriptContext {
  * 接受的参数一致——不一致的后果是模型按错误的签名调用，而错误只在运行期以
  * 「参数缺失」的形式出现。
  *
- * 这里**没有** `readOnly`：PLAN 模式下哪些工具可用完全由用户决定
- * （`jellyfish.json` 里 `plugins.configurations.<插件>.readOnlyTools` 列出的工具名），
+ * 这里**没有** `readOnly`：哪些工具在某个模式下可用完全由用户决定
+ * （例如 plan 插件的 `jellyfish.json` 段 `plugins.configurations.jellyfish-plan.readOnlyTools`），
  * 工具无法自称只读。传了它会被**当场拒绝**——静默忽略会让作者以为自己声明成功了。
  *
  * JS 里没有装饰器，因此用法是「声明 + 就地注册」，返回值就是那个函数：
@@ -201,7 +201,7 @@ function tool(spec, handler) {
         throw new ScriptError(`工具名重复声明: ${spec.name}`);
     }
     if (spec.readOnly !== undefined) {
-        throw new ScriptError('readOnly 已不再支持：PLAN 模式下哪些工具可用由用户在 readOnlyTools 里声明');
+        throw new ScriptError('readOnly 已不再支持：哪些工具可用由用户在各模式插件的 readOnlyTools 里声明');
     }
     tools.push({
         name: spec.name,

@@ -152,7 +152,7 @@ class ScriptManifestTest {
     @Test
     @DisplayName("readOnly 已是未知键：写它会当场报错，而不是被静默忽略")
     void parse_should_rejectReadOnly_when_toolDeclaresIt() {
-        // 只读白名单的唯一来源是用户配置，工具自己声明没有作用；静默忽略会让脚本作者
+        // 白名单的唯一来源是用户配置，工具自己声明没有作用；静默忽略会让脚本作者
         // 以为「我声明了只读」，实际却什么都没发生——这正是最难排查的一类失败
         JellyfishException failure = assertThrows(JellyfishException.class,
                 () -> parse("{\"entry\":\"main.py\",\"tools\":[{\"name\":\"t\",\"readOnly\":true}]}"));

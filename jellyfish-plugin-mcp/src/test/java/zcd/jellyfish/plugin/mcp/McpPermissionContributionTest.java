@@ -3,7 +3,6 @@ package zcd.jellyfish.plugin.mcp;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import zcd.jellyfish.api.extension.PermissionCheckRequest;
-import zcd.jellyfish.api.extension.PermissionMode;
 import zcd.jellyfish.api.extension.PermissionVerdict;
 
 import java.util.Collections;
@@ -102,6 +101,6 @@ class McpPermissionContributionTest {
      */
     private static PermissionCheckRequest request(String toolName) {
         return new PermissionCheckRequest("default", toolName, Collections.<String, Object>emptyMap(),
-                PermissionMode.NORMAL, "s1");
+                "s1");
     }
 }

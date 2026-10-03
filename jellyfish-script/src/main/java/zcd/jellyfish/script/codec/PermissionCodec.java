@@ -28,7 +28,7 @@ import java.util.Map;
  * <p>
  * <b>处理器抛错按「无异议」处理</b>：处理器报错（含脚本超时）时 {@code PermissionManager.intercept}
  * 只记 WARN 并视为没有意见，与 Java 插件拦截器完全同权。这是刻意的 fail-open 取舍——
- * 一个插件的故障不该让整条工具调用链崩掉；真正的把关仍在核心策略与 PLAN 白名单上。
+ * 一个插件的故障不该让整条工具调用链崩掉；真正的把关仍在核心策略与插件按模式收窄的白名单上。
  * <p>
  * 内核在核心策略已经拒绝时<b>根本不会调用</b>本扩展点（结果不可能更宽），因此脚本不必处理这种情况。
  *
@@ -67,7 +67,6 @@ public final class PermissionCodec implements ExtensionCodec<PermissionCheckRequ
         payload.put("agentId", request.getAgentId());
         payload.put("toolName", request.getToolName());
         payload.put("arguments", request.getArguments());
-        payload.put("mode", request.getMode() == null ? null : request.getMode().name());
         payload.put("sessionId", request.getSessionId());
         return ScriptJson.treeOf(payload);
     }

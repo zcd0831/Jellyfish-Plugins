@@ -121,9 +121,9 @@ def tool(name, description=None, parameters=None, required=None):
     接受的参数一致——不一致的后果是模型按错误的签名调用，而错误只在运行期以
     「参数缺失」的形式出现。
 
-    这里**没有** ``read_only`` 参数：PLAN 模式下哪些工具可用完全由用户决定
-    （``jellyfish.json`` 里 ``plugins.configurations.<插件>.readOnlyTools`` 列出的工具名），
-    工具无法自称只读——那会让白名单只增不减，用户没法把工具拿出来。
+    这里**没有** ``read_only`` 参数：哪些工具在某个模式下可用完全由用户决定
+    （例如 plan 插件的 ``jellyfish.json`` 段 ``plugins.configurations.jellyfish-plan.readOnlyTools``），
+    工具无法自称只读——那会让名单只增不减，用户没法把工具拿出来。
     """
 
     def decorate(func):

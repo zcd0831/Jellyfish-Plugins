@@ -46,8 +46,8 @@ function noteCount() {
 /**
  * 按名字打招呼。
  *
- * 这里**没有** `readOnly`：PLAN 模式下哪些工具可用完全由用户在
- * `plugins.configurations.jellyfish-plugin-node.readOnlyTools` 里决定，
+ * 这里**没有** `readOnly`：哪些工具在 plan 模式下可用完全由用户在
+ * `plugins.configurations.jellyfish-plan.readOnlyTools` 里决定，
  * 脚本无法自称只读（传 `readOnly` 会被 SDK 当场拒绝）。
  *
  * @param {object} params 请求参数，工具用 `params.args`
@@ -74,7 +74,7 @@ tool({
 /**
  * 把一句话追加到便签里。
  *
- * 这是**可写**工具：PLAN 模式下它默认被拒绝，除非用户在 `readOnlyTools` 里写了它。
+ * 这是**可写**工具：开启 plan 时它默认被拒绝，除非用户在 `readOnlyTools` 里写了它。
  * 示例故意让两个工具一个有副作用、一个没有，好让 `/plan` 下的差别看得见。
  *
  * @param {object} params 请求参数

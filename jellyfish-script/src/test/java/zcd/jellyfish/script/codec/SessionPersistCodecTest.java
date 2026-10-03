@@ -3,7 +3,6 @@ package zcd.jellyfish.script.codec;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import zcd.jellyfish.api.extension.PermissionMode;
 import zcd.jellyfish.api.extension.SessionMessageSnapshot;
 import zcd.jellyfish.api.extension.SessionPersistRequest;
 import zcd.jellyfish.api.extension.SessionSnapshot;
@@ -35,7 +34,7 @@ class SessionPersistCodecTest {
     @DisplayName("请求应把快照按 api 值类型的字段名写出")
     void encodeRequest_should_writeSnapshotFields_when_snapshotIsGiven() {
         SessionSnapshot snapshot = SessionSnapshot.of("s-1", 10L, 20L, "标题", "coder",
-                "openai", "gpt-4o", PermissionMode.NORMAL, Collections.emptyList(), null);
+                "openai", "gpt-4o", Collections.emptyList(), null);
 
         JsonNode payload = codec.encodeRequest(new SessionPersistRequest(snapshot));
         JsonNode node = payload.get("snapshot");
@@ -44,7 +43,6 @@ class SessionPersistCodecTest {
         assertEquals(10L, node.get("createdAt").asLong());
         assertEquals("标题", node.get("title").asText());
         assertEquals("coder", node.get("agentId").asText());
-        assertEquals("NORMAL", node.get("permissionMode").asText());
         assertTrue(node.get("messages").isArray());
     }
 
@@ -52,7 +50,7 @@ class SessionPersistCodecTest {
     @DisplayName("写入的快照应能被 api 类型原样读回")
     void encodeRequest_should_roundTripThroughSnapshotType() {
         SessionSnapshot snapshot = SessionSnapshot.of("s-1", 1L, 2L, null, null, null, null,
-                PermissionMode.PLAN, Arrays.asList(SessionMessageSnapshot.of(
+                Arrays.asList(SessionMessageSnapshot.of(
                         "m-1", 3L, "user", "你好", null, null, Collections.emptyList(), null)), null);
 
         JsonNode node = codec.encodeRequest(new SessionPersistRequest(snapshot)).get("snapshot");
@@ -66,7 +64,7 @@ class SessionPersistCodecTest {
     void decodeResult_should_returnNull_when_resultTypeIsVoid() {
         assertNull(codec.decodeResult(null, null));
         assertEquals(Void.class, new SessionPersistRequest(
-                SessionSnapshot.of("s", 0L, 0L, null, null, null, null, PermissionMode.NORMAL,
+                SessionSnapshot.of("s", 0L, 0L, null, null, null, null,
                         Collections.emptyList(), null)).getResultType());
     }
 

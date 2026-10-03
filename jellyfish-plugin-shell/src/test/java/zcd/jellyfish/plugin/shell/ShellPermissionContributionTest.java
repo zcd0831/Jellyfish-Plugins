@@ -3,7 +3,6 @@ package zcd.jellyfish.plugin.shell;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import zcd.jellyfish.api.extension.PermissionCheckRequest;
-import zcd.jellyfish.api.extension.PermissionMode;
 import zcd.jellyfish.api.extension.PermissionVerdict;
 
 import java.util.HashMap;
@@ -110,7 +109,7 @@ class ShellPermissionContributionTest {
      * @return 请求
      */
     private static PermissionCheckRequest request(String toolName, Map<String, Object> arguments) {
-        return new PermissionCheckRequest("default", toolName, arguments, PermissionMode.NORMAL, "s1");
+        return new PermissionCheckRequest("default", toolName, arguments, "s1");
     }
 
     /**

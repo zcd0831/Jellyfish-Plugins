@@ -3,7 +3,6 @@ package zcd.jellyfish.plugin.sessionfile;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import zcd.jellyfish.api.JellyfishException;
-import zcd.jellyfish.api.extension.PermissionMode;
 import zcd.jellyfish.api.extension.SessionKind;
 import zcd.jellyfish.api.extension.SessionSnapshot;
 
@@ -47,7 +46,6 @@ class SnapshotJsonTest {
         assertEquals("coder", restored.getAgentId());
         assertEquals("openai", restored.getProvider());
         assertEquals("gpt-4o", restored.getModel());
-        assertEquals(PermissionMode.PLAN, restored.getPermissionMode());
         assertEquals(4, restored.getMessages().size());
         assertEquals("call-1", restored.getMessages().get(1).getToolCalls().get(0).getId());
         assertEquals("{\"path\":\"a.txt\"}", restored.getMessages().get(1).getToolCalls().get(0).getArguments());

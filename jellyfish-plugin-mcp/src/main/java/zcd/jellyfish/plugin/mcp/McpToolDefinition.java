@@ -18,8 +18,8 @@ import java.util.Map;
  * server 自填的 {@code readOnlyHint} 已不再采纳（不该由不受信的第三方进程决定我们放宽什么），
  * 而权限拦截那一侧只看结果。把判定散到两处，迟早会出现「清单里算只读、拦截时算可写」。
  * <p>
- * 它与内核的 PLAN 白名单<b>无关</b>：那个白名单的唯一来源是内核侧的
- * {@code plugins.configurations.<pluginId>.readOnlyTools}。本字段只驱动本插件的「写类工具要审批」。
+ * 它与 plan 插件的白名单<b>无关</b>：那份名单的来源是插件自己的配置段
+ * （{@code plugins.configurations.jellyfish-plan.readOnlyTools}）。本字段只驱动本插件的「写类工具要审批」。
  * <p>
  * 不可变，可安全跨线程传递。
  *
@@ -45,7 +45,7 @@ final class McpToolDefinition {
     /** 必填参数名。 */
     private final List<String> required;
 
-    /** 是否为用户声明的只读工具（只驱动本插件的审批策略，不进内核 PLAN 白名单）。 */
+    /** 是否为用户声明的只读工具（只驱动本插件的审批策略，不进 plan 插件的白名单）。 */
     private final boolean readOnly;
 
     /**
