@@ -2,6 +2,7 @@ package zcd.jellyfish.plugin.todo;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import zcd.jellyfish.api.event.notification.AgentRunProgressEvent;
 import zcd.jellyfish.api.event.notification.UiInvalidatedEvent;
 import zcd.jellyfish.api.extension.CommandDescriptor;
 import zcd.jellyfish.api.extension.CommandRequest;
@@ -30,7 +31,10 @@ import java.nio.file.Path;
  *     <b>而不是往 system prompt 里注</b>——待办是会话中途反复改写的状态，放进缓存前缀的第 0 个 token
  *     意味着每勾掉一件事，整个请求连同全部历史都要重新计费一次；</li>
  *     <li>状态栏进度 → {@link StatusLineContributionRequest}，不敲命令也能看到还剩几件事；</li>
- *     <li>待办面板 → {@link PanelContributionRequest}，在侧栏常驻显示完整清单。</li>
+ *     <li>待办面板 → {@link PanelContributionRequest}，在侧栏常驻显示完整清单，
+ *     被认领的条目还会带上「谁在做」；</li>
+ *     <li>run 通知订阅 → {@link AgentRunProgressEvent}，把认领者的 run 标识翻成人看得懂的类型与状态
+ *     （见 {@link RunPresence}）；</li>
  * </ul>
  * <p>
  * <b>第六个扩展点是生命周期清理</b>：{@link SessionDeleteRequest}，内核删除会话时把本会话的待办文件
@@ -61,7 +65,11 @@ public final class TodoPlugin implements JellyfishPlugin {
                 new CommandDescriptor("查看当前会话待办", null, null, true), new TodoCommand(store));
         context.contribute(TurnContextRequest.class, new TodoTurnContext(store));
         context.contribute(StatusLineContributionRequest.class, new TodoStatusLine(store));
-        context.contribute(PanelContributionRequest.class, new TodoPanel(store));
+        // 认领者的在场记录：订阅内核的 run 通知，把待办里的 run 标识翻成人看得懂的类型与状态。
+        // 它认识的是内核的事件类型，不认识任何编排插件——这正是「跨能力整合只走内核中立面」的落地。
+        final RunPresence presence = new RunPresence();
+        context.observe(AgentRunProgressEvent.class, presence::on);
+        context.contribute(PanelContributionRequest.class, new TodoPanel(store, presence));
         // 会话删除时清掉本会话的待办文件（lambda 只为把 store 带进处理器，逻辑全在 TodoStore）
         context.contribute(SessionDeleteRequest.class, request -> {
             store.delete(request.getSessionId());

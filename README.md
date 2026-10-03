@@ -62,7 +62,7 @@ cp jellyfish-plugin-workflow/target/jellyfish-plugin-workflow-*.jar plugins/
       },
       "jellyfish-todo": {
         "todoDir": "~/.jellyfish/todos",
-        "readOnlyTools": ["todo_write"]
+        "readOnlyTools": ["todo_write", "todo_claim", "todo_done"]
       },
       "jellyfish-compact": {
         "keepRecentMessages": 20,
@@ -124,7 +124,8 @@ cp jellyfish-plugin-workflow/target/jellyfish-plugin-workflow-*.jar plugins/
 | `/todo` 命令 | `CommandRequest` | 只读地列出当前会话待办（写入只走 `todo_write`，不给同一份状态第二套写入语义） |
 | 上下文注入 | `TurnContextRequest` | 每轮把待办块拼在本轮用户消息前面送达，模型始终看得见自己的计划；没有待办时不注入。**不再走 `PromptContributionRequest`**：system prompt 是缓存前缀的第 0 个 token，待办每勾掉一项都会作废整个请求（连同全部历史），而随消息落盘是 append-only 的 |
 | 状态栏进度 | `StatusLineContributionRequest` | 状态栏尾部显示 `待办 2/5`，有进行中项时补 `· 进行中 1`，不敲命令也能看到还剩几件事；没有待办时不占位 |
-| 侧栏清单 | `PanelContributionRequest` | 在侧栏常驻显示完整清单（已完成项整行变暗、进行中项高亮：`[~]`），建议放右栏；没有待办时不占区域 |
+| 侧栏清单 | `PanelContributionRequest` | 在侧栏常驻显示完整清单（已完成项整行变暗、进行中项高亮：`[~]`），被认领的条目还带「谁在做」（`· researcher`；认领者已结束而条目还没标完成时转警示档 `· researcher（已结束）`；不知道是谁时说 `· 认领者未知`），建议放右栏；没有待办时不占区域 |
+| run 通知订阅 | `AgentRunProgressEvent` | 把待办里的认领者 run 标识翻成人看得懂的子代理类型与在场状态。订阅的是**内核**的事件类型，与任何编排插件无关 |
 
 三态的写法与人看到的标记一一对应：`pending` = `[ ]`、`in_progress` = `[~]`、`completed` = `[x]`（清单里有进行中项时，注入的待办块标题会补一句图例）。状态取值读的时候忽略大小写与连字符（`In-Progress` 也认），写出去的一律是小写下划线。
 

@@ -4,8 +4,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import zcd.jellyfish.api.event.notification.AgentRunProgressEvent;
 import zcd.jellyfish.api.extension.PanelContribution;
 import zcd.jellyfish.api.extension.PanelContributionRequest;
+import zcd.jellyfish.api.subagent.DelegationStatus;
 import zcd.jellyfish.api.ui.UiEmphasis;
 import zcd.jellyfish.api.ui.UiRegion;
 
@@ -31,13 +33,17 @@ class TodoPanelTest {
     /** 被测仓库。 */
     private TodoStore store;
 
+    /** 认领者在场记录。 */
+    private RunPresence presence;
+
     /** 被测处理器。 */
     private TodoPanel panel;
 
     @BeforeEach
     void setUp() {
         store = new TodoStore(directory);
-        panel = new TodoPanel(store);
+        presence = new RunPresence();
+        panel = new TodoPanel(store, presence);
     }
 
     @Test
@@ -87,5 +93,41 @@ class TodoPanelTest {
         store.replace("s-2", Collections.singletonList(new TodoItem("别人的事", TodoStatus.PENDING)));
 
         assertTrue(panel.handle(new PanelContributionRequest("s-1")).isEmpty());
+    }
+    @Test
+    @DisplayName("被认领的条目带上「谁在做」；没认领的条目不添这一截")
+    void handle_should_showOwnerWhenClaimed() {
+        store.replace("s-1", Arrays.asList(new TodoItem("跑测试", TodoStatus.IN_PROGRESS, "run-1"),
+                new TodoItem("提交", TodoStatus.PENDING)));
+        presence.on(AgentRunProgressEvent.started("run-1", null, "root-1", "s-1", "researcher"));
+
+        PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
+
+        assertEquals("[~] 跑测试 · researcher", contribution.getLines().get(0).text());
+        assertEquals("[ ] 提交", contribution.getLines().get(1).text());
+    }
+
+    @Test
+    @DisplayName("认领者已结束而待办还挂在进行中：转警示档，提醒这条没人收尾")
+    void handle_should_warnWhenClaimantFinished() {
+        store.replace("s-1", Arrays.asList(new TodoItem("跑测试", TodoStatus.IN_PROGRESS, "run-1")));
+        presence.on(AgentRunProgressEvent.finished("run-1", null, "root-1", "s-1", "researcher",
+                DelegationStatus.FAILED, 1, 5L));
+
+        PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
+
+        assertEquals("[~] 跑测试 · researcher（已结束）", contribution.getLines().get(0).text());
+        assertEquals(UiEmphasis.WARN, contribution.getLines().get(0).getSegments().get(2).getEmphasis());
+    }
+
+    @Test
+    @DisplayName("不知道是谁：说「认领者未知」，不虚构一个正在跑的人")
+    void handle_should_admitUnknownClaimant() {
+        store.replace("s-1", Arrays.asList(new TodoItem("跑测试", TodoStatus.IN_PROGRESS, "run-404")));
+
+        PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
+
+        assertEquals("[~] 跑测试 · 认领者未知", contribution.getLines().get(0).text());
+        assertEquals(UiEmphasis.DIM, contribution.getLines().get(0).getSegments().get(2).getEmphasis());
     }
 }

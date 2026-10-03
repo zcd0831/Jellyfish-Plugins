@@ -37,13 +37,18 @@ final class TodoPanel implements ExtensionHandler<PanelContributionRequest, Pane
     /** 待办仓库。 */
     private final TodoStore store;
 
+    /** 认领者的在场记录：把 run 标识翻成人看得懂的子代理类型与状态。 */
+    private final RunPresence presence;
+
     /**
      * 构造处理器。
      *
-     * @param store 待办仓库，不可为 {@code null}
+     * @param store    待办仓库，不可为 {@code null}
+     * @param presence 认领者在场记录，不可为 {@code null}
      */
-    TodoPanel(TodoStore store) {
+    TodoPanel(TodoStore store, RunPresence presence) {
         this.store = store;
+        this.presence = presence;
     }
 
     @Override
@@ -73,10 +78,51 @@ final class TodoPanel implements ExtensionHandler<PanelContributionRequest, Pane
      * @param item 待办项
      * @return 界面行
      */
-    private static UiLine lineOf(TodoItem item) {
+    private UiLine lineOf(TodoItem item) {
         UiEmphasis emphasis = emphasisOf(item.status());
-        return UiLine.of(UiSegment.of(item.status().mark(), emphasis),
+        UiLine line = UiLine.of(UiSegment.of(item.status().mark(), emphasis),
                 UiSegment.of(item.content(), emphasis));
+        return item.owner() == null ? line : withOwner(line, ownerSegment(item.owner()));
+    }
+
+    /**
+     * 渲染「谁在做」那一段。
+     * <p>
+     * 三种形态说得不一样，因为它们的含义不同：
+     * <ul>
+     *     <li>已知且还在跑 → {@code · researcher}。这是最常见的形态；</li>
+     *     <li>已知但已经结束、而这条待办还挂在「进行中」→ {@code · researcher（已结束）} 并转
+     *     {@link UiEmphasis#WARN}：<b>这是唯一需要人管一眼的形态</b>——那个子代理没把活标完成就走了，
+     *     要么它失败了，要么它忘了。用正常档位显示会让人以为一切照旧；</li>
+     *     <li>不知道（通知丢了、或那个 run 早已不在）→ {@code · 认领者未知}。宁可承认不知道，
+     *     也不要凭一个可能过期的记录说「正在跑」。</li>
+     * </ul>
+     *
+     * @param runId 认领者的 run 标识
+     * @return 认领者那一段
+     */
+    private UiSegment ownerSegment(String runId) {
+        RunPresence.Presence state = presence.stateOf(runId);
+        if (!state.isKnown()) {
+            return UiSegment.of(" · 认领者未知", UiEmphasis.DIM);
+        }
+        if (state.isFinished()) {
+            return UiSegment.of(" · " + state.getAgentId() + "（已结束）", UiEmphasis.WARN);
+        }
+        return UiSegment.of(" · " + state.getAgentId(), UiEmphasis.DIM);
+    }
+
+    /**
+     * 在已有的行尾追加一段。
+     *
+     * @param line  已经渲染好的行，不可为 {@code null}
+     * @param owner 要追加的那一段，不可为 {@code null}
+     * @return 新行，保证非 {@code null}
+     */
+    private static UiLine withOwner(UiLine line, UiSegment owner) {
+        List<UiSegment> segments = new ArrayList<UiSegment>(line.getSegments());
+        segments.add(owner);
+        return new UiLine(segments);
     }
 
     /**
