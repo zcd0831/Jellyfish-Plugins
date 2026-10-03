@@ -17,6 +17,7 @@
 | `jellyfish-plugin-shell` | `jellyfish-shell` | 命令行：`shell` 工具（`/bin/sh -c` 执行命令原文）+ 命令策略（白名单准入、可信表免审批、只读不打扰、灾难形状拒绝、其余审批）。**没有沙箱**，见下文 |
 | `jellyfish-plugin-skills` | `jellyfish-skills` | skills：按目录发现 `SKILL.md`，元信息常驻 system prompt、正文由模型用 `skill` 工具按需加载，见下文 |
 | `jellyfish-plugin-mcp` | `jellyfish-mcp` | MCP 客户端：stdio 连外部 MCP server，把它的工具以 `mcp__<server>__<tool>` 接入，见下文 |
+| `jellyfish-plugin-workflow` | `jellyfish-workflow` | 编排：`workflow` 工具接受一份**声明式 spec**，按依赖并发派生子代理并聚合结果（内核只出原语，见下文） |
 
 `jellyfish-tools` 的五个工具：
 
@@ -43,6 +44,7 @@ cp jellyfish-plugin-compact/target/jellyfish-plugin-compact-*.jar plugins/
 cp jellyfish-plugin-python/target/jellyfish-plugin-python-*.jar plugins/
 cp jellyfish-plugin-node/target/jellyfish-plugin-node-*.jar plugins/
 cp jellyfish-plugin-shell/target/jellyfish-plugin-shell-*.jar plugins/
+cp jellyfish-plugin-workflow/target/jellyfish-plugin-workflow-*.jar plugins/
 ```
 
 插件配置写在 `jellyfish.json` 的 `plugins.configurations.<pluginId>` 段：
@@ -247,6 +249,37 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 | 命令 | 说明 |
 | --- | --- |
 | `/skills` | 列出根目录、已加载清单与扫描期问题（目录写错、缺 description、名称被前面的根目录占掉） |
+
+## 编排（jellyfish-workflow）
+
+让模型一次说清「几件事、什么顺序、怎么合起来」，由插件把它们变成一批并行跑的子代理：
+
+```json
+{"spec": {
+  "name": "调研并写方案",
+  "steps": [
+    {"id": "probe-a", "agent": "scout",   "prompt": "调研 A 方向……"},
+    {"id": "probe-b", "agent": "scout",   "prompt": "调研 B 方向……"},
+    {"id": "plan",    "agent": "planner", "prompt": "结合 A 与 B 的结论给出方案",
+     "needs": ["probe-a", "probe-b"]}
+  ],
+  "aggregate": {"mode": "summarize", "agent": "planner"}
+}}
+```
+
+- **没有 `needs` 的步骤立刻开始，因此它们并行执行**；`needs` 让某一步等前几步结束。
+- **`when` 只有三个取值**：`always`（缺省）、`on_success`、`on_failure`（后者必须声明 `needs`）。
+  没有循环、变量、表达式，也没有重试——要改主意就重新提交一份 spec。
+- **`aggregate.mode`**：`collect` 按顺序拼接各步结论；`summarize` 再派一个子代理把它们汇成一段结论。
+- 步骤最多 12 步。**校验全部发生在派生任何子代理之前**，写错的 spec 不会先烧掉几个子代理再报错。
+- 子代理来自内核的**委派端口**（`PluginContext.delegations()`），与内置的 `task` 工具走同一条代码路径：
+  并发上限、深度、墙钟与 token 预算、取消、用量归集与归档的行为完全一致。插件不自己起线程池——
+  并发度由内核的 governor 决定，超出的 run 在内核侧排队。
+- **一次 `workflow` 会占住一条工具执行线程**直到整批跑完（与 `task` 同口径）。执行期间每个步骤的开始与结局
+  会写在「运行中的工具」区域；按 `Esc` 取消回合会掐断全部在途 run。
+- **不装它也能用**：只需要「派一个子代理做一件事」时用内置的 `task`；卸载本插件即回退到那个形态。
+
+本插件没有配置项。
 
 ## MCP（jellyfish-mcp）
 

@@ -22,6 +22,8 @@
         <module>jellyfish-plugin-todo</module>
         <module>jellyfish-plugin-project</module>
         <module>jellyfish-plugin-compact</module>
+        <!-- 编排插件：声明式 spec 驱动子代理（走内核的委派端口），无第三方依赖 -->
+        <module>jellyfish-plugin-workflow</module>
         <!-- skills 插件：目录发现 + 提示词贡献 + 按需加载正文，无第三方依赖 -->
         <module>jellyfish-plugin-skills</module>
         <!-- MCP 客户端插件：stdio 连接外部 server，工具以 mcp__<server>__<tool> 接入 -->
