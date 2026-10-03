@@ -119,6 +119,9 @@ class ScriptEventBridgeTest {
         listener.accept(new SessionCreatedEvent("coder", "s-1"));
 
         assertTrue(pushed.await(5, TimeUnit.SECONDS), "事件未被推送");
+        // 只等这个 latch 是不够的：它在 notifyEvent 内部就倒数了，而推送计数是在那之后自增的，
+        // 两者之间的那一小段窗口曾在满载的 CI 上让本用例偶发失败（expected 1 but was 0）
+        awaitPushed(bridge);
         assertEquals(1L, bridge.pushedCount());
         assertEquals(0L, bridge.droppedCount());
         ArgumentCaptor<com.fasterxml.jackson.databind.JsonNode> payload =
@@ -267,5 +270,18 @@ class ScriptEventBridgeTest {
                 captor.getAllValues());
         // 第一个被订阅的事件是目录里的第一个：本用例只发这个类型的事件
         return captured.get(0);
+    }
+
+    /**
+     * 等推送计数到位：最多等 5 秒，避免把「推送真的发生了」误判成「还没发生」。
+     *
+     * @param bridge 被测桥
+     * @throws InterruptedException 等待被中断时抛出
+     */
+    private static void awaitPushed(ScriptEventBridge bridge) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 5000L;
+        while (bridge.pushedCount() == 0L && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10L);
+        }
     }
 }
