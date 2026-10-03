@@ -7,7 +7,10 @@ import java.util.List;
  * <p>
  * 集中在一处是为了让「模型看到的」与「人看到的」永远一致：两处各写一遍迟早会漂移
  * （例如一边显示 {@code [x]}、一边显示 {@code done}），而它们描述的本就是同一件事。
- * 三态各自的标记定义在 {@link TodoStatus} 里，本类只负责把它们拼成行。
+ * 四态各自的标记定义在 {@link TodoStatus} 里，本类只负责把它们拼成行。
+ * <p>
+ * <b>卡住的原因必须出现在每一处</b>（注入块、编号清单、面板）：不写为什么，「卡住」与「没人做」
+ * 在人看来是一样的，而这两件事该由谁去处理完全不同。
  *
  * @author zcd
  */
@@ -26,9 +29,15 @@ final class TodoText {
      * 渲染随本轮用户消息送达的待办块。
      * <p>
      * 与内核原先的形态一致（{@code [待办]} 标题 + 每行 {@code - [ ] 内容}）：模型看到的东西不该因为
-     * 「待办从内核搬到插件」而变化。唯一的例外是出现了「进行中」项——那时标题后面会补一句图例，
-     * 因为 {@code [~]} 不像 {@code [ ]} / {@code [x]} 那样自明，而这一项恰恰是模型此刻最该认准的；
-     * 没有进行中项时保持原样，不为用不上的图例每轮多花 token。
+     * 「待办从内核搬到插件」而变化。唯一的例外是出现了「进行中」或「卡住」项——那时标题后面会补一句图例，
+     * 因为 {@code [~]} 与 {@code [!]} 不像 {@code [ ]} / {@code [x]} 那样自明，而这两项恰恰是
+     * 模型此刻最该认准的；两者都没有时保持原样，不为用不上的图例每轮多花 token。
+     * <p>
+     * <b>卡住的那几条要把原因一起带上</b>：模型看到「[!] 核对缓存策略」只知道它没在做，
+     * 看到原因才知道该换个做法、换个 agent，还是该问用户。
+     * <p>
+     * <b>块尾补一句批间引导</b>：清单回答「还剩什么」，而模型下一步该做什么并不自明
+     * （例如「[~] 的已经在做，别再派一遍」）。引导按当前状态现算，只写用得上的那几句。
      * <p>
      * <b>全部已完成时返回 {@code null}，不再每轮重申</b>：本处理器每一轮都会被问到，而清单里全是
      * {@code [x]} 时这段话对「接下来做什么」已无信息量，却会跟着此后每一句用户输入一起发出去、
@@ -45,11 +54,11 @@ final class TodoText {
         if (!hasOpen(items)) {
             return null;
         }
-        StringBuilder text = new StringBuilder(hasInProgress(items) ? legendHeader() : HEADER);
+        StringBuilder text = new StringBuilder(needsLegend(items) ? legendHeader() : HEADER);
         for (TodoItem item : items) {
-            text.append('\n').append("- ").append(item.status().mark()).append(item.content());
+            text.append('\n').append("- ").append(item.status().mark()).append(lineOf(item));
         }
-        return text.toString();
+        return text.append('\n').append(guidance(items)).toString();
     }
 
     /**
@@ -82,7 +91,9 @@ final class TodoText {
      * 渲染状态栏上的进度片段。
      * <p>
      * 基础形态仍是 {@code 待办 2/5}（完成数 / 总数）。有进行中项时补一段 {@code · 进行中 1}：
-     * 「现在在做哪件事」与「做完了几件」同等重要，而状态栏只有一行——没有进行中项时不多占别人的列。
+     * 「现在在做哪件事」与「做完了几件」同等重要。有卡住项时再补一段 {@code · 卡住 1}：
+     * 那几件**不会自己往前走**，而进度数字涨不上去的两种原因（还在做 / 做不了）必须分得开。
+     * 状态栏只有一行，因此没有的那一段不占别人的列。
      *
      * @param items 待办列表，不可为 {@code null}
      * @return 形如 {@code 待办 2/5} 的片段；没有待办时返回 {@code null}（状态栏不显示）
@@ -93,15 +104,21 @@ final class TodoText {
         }
         int completed = 0;
         int inProgress = 0;
+        int blocked = 0;
         for (TodoItem item : items) {
             if (item.status() == TodoStatus.COMPLETED) {
                 completed++;
             } else if (item.status() == TodoStatus.IN_PROGRESS) {
                 inProgress++;
+            } else if (item.status() == TodoStatus.BLOCKED) {
+                blocked++;
             }
         }
-        String progress = "待办 " + completed + "/" + items.size();
-        return inProgress == 0 ? progress : progress + " · 进行中 " + inProgress;
+        StringBuilder progress = new StringBuilder("待办 ").append(completed).append('/').append(items.size());
+        if (inProgress > 0) {
+            progress.append(" · 进行中 ").append(inProgress);
+        }
+        return blocked == 0 ? progress.toString() : progress.append(" · 卡住 ").append(blocked).toString();
     }
 
     /**
@@ -115,7 +132,7 @@ final class TodoText {
         for (int i = 0; i < items.size(); i++) {
             TodoItem item = items.get(i);
             text.append('\n').append("  ").append(item.status().mark())
-                    .append(i + 1).append(". ").append(item.content());
+                    .append(i + 1).append(". ").append(lineOf(item));
         }
         return text.toString();
     }
@@ -139,14 +156,44 @@ final class TodoText {
     }
 
     /**
-     * 判断列表里是否有进行中的项。
+     * 拼出带图例的待办块标题。
+     *
+     * @return 形如 {@code [待办]（[ ] 未开始，[~] 进行中，[x] 已完成，[!] 卡住）} 的标题
+     */
+    private static String legendHeader() {
+        return HEADER + "（" + TodoStatus.PENDING.mark().trim() + " 未开始，"
+                + TodoStatus.IN_PROGRESS.mark().trim() + " 进行中，"
+                + TodoStatus.COMPLETED.mark().trim() + " 已完成，"
+                + TodoStatus.BLOCKED.mark().trim() + " 卡住）";
+    }
+
+    /**
+     * 渲染一条待办的内容部分（不含标记）。
+     * <p>
+     * 卡住的条目把原因接在后面：那是它此刻唯一的有效信息。
+     *
+     * @param item 待办项，不可为 {@code null}
+     * @return 内容文本（卡住时形如 {@code 内容 —— 原因}），保证非空白
+     */
+    private static String lineOf(TodoItem item) {
+        if (item.status() != TodoStatus.BLOCKED || item.reason() == null) {
+            return item.content();
+        }
+        return item.content() + " —— " + item.reason();
+    }
+
+    /**
+     * 判断是否需要补图例。
+     * <p>
+     * 需要的是那些「标记本身说不清」的状态：{@code [~]} 与 {@code [!]}。
+     * {@code [ ]} / {@code [x]} 一看就懂，为它们每轮多花 token 不值。
      *
      * @param items 待办列表，不可为 {@code null}
-     * @return 存在返回 {@code true}
+     * @return 需要图例返回 {@code true}
      */
-    private static boolean hasInProgress(List<TodoItem> items) {
+    private static boolean needsLegend(List<TodoItem> items) {
         for (TodoItem item : items) {
-            if (item.status() == TodoStatus.IN_PROGRESS) {
+            if (item.status() == TodoStatus.IN_PROGRESS || item.status() == TodoStatus.BLOCKED) {
                 return true;
             }
         }
@@ -154,13 +201,47 @@ final class TodoText {
     }
 
     /**
-     * 拼出带图例的待办块标题。
+     * 拼出块尾的批间引导。
+     * <p>
+     * <b>为什么要有这一段</b>：清单本身只回答「还剩什么」。而模型的下一步并不自明——它可能
+     * 把已经在做的又派一遍，也可能对着一条卡住的活再派一批子代理去撞同一堵墙。
+     * 这几句就是「批间决策」的落点（分册 D-P4-5）：**只写当前状态下用得上的那些**。
+     * <p>
+     * 三句各有触发条件，因此一段引导最长三句、短则一句：
+     * <ul>
+     *     <li>还有没人认领的 → 可以派子代理认领（点名工具，模型不必去猜）；</li>
+     *     <li>有在做而没做完的 → 别重复派；</li>
+     *     <li>有卡住的 → 需要人决定（这是唯一需要模型停下来问的情形）。</li>
+     * </ul>
      *
-     * @return 形如 {@code [待办]（[ ] 未开始，[~] 进行中，[x] 已完成）} 的标题
+     * @param items 待办列表，不可为 {@code null}
+     * @return 引导文本，保证非空白
      */
-    private static String legendHeader() {
-        return HEADER + "（" + TodoStatus.PENDING.mark().trim() + " 未开始，"
-                + TodoStatus.IN_PROGRESS.mark().trim() + " 进行中，"
-                + TodoStatus.COMPLETED.mark().trim() + " 已完成）";
+    private static String guidance(List<TodoItem> items) {
+        int pending = 0;
+        int inProgress = 0;
+        int blocked = 0;
+        for (TodoItem item : items) {
+            if (item.status() == TodoStatus.PENDING) {
+                pending++;
+            } else if (item.status() == TodoStatus.IN_PROGRESS) {
+                inProgress++;
+            } else if (item.status() == TodoStatus.BLOCKED) {
+                blocked++;
+            }
+        }
+        StringBuilder guidance = new StringBuilder("- 提示：");
+        if (pending > 0) {
+            guidance.append("还有 ").append(pending)
+                    .append(" 条没人做，可以派子代理用 todo_claim 认领它们");
+        }
+        if (inProgress > 0) {
+            guidance.append(pending > 0 ? "；" : "").append(inProgress).append(" 条已经在做，别再派一遍");
+        }
+        if (blocked > 0) {
+            guidance.append(pending > 0 || inProgress > 0 ? "；" : "")
+                    .append(blocked).append(" 条卡住了，需要你或用户决定怎么做");
+        }
+        return guidance.append('。').toString();
     }
 }

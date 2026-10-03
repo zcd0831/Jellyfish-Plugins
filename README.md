@@ -125,7 +125,8 @@ cp jellyfish-plugin-workflow/target/jellyfish-plugin-workflow-*.jar plugins/
 | `todo_block` 工具 | `ToolCallRequest` | 把一条待办记成**卡住**（`content` + `reason` 必填）：用于「它做不了」。卡住之后它不会再被任何子代理认领，直到有人放回或父回合重写清单 |
 | `/todo` 命令 | `CommandRequest` | 只读地列出当前会话待办（写入只走 `todo_write`，不给同一份状态第二套写入语义） |
 | 上下文注入 | `TurnContextRequest` | 每轮把待办块拼在本轮用户消息前面送达，模型始终看得见自己的计划；没有待办时不注入。**不再走 `PromptContributionRequest`**：system prompt 是缓存前缀的第 0 个 token，待办每勾掉一项都会作废整个请求（连同全部历史），而随消息落盘是 append-only 的 |
-| 状态栏进度 | `StatusLineContributionRequest` | 状态栏尾部显示 `待办 2/5`，有进行中项时补 `· 进行中 1`，不敲命令也能看到还剩几件事；没有待办时不占位 |
+| 状态栏进度 | `StatusLineContributionRequest` | 状态栏尾部显示 `待办 2/5`，有进行中项时补 `· 进行中 1`、有卡住项时补 `· 卡住 1`（进度涨不上去的两种原因必须分得开），不敲命令也能看到还剩几件事；没有待办时不占位 |
+| 选型规则 | `PromptContributionRequest`（`STATIC`） | 一段编译期固定的文字：**什么时候**用 `task`、什么时候用 `workflow` 的 spec、什么时候把活写进待办让子代理认领。**只有选型走它**——状态进 system prompt 会让每次勾掉一件事都作废整段缓存前缀 |
 | 侧栏清单 | `PanelContributionRequest` | 在侧栏常驻显示完整清单（已完成项整行变暗、进行中项高亮：`[~]`），被认领的条目还带「谁在做」（`· researcher`；认领者已结束而条目还没标完成时转警示档 `· researcher（已结束）`；不知道是谁时说 `· 认领者未知`），建议放右栏；没有待办时不占区域 |
 | run 通知订阅 | `AgentRunProgressEvent` | 把待办里的认领者 run 标识翻成人看得懂的子代理类型与在场状态。订阅的是**内核**的事件类型，与任何编排插件无关 |
 
@@ -136,6 +137,10 @@ cp jellyfish-plugin-workflow/target/jellyfish-plugin-workflow-*.jar plugins/
 **「做不了」为什么必须是一个状态**：没有它，一条做不了的活只能一直停在 `pending`，于是一批一批的
 子代理反复把它领走、反复失败——抢单式协作最容易烧钱的地方就是这个。卡住的条目**既不算完成、也不可认领**：
 要重新做，得先由认领者或父回合把它放回（换个做法）。
+
+**块尾还有一句批间引导**：清单回答「还剩什么」，而下一步该做什么并不自明——所以块尾按当前状态现算一句
+（「还有 N 条没人做，可以派子代理用 `todo_claim` 认领它们；M 条已经在做，别再派一遍；K 条卡住了，
+需要你或用户决定怎么做」），只写用得上的那几段。这正是「批间决策」在插件侧的落点。
 
 **谁可以动哪一条**：认领者可以完成、放回、卡住自己那条；父回合（不在任何 run 上）可以**放回或卡住任何一条**
 （收拾残局），但**不能替别人说「做完了」**——那是一个关于工作结果的声明，要么由做过的人说，

@@ -10,6 +10,7 @@ import org.pf4j.PluginState;
 import zcd.jellyfish.api.extension.CommandDescriptor;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.PanelContributionRequest;
+import zcd.jellyfish.api.extension.PromptContributionRequest;
 import zcd.jellyfish.api.extension.StatusLineContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolDescriptor;
@@ -99,7 +100,7 @@ class TodoPluginLoadingTest {
     }
 
     @Test
-    @DisplayName("启动后 /todo 命令、五个工具、提示词贡献、状态栏贡献与面板贡献都应可路由")
+    @DisplayName("启动后 /todo 命令、五个工具、选型提示词、回合块、状态栏与面板都应可路由")
     void bootstrap_should_registerAllCapabilities() throws IOException {
         installPlugin();
 
@@ -127,6 +128,7 @@ class TodoPluginLoadingTest {
         assertTrue(tools.contains(TodoReleaseTool.NAME), tools.toString());
         assertTrue(tools.contains(TodoBlockTool.NAME), tools.toString());
 
+        assertEquals(1, extensions.handlers(PromptContributionRequest.class, null).size());
         assertEquals(1, extensions.handlers(TurnContextRequest.class, null).size());
         assertEquals(1, extensions.handlers(PanelContributionRequest.class, null).size());
     }
@@ -147,6 +149,7 @@ class TodoPluginLoadingTest {
         assertTrue(extensions.handlers(ToolCallRequest.class, TodoReleaseTool.NAME).isEmpty());
         assertTrue(extensions.handlers(ToolCallRequest.class, TodoBlockTool.NAME).isEmpty());
         assertTrue(extensions.handlers(CommandRequest.class, "todo").isEmpty());
+        assertTrue(extensions.handlers(PromptContributionRequest.class, null).isEmpty());
         assertTrue(extensions.handlers(TurnContextRequest.class, null).isEmpty());
         assertTrue(extensions.handlers(StatusLineContributionRequest.class, null).isEmpty());
         assertTrue(extensions.handlers(PanelContributionRequest.class, null).isEmpty());

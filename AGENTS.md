@@ -74,7 +74,7 @@ mvn -q -Pscript-it test
 | --- | --- | --- |
 | `jellyfish-plugin-tools` | 五个文件工具：`read_file` / `write_file` / `edit_file` / `list_dir` / `grep_files` | api（provided） |
 | `jellyfish-plugin-session-file` | 会话持久化：一个会话一个 JSON 文件 + git 管理历史 | api（provided） |
-| `jellyfish-plugin-todo` | 会话待办：`todo_write` / `todo_claim` / `todo_done` / `todo_release` / `todo_block` 工具 + `/todo` + 提示词/状态栏/面板贡献；父子共享同一份清单（子代理落在父会话上） | api（provided） |
+| `jellyfish-plugin-todo` | 会话待办：`todo_write` / `todo_claim` / `todo_done` / `todo_release` / `todo_block` 工具 + `/todo` + 选型提示词/回合块/状态栏/面板贡献；父子共享同一份清单（子代理落在父会话上） | api（provided） |
 | `jellyfish-plugin-project` | 项目约定：探测工作目录下 `AGENTS.md`，小文件内联原文、大文件只给路径 | api（provided） |
 | `jellyfish-plugin-compact` | 压缩策略：摘要指令 + 保留条数与摘要上限；不启用它压缩整体不可用 | api（provided） |
 | `jellyfish-plugin-shell` | 命令行：`shell` 工具（`/bin/sh -c` 执行命令原文）+ 命令策略（白名单准入 / 可信表免审批 / 只读不打扰 / 灾难形状拒绝 / 其余审批）。**无沙箱**，能读写本用户任意文件；自带 commons-exec（**shade 进插件包**，内核 classpath 上不出现它） | api（provided）、commons-exec（shade） |

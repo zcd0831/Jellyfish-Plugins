@@ -130,4 +130,33 @@ class TodoPanelTest {
         assertEquals("[~] 跑测试 · 认领者未知", contribution.getLines().get(0).text());
         assertEquals(UiEmphasis.DIM, contribution.getLines().get(0).getSegments().get(2).getEmphasis());
     }
+    @Test
+    @DisplayName("卡住的条目显示原因（转 ERROR 档），并让位给原因而不显示认领者")
+    void handle_should_showBlockReason() {
+        store.replace("s-1", Arrays.asList(new TodoItem("核对缓存策略", TodoStatus.BLOCKED, "run-1", "缺写权限")));
+
+        PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
+
+        assertEquals("[!] 核对缓存策略 —— 缺写权限", contribution.getLines().get(0).text());
+        assertEquals(UiEmphasis.ERROR, contribution.getLines().get(0).getSegments().get(0).getEmphasis());
+        // 三段：标记、内容、原因——没有第四段「谁在做」
+        assertEquals(3, contribution.getLines().get(0).getSegments().size());
+        assertTrue(contribution.getLines().get(0).text().indexOf(" · ") < 0,
+                "卡住时原因占掉认领者那一截: " + contribution.getLines().get(0).text());
+    }
+
+    @Test
+    @DisplayName("原因过长时截断：面板一行放不下，长原因会把内容挤没")
+    void handle_should_truncateLongReason() {
+        StringBuilder longReason = new StringBuilder();
+        for (int i = 0; i < 30; i++) {
+            longReason.append("很长");
+        }
+        store.replace("s-1", Arrays.asList(new TodoItem("甲", TodoStatus.BLOCKED, null, longReason.toString())));
+
+        String text = panel.handle(new PanelContributionRequest("s-1")).getLines().get(0).text();
+
+        assertTrue(text.endsWith("…"), text);
+        assertEquals(("[!] 甲 —— ").length() + 40 + 1, text.length(), text);
+    }
 }

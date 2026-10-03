@@ -8,6 +8,7 @@ import zcd.jellyfish.api.extension.CommandDescriptor;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.ExtensionHandler;
 import zcd.jellyfish.api.extension.PanelContributionRequest;
+import zcd.jellyfish.api.extension.PromptContributionRequest;
 import zcd.jellyfish.api.extension.SessionDeleteRequest;
 import zcd.jellyfish.api.extension.StatusLineContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
@@ -28,6 +29,8 @@ import java.nio.file.Path;
  *     {@link ToolCallRequest}，子代理认领、完成、放回与记成卡住；它们与父回合读写的是<b>同一份</b>清单
  *     （子代理落在父会话上，见 {@code TodoScope}）；</li>
  *     <li>{@code /todo} 命令 → {@link CommandRequest}，给人看的只读清单；</li>
+ *     <li>选型规则 → {@link PromptContributionRequest}（{@code STATIC}）：什么时候把活写进待办让子代理认领，
+ *     而不是写进 system prompt 的状态部分——那部分每变一次就要重新计费整段历史；</li>
  *     <li>待办随本轮用户消息送达 → {@link TurnContextRequest}，让模型每轮都看得见自己的计划；
  *     <b>而不是往 system prompt 里注</b>——待办是会话中途反复改写的状态，放进缓存前缀的第 0 个 token
  *     意味着每勾掉一件事，整个请求连同全部历史都要重新计费一次；</li>
@@ -65,6 +68,8 @@ public final class TodoPlugin implements JellyfishPlugin {
                 // 末尾显式声明 sessionRequired=true：待办是按会话归属的，没有会话就没有待办可看
                 new CommandDescriptor("查看当前会话待办", null, null, true), new TodoCommand(store));
         context.contribute(TurnContextRequest.class, new TodoTurnContext(store));
+        // 选型规则走 STATIC（编译期固定、进可缓存前缀）；「还剩几条」那类状态随回合块走
+        context.contribute(PromptContributionRequest.class, new TodoGuidance());
         context.contribute(StatusLineContributionRequest.class, new TodoStatusLine(store));
         // 认领者的在场记录：订阅内核的 run 通知，把待办里的 run 标识翻成人看得懂的类型与状态。
         // 它认识的是内核的事件类型，不认识任何编排插件——这正是「跨能力整合只走内核中立面」的落地。

@@ -10,6 +10,7 @@ import zcd.jellyfish.api.event.notification.UiInvalidatedEvent;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.ExtensionHandler;
 import zcd.jellyfish.api.extension.PanelContributionRequest;
+import zcd.jellyfish.api.extension.PromptContributionRequest;
 import zcd.jellyfish.api.extension.SessionDeleteRequest;
 import zcd.jellyfish.api.extension.StatusLineContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
@@ -94,6 +95,8 @@ class TodoPluginTest {
         assertEquals(1, extensions.bindings(StatusLineContributionRequest.class, null).size());
         assertEquals(1, extensions.bindings(PanelContributionRequest.class, null).size());
         assertEquals(1, extensions.bindings(SessionDeleteRequest.class, null).size());
+        // 选型规则走 STATIC 提示词；状态仍走回合块（两者分工写在各自主类的 javadoc 里）
+        assertEquals(1, extensions.bindings(PromptContributionRequest.class, null).size());
     }
 
     @Test

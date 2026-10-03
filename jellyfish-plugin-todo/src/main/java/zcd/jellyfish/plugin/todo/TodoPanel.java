@@ -34,6 +34,9 @@ final class TodoPanel implements ExtensionHandler<PanelContributionRequest, Pane
     /** 面板标题。 */
     private static final String TITLE = "待办";
 
+    /** 面板上原因的长度上限：面板每行只有一行的宽度，长原因会把内容挤没。 */
+    private static final int MAX_REASON_CHARS = 40;
+
     /** 待办仓库。 */
     private final TodoStore store;
 
@@ -71,9 +74,10 @@ final class TodoPanel implements ExtensionHandler<PanelContributionRequest, Pane
     /**
      * 渲染一条待办。
      * <p>
-     * 三态的强调档位各不相同：已完成用 {@link UiEmphasis#DIM}（面板的用处是「看还剩什么」，
+     * 四态的强调档位各不相同：已完成用 {@link UiEmphasis#DIM}（面板的用处是「看还剩什么」，
      * 做完的事应当退到背景里）、进行中用 {@link UiEmphasis#ACCENT}（它是此刻正在发生的事，
-     * 是扫一眼面板最想看到的那一行）、未开始用 {@link UiEmphasis#NORMAL}。
+     * 是扫一眼面板最想看到的那一行）、卡住用 {@link UiEmphasis#ERROR}（它不会自己往前走，
+     * 得有人决定）、未开始用 {@link UiEmphasis#NORMAL}。
      *
      * @param item 待办项
      * @return 界面行
@@ -82,7 +86,28 @@ final class TodoPanel implements ExtensionHandler<PanelContributionRequest, Pane
         UiEmphasis emphasis = emphasisOf(item.status());
         UiLine line = UiLine.of(UiSegment.of(item.status().mark(), emphasis),
                 UiSegment.of(item.content(), emphasis));
+        if (item.status() == TodoStatus.BLOCKED) {
+            // 卡住时「为什么」比「谁卡的」重要得多：面板一行放不下两者，而原因决定下一步动作
+            return item.reason() == null ? line : withReason(line, item.reason());
+        }
         return item.owner() == null ? line : withOwner(line, ownerSegment(item.owner()));
+    }
+
+    /**
+     * 在行尾接上卡住的原因（超长截断）。
+     *
+     * @param line   已经渲染好的行，不可为 {@code null}
+     * @param reason 原因，不可为空白
+     * @return 新行，保证非 {@code null}
+     */
+    private static UiLine withReason(UiLine line, String reason) {
+        String text = reason.replace('\n', ' ').trim();
+        if (text.length() > MAX_REASON_CHARS) {
+            text = text.substring(0, MAX_REASON_CHARS) + "…";
+        }
+        List<UiSegment> segments = new ArrayList<UiSegment>(line.getSegments());
+        segments.add(UiSegment.of(" —— " + text, UiEmphasis.ERROR));
+        return new UiLine(segments);
     }
 
     /**
@@ -137,6 +162,9 @@ final class TodoPanel implements ExtensionHandler<PanelContributionRequest, Pane
         }
         if (status == TodoStatus.IN_PROGRESS) {
             return UiEmphasis.ACCENT;
+        }
+        if (status == TodoStatus.BLOCKED) {
+            return UiEmphasis.ERROR;
         }
         return UiEmphasis.NORMAL;
     }

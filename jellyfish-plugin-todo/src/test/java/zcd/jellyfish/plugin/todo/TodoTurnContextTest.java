@@ -46,7 +46,7 @@ class TodoTurnContextTest {
         TurnContext result = turnContext.handle(new TurnContextRequest("s-1", "继续", false));
 
         assertTrue(!result.isEmpty());
-        assertEquals("[待办]\n- [ ] 写文档\n- [x] 跑测试", result.getText());
+        assertEquals("[待办]\n- [ ] 写文档\n- [x] 跑测试\n- 提示：还有 1 条没人做，可以派子代理用 todo_claim 认领它们。", result.getText());
     }
 
     @Test
@@ -76,7 +76,7 @@ class TodoTurnContextTest {
 
         TurnContext result = turnContext.handle(new TurnContextRequest("s-1", "继续", false));
 
-        assertEquals("[待办]\n- [x] 写文档\n- [ ] 跑测试", result.getText());
+        assertEquals("[待办]\n- [x] 写文档\n- [ ] 跑测试\n- 提示：还有 1 条没人做，可以派子代理用 todo_claim 认领它们。", result.getText());
     }
 
     @Test
