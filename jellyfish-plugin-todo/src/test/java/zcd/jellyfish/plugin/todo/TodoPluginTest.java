@@ -81,10 +81,13 @@ class TodoPluginTest {
     }
 
     @Test
-    @DisplayName("五个面各注册一次，另注册一次会话删除清理")
+    @DisplayName("五个面各注册一次，另注册三个工具与会话删除清理")
     void start_should_registerAllCapabilities() {
         assertEquals(1, extensions.bindings(CommandRequest.class, "todo").size());
         assertEquals(1, extensions.bindings(ToolCallRequest.class, TodoWriteTool.NAME).size());
+        // 共享协作面：子代理认领与完成，与父回合读写同一份清单
+        assertEquals(1, extensions.bindings(ToolCallRequest.class, TodoClaimTool.NAME).size());
+        assertEquals(1, extensions.bindings(ToolCallRequest.class, TodoDoneTool.NAME).size());
         assertEquals(1, extensions.bindings(TurnContextRequest.class, null).size());
         assertEquals(1, extensions.bindings(StatusLineContributionRequest.class, null).size());
         assertEquals(1, extensions.bindings(PanelContributionRequest.class, null).size());
@@ -102,6 +105,21 @@ class TodoPluginTest {
                 new SessionDeleteRequest("s-1"));
 
         assertFalse(Files.exists(file));
+    }
+
+    @Test
+    @DisplayName("认领成功后也广播 UI 失效：子代理改了清单，父回合那边没有别的信号")
+    void claimTool_should_publishUiInvalidatedEvent() throws Exception {
+        writeTool().handle(request());
+        CountDownLatch invalidated = new CountDownLatch(1);
+        events.subscribe("claim-probe", UiInvalidatedEvent.class, event -> invalidated.countDown());
+        ExtensionHandler<ToolCallRequest, ToolCallResult> claim =
+                extensions.bindings(ToolCallRequest.class, TodoClaimTool.NAME).get(0).getHandler();
+
+        claim.handle(new ToolCallRequest(TodoClaimTool.NAME, new LinkedHashMap<String, Object>(), "s-1",
+                null, null, null, "run-1", null));
+
+        assertTrue(invalidated.await(2, TimeUnit.SECONDS), "认领应触发一次 UI 失效");
     }
 
     @Test

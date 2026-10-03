@@ -7,8 +7,14 @@ import zcd.jellyfish.api.JellyfishException;
 /**
  * 一条待办：内容 + 状态。
  * <p>
- * <b>刻意只有两个字段</b>：待办是「本会话要给模型看的计划」，编号、创建时间这类元信息对模型没有意义，
+ * <b>字段刻意少</b>：待办是「本会话要给模型看的计划」，编号、创建时间这类元信息对模型没有意义，
  * 而对人可见的编号由渲染时按位置生成，不必落盘。字段越少，越不容易在插件与模型之间产生两套语义。
+ * <p>
+ * <b>第三个字段是「谁在做」而不是「第几号」</b>：子代理会与父回合共享同一份待办，
+ * 于是「这一条已经有人领了」必须是个可持久的事实——否则两个子代理会做同一件事，
+ * 而父回合的模型也看不出谁在做什么。认领者记的是 <b>run 标识</b>（不是 agent 类型）：
+ * run 是一等公民的身份，agent 类型可以从它反查出来，反过来不行。
+ * 这一点仍然不需要编号：{@code todo_done} 按<b>内容</b>定位一条待办，而内容本来就是模型手上的那个把手。
  * <p>
  * <b>状态是一枚 {@link TodoStatus} 而不是 {@code boolean done}</b>：两态装不下「进行中」，
  * 而模型表达它用的词是 {@code in_progress}——形态必须与模型的语言对齐。
@@ -32,6 +38,9 @@ final class TodoItem {
     /** 待办状态。 */
     private final TodoStatus status;
 
+    /** 认领这一条的 run 标识；尚未被认领时为 {@code null}。 */
+    private final String owner;
+
     /**
      * 构造待办。
      *
@@ -40,11 +49,24 @@ final class TodoItem {
      * @throws JellyfishException 内容为空白时抛出
      */
     TodoItem(String content, TodoStatus status) {
+        this(content, status, null);
+    }
+
+    /**
+     * 构造带认领者的待办。
+     *
+     * @param content 待办内容，不可为空白
+     * @param status  待办状态，可为 {@code null}（按未开始处理）
+     * @param owner   认领这一条的 run 标识，可为 {@code null}（尚未被认领）
+     * @throws JellyfishException 内容为空白时抛出
+     */
+    TodoItem(String content, TodoStatus status, String owner) {
         if (content == null || content.trim().isEmpty()) {
             throw new JellyfishException("todo content must not be blank");
         }
         this.content = content;
         this.status = status == null ? TodoStatus.PENDING : status;
+        this.owner = owner;
     }
 
     /**
@@ -61,8 +83,9 @@ final class TodoItem {
     @JsonCreator
     TodoItem(@JsonProperty("content") String content,
              @JsonProperty("status") String status,
-             @JsonProperty("done") Boolean done) {
-        this(content, resolveStatus(status, done));
+             @JsonProperty("done") Boolean done,
+             @JsonProperty("owner") String owner) {
+        this(content, resolveStatus(status, done), owner);
     }
 
     /**
@@ -110,8 +133,43 @@ final class TodoItem {
         return status;
     }
 
+    /**
+     * 获取认领这一条的 run 标识。
+     *
+     * @return run 标识；尚未被认领时为 {@code null}
+     */
+    @JsonProperty("owner")
+    String owner() {
+        return owner;
+    }
+
+    /**
+     * 生成一条状态与认领者已改的新待办。
+     * <p>
+     * 内容不变，因此这是「同一条待办换了状态」而不是「新的一条」——
+     * 认领与完成都只该改这两件事。
+     *
+     * @param newStatus 新状态
+     * @param newOwner  新的认领者，可为 {@code null}（表示不带认领者）
+     * @return 新待办，保证非 {@code null}
+     */
+    TodoItem with(TodoStatus newStatus, String newOwner) {
+        return new TodoItem(content, newStatus, newOwner);
+    }
+
+    /**
+     * 判断是否被某个 run 认领。
+     *
+     * @param runId run 标识，可为 {@code null}
+     * @return 认领者与给定标识相同返回 {@code true}
+     */
+    boolean ownedBy(String runId) {
+        return owner != null && owner.equals(runId);
+    }
+
     @Override
     public String toString() {
-        return "TodoItem{status=" + status.wireName() + ", content=" + content + '}';
+        return "TodoItem{status=" + status.wireName() + ", content=" + content
+                + (owner == null ? "" : ", owner=" + owner) + '}';
     }
 }

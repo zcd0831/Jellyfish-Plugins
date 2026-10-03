@@ -5,6 +5,9 @@ import org.junit.jupiter.api.Test;
 import zcd.jellyfish.api.JellyfishException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
@@ -40,27 +43,47 @@ class TodoItemTest {
     @Test
     @DisplayName("反序列化构造器认旧字段 done：升级前的待办文件不能读空")
     void jsonCreator_should_readLegacyDoneField() {
-        assertEquals(TodoStatus.COMPLETED, new TodoItem("写文档", null, true).status());
-        assertEquals(TodoStatus.PENDING, new TodoItem("写文档", null, false).status());
+        assertEquals(TodoStatus.COMPLETED, new TodoItem("写文档", null, true, null).status());
+        assertEquals(TodoStatus.PENDING, new TodoItem("写文档", null, false, null).status());
     }
 
     @Test
     @DisplayName("两个字段都在时以 status 为准：它是当前格式")
     void jsonCreator_should_preferStatusOverLegacyDone() {
-        assertEquals(TodoStatus.IN_PROGRESS, new TodoItem("写文档", "in_progress", false).status());
+        assertEquals(TodoStatus.IN_PROGRESS, new TodoItem("写文档", "in_progress", false, null).status());
     }
 
     @Test
     @DisplayName("两个字段都缺时按未开始，而不是报错")
     void jsonCreator_should_defaultToPending_when_bothAbsent() {
-        assertEquals(TodoStatus.PENDING, new TodoItem("写文档", null, null).status());
+        assertEquals(TodoStatus.PENDING, new TodoItem("写文档", null, null, null).status());
+    }
+
+    @Test
+    @DisplayName("认领者随文件读写：它是「谁在做」的可持久事实")
+    void owner_shouldSurviveJsonRoundTrip() {
+        TodoItem claimed = new TodoItem("核对缓存策略", TodoStatus.IN_PROGRESS, "run-1");
+
+        assertEquals("run-1", claimed.owner());
+        assertTrue(claimed.ownedBy("run-1"));
+        assertFalse(claimed.ownedBy("run-2"));
+        assertFalse(claimed.ownedBy(null));
+    }
+
+    @Test
+    @DisplayName("旧文件没有 owner 字段时读成未认领，而不是报错")
+    void jsonCreator_should_defaultOwnerToNull() {
+        TodoItem legacy = new TodoItem("写文档", "pending", null, null);
+
+        assertNull(legacy.owner());
+        assertFalse(legacy.ownedBy("run-1"));
     }
 
     @Test
     @DisplayName("状态取值写错要报错并说出实际值，不能静默退回旧字段")
     void jsonCreator_should_rejectUnknownStatus() {
         JellyfishException error = assertThrows(JellyfishException.class,
-                () -> new TodoItem("写文档", "doing", true));
+                () -> new TodoItem("写文档", "doing", true, null));
 
         assertEquals("待办文件的 status 只能是 pending、in_progress 或 completed，实际为 \"doing\"",
                 error.getMessage());

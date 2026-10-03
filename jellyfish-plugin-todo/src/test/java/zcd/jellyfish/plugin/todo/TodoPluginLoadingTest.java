@@ -99,7 +99,7 @@ class TodoPluginLoadingTest {
     }
 
     @Test
-    @DisplayName("启动后 /todo 命令、todo_write 工具、提示词贡献、状态栏贡献与面板贡献都应可路由")
+    @DisplayName("启动后 /todo 命令、三个工具、提示词贡献、状态栏贡献与面板贡献都应可路由")
     void bootstrap_should_registerAllCapabilities() throws IOException {
         installPlugin();
 
@@ -122,13 +122,15 @@ class TodoPluginLoadingTest {
             tools.add(descriptor.getName());
         }
         assertTrue(tools.contains(TodoWriteTool.NAME), tools.toString());
+        assertTrue(tools.contains(TodoClaimTool.NAME), tools.toString());
+        assertTrue(tools.contains(TodoDoneTool.NAME), tools.toString());
 
         assertEquals(1, extensions.handlers(TurnContextRequest.class, null).size());
         assertEquals(1, extensions.handlers(PanelContributionRequest.class, null).size());
     }
 
     @Test
-    @DisplayName("插件卸载后五个面的注册都应被按 owner 全部回收")
+    @DisplayName("插件卸载后全部注册都应被按 owner 回收")
     void close_should_unregisterAllCapabilities() throws IOException {
         installPlugin();
 
@@ -138,6 +140,8 @@ class TodoPluginLoadingTest {
         manager = null;
 
         assertTrue(extensions.handlers(ToolCallRequest.class, TodoWriteTool.NAME).isEmpty());
+        assertTrue(extensions.handlers(ToolCallRequest.class, TodoClaimTool.NAME).isEmpty());
+        assertTrue(extensions.handlers(ToolCallRequest.class, TodoDoneTool.NAME).isEmpty());
         assertTrue(extensions.handlers(CommandRequest.class, "todo").isEmpty());
         assertTrue(extensions.handlers(TurnContextRequest.class, null).isEmpty());
         assertTrue(extensions.handlers(StatusLineContributionRequest.class, null).isEmpty());

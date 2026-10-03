@@ -18,6 +18,9 @@ import java.util.Map;
 /**
  * {@code todo_write} 工具：模型写待办的唯一入口。
  * <p>
+ * <b>写的是「协作键」那一份清单</b>：子代理有独立会话，直接按 {@code sessionId} 写就会写到它自己那一份里
+ * （父回合看不见，盘上还多一个文件）。父回合调用时协作键与自己的会话标识相同，行为与从前一致。
+ * <p>
  * <b>整表覆盖而不是增量</b>：模型手上没有稳定的编号，让它 {@code add 1} / {@code done 2} 就得先把编号读回来，
  * 多一轮往返且容易记错；传一整份列表则「增、删、改、重排」共用同一种表达，也不会出现两份互相打架的状态。
  * 编号只在渲染给人看时按位置生成。
@@ -90,8 +93,10 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
 
     @Override
     public ToolCallResult handle(ToolCallRequest request) {
-        String sessionId = request.getSessionId();
-        if (sessionId == null || sessionId.trim().isEmpty()) {
+        // 协作键而不是 getSessionId()：子代理写的是父会话那一份清单（见 TodoScope）。
+        // 父回合自己调用时两者相同，因此这条规则对它没有任何行为变化。
+        String sessionId = TodoScope.collaborationKeyOf(request);
+        if (sessionId == null) {
             throw new JellyfishException("todo_write 需要会话上下文，当前没有会话");
         }
         List<TodoItem> stored = store.replace(sessionId, parse(request.getArguments().get("todos")));

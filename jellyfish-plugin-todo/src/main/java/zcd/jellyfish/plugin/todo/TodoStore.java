@@ -30,6 +30,15 @@ import java.util.Map;
  * 后缀，因此不会被读路径当成待办文件。
  * <p>
  * 文件操作同步阻塞在调用线程上（ReAct 回合线程或外壳线程）——待办变更本就该「写完才算数」。
+ * <p>
+ * <b>并发正确性靠本类的方法锁，而不是靠内核的条件写入</b>：认领与完成都是「读出整个列表 → 改其中一条 →
+ * 写回」，两个子代理同时做就会丢更新。凡是这类读-改-写，全部在<b>同一个 {@code synchronized} 方法内</b>
+ * 完成——本类是进程内单实例，因此这把方法锁就是那把唯一的锁。调用方拿不到「读一半」的列表，
+ * 也就不可能自己拼出一次有竞态的读-改-写。
+ * <p>
+ * <b>为什么不给内核加一条 compare-and-set</b>：容器的实际形态是插件自持的文件，内核那份会话级容器
+ * 到今天没有任务类消费方；为它先补并发原语是在猜未来的形状，而比较语义（值相等还是版本号）一旦
+ * 定下来就成了第三方插件依赖的公开契约。
  *
  * @author zcd
  */
@@ -87,16 +96,153 @@ final class TodoStore {
     synchronized List<TodoItem> replace(String sessionId, List<TodoItem> items) {
         String key = requireSafeFileName(sessionId);
         List<TodoItem> copy = immutableCopy(items);
+        persist(key, inheritClaims(itemsOf(key), copy));
+        return cache.get(key);
+    }
+
+    /**
+     * 认领第一条还没人做的待办。
+     * <p>
+     * <b>一个 run 只认领一条</b>：已经认领过的（且还没做完）直接返回那一条，而不是再领一条。
+     * 没有这条约束时，一个子代理多调一次就会把两件事都揽到自己名下，而它的提示词里只写了其中一件。
+     * <p>
+     * <b>认领不到不等待、不重试</b>：立即返回 {@link TodoActionResult.Code#NONE_PENDING}。
+     * 等待会让「这个 run 要跑多久」变得不可预测，而那是拉取式工作队列的形状——本项目明确不做。
+     *
+     * @param sessionId 会话标识，不可为空白且需可安全作为文件名
+     * @param runId     认领者的 run 标识，不可为空白
+     * @return 认领结果，保证非 {@code null}
+     * @throws JellyfishException 会话标识或 run 标识非法、或落盘失败时抛出
+     */
+    synchronized TodoActionResult claim(String sessionId, String runId) {
+        String key = requireSafeFileName(sessionId);
+        if (runId == null || runId.trim().isEmpty()) {
+            throw new JellyfishException("认领待办需要一个 run 标识，当前没有");
+        }
+        List<TodoItem> items = itemsOf(key);
+        for (TodoItem item : items) {
+            if (item.ownedBy(runId) && item.status() == TodoStatus.IN_PROGRESS) {
+                return TodoActionResult.ok(item);
+            }
+        }
+        for (int i = 0; i < items.size(); i++) {
+            TodoItem item = items.get(i);
+            if (item.status() == TodoStatus.PENDING && item.owner() == null) {
+                List<TodoItem> updated = new ArrayList<TodoItem>(items);
+                TodoItem claimed = item.with(TodoStatus.IN_PROGRESS, runId);
+                updated.set(i, claimed);
+                persist(key, updated);
+                return TodoActionResult.ok(claimed);
+            }
+        }
+        return TodoActionResult.failed(TodoActionResult.Code.NONE_PENDING);
+    }
+
+    /**
+     * 把一条待办标成完成。
+     * <p>
+     * <b>按内容定位</b>：内容就是模型手上唯一的把手（编号在落盘里刻意不存在）。
+     * 两条内容完全相同的待办命中的是第一条——那种计划本来就有歧义，而认领者会把正确的那条做完。
+     * <p>
+     * <b>归属判定</b>：别人正认领着的条目不允许被改（{@link TodoActionResult.Code#TAKEN}），
+     * 而无主的条目谁都可以标完成——父回合的模型在回收计划时就属于这种情况。
+     *
+     * @param sessionId 会话标识，不可为空白且需可安全作为文件名
+     * @param content   待办内容，不可为空白
+     * @param runId     调用方的 run 标识，可为 {@code null}（父回合不在任何 run 上）
+     * @return 完成结果，保证非 {@code null}
+     * @throws JellyfishException 会话标识非法、内容为空白或落盘失败时抛出
+     */
+    synchronized TodoActionResult complete(String sessionId, String content, String runId) {
+        String key = requireSafeFileName(sessionId);
+        if (content == null || content.trim().isEmpty()) {
+            throw new JellyfishException("待办内容不能为空");
+        }
+        List<TodoItem> items = itemsOf(key);
+        for (int i = 0; i < items.size(); i++) {
+            TodoItem item = items.get(i);
+            if (!item.content().equals(content)) {
+                continue;
+            }
+            if (item.owner() != null && !item.ownedBy(runId)) {
+                return TodoActionResult.failed(TodoActionResult.Code.TAKEN);
+            }
+            List<TodoItem> updated = new ArrayList<TodoItem>(items);
+            TodoItem done = item.with(TodoStatus.COMPLETED, item.owner());
+            updated.set(i, done);
+            persist(key, updated);
+            return TodoActionResult.ok(done);
+        }
+        return TodoActionResult.failed(TodoActionResult.Code.NOT_FOUND);
+    }
+
+    /**
+     * 让新列表继承上一份里已有的认领。
+     * <p>
+     * <b>为什么必须有这一步</b>：父回合的模型是用「整表覆盖」写计划的，它看不到认领者，写回来的条目
+     * 自然不带 owner。若不做继承，父回合随手一次重写就会把正在干活的子代理的认领抹掉，
+     * 于是另一个 run 可能领到同一件事，而第一个 run 的 {@code todo_done} 会突然「不是你的了」。
+     * <p>
+     * <b>认领是黏的</b>：内容没变、且上一份里已被认领的条目，其状态不会被一次重写改回「未开始」——
+     * 那等于把一件正在做的事重新放回池子里。模型照样可以把它标成完成（那是明确的意图）。
+     *
+     * @param previous 上一份列表，不可为 {@code null}
+     * @param incoming 新列表，不可为 {@code null}
+     * @return 继承后的新列表，保证非 {@code null}
+     */
+    private static List<TodoItem> inheritClaims(List<TodoItem> previous, List<TodoItem> incoming) {
+        if (previous.isEmpty() || incoming.isEmpty()) {
+            return incoming;
+        }
+        List<TodoItem> merged = new ArrayList<TodoItem>(incoming.size());
+        for (TodoItem item : incoming) {
+            TodoItem owner = findUnclaimedOwner(previous, item.content());
+            if (owner == null) {
+                merged.add(item);
+                continue;
+            }
+            boolean keepInProgress = owner.status() == TodoStatus.IN_PROGRESS
+                    && item.status() == TodoStatus.PENDING;
+            merged.add(item.with(keepInProgress ? TodoStatus.IN_PROGRESS : item.status(), owner.owner()));
+        }
+        return merged;
+    }
+
+    /**
+     * 在上一份列表里找同内容且带认领者的那一条。
+     *
+     * @param previous 上一份列表，不可为 {@code null}
+     * @param content  待办内容，不可为 {@code null}
+     * @return 带认领者的那一条；没有时返回 {@code null}
+     */
+    private static TodoItem findUnclaimedOwner(List<TodoItem> previous, String content) {
+        for (TodoItem item : previous) {
+            if (item.owner() != null && item.content().equals(content)) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 写入一份列表并同步缓存。
+     * <p>
+     * 空列表删文件而不是留一个 {@code []}：读路径本来就把「文件不存在」当空，
+     * 而一个目录里堆满空文件只会让「这个会话有没有待办」变难判断。
+     *
+     * @param key   已校验的会话标识
+     * @param items 待写列表，不可为 {@code null}
+     * @throws JellyfishException 落盘失败时抛出
+     */
+    private void persist(String key, List<TodoItem> items) {
+        List<TodoItem> copy = immutableCopy(items);
         Path file = fileOf(key);
         if (copy.isEmpty()) {
-            // 空列表不留空文件：删掉比留一个 [] 更干净，读路径本来就把「文件不存在」当空
             deleteIfExists(file);
-            cache.put(key, copy);
-            return copy;
+        } else {
+            writeAtomically(file, TodoJson.write(copy));
         }
-        writeAtomically(file, TodoJson.write(copy));
         cache.put(key, copy);
-        return copy;
     }
 
     /**
