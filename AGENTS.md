@@ -158,6 +158,9 @@ mvn -q -Pscript-it test
 ## 示例脚本与进程
 
 - **示例脚本在仓库顶层 `examples/scripts/{python,node}/`，且被端到端用例直接加载**：示例是从进程工作目录之外的路径被加载的（先拷进临时脚本根目录，因为 `hello` 会往自己的目录写便签），因此「示例能不能用」有 CI 守着——放在文档里的示例代码会腐烂，这份不会。改示例时 `manifest.json` 与声明必须一起改，`dump_manifest --check` 就是给这件事用的；两门语言的示例共用一份 `examples/scripts/README.md`，差异列成一张表，会一门就会另一门。
+  **`python/stock` 与 `python/stockpanel` 是刻意的例外**：它们要联网、要 `akshare`，因此不进 `-Pscript-it`
+  （端到端用例不访问外部资源）。代价是「有 CI 守着」这条保护对它们**不成立**——改完要按
+  `stock/DESIGN.md` 的「怎么重新验证」手动跑一遍，那里的数据源矩阵与单位口径是实测结论，不要靠记忆改。
 
 ## 命令行与进程（jellyfish-plugin-shell）
 

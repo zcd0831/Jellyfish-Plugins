@@ -536,6 +536,14 @@ PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
 自带 SSRF 防护（搜索端点按「配置来源可信」放行，`web_fetch` 的目标永远不放行，另有 `allowRanges`
 给 TUN/假 IP 代理豁免网段），是「脚本插件能不能写真实东西」的现成答案。
 
+`examples/scripts/python/{stock,stockpanel}/` 是另一个真实形态：**A 股行情与自选股**（`/stock` 命令、
+5 个取数工具、侧栏面板）。它演示两件真实插件一定会遇到的事——数据源要按「主口径 + 兜底」写
+（东财的推流域名在部分网络下会被远端直接断开，单一口径等于时好时坏），以及**联网的脚本必须与
+画面板的脚本分成两个进程**（面板处理器跑在界面渲染线程上、没有任何超时，一次网络请求就会冻住
+整个界面）。数据源矩阵与单位口径见
+[`examples/scripts/python/stock/DESIGN.md`](examples/scripts/python/stock/DESIGN.md)；
+它依赖 `akshare`，因此**不进端到端用例**，改完要手动验证。
+
 配置段写在 `jellyfish.json` 的 `plugins.configurations."jellyfish-plugin-python"`（或 `-node`）：
 
 ```json
