@@ -135,6 +135,11 @@ mvn -q -Pscript-it test
 - **工具能拿到调用者身份**：`ctx.parent_session_id` / `run_id` / `root_run_id`（Node 为
   `parentSessionId` / `runId` / `rootRunId`）。跨 run 协作的键要从内核取，不能用 `sessionId`——
   子代理有独立会话，用它做键会各写一份。
+- **取消会中止在途调用**：回合的 `CancellationToken` 传到桥接层后，在途脚本调用失败并隔离 worker
+  （与超时同一条链）。**脚本侧拿不到取消标志**：worker 是单线程的，在途调用期间读不到新帧，
+  因此不要依赖取消做资源清理。取消**不计入熔断**（用户主权 ≠ 脚本故障）。
+- **输出捕获仍是缺口**：脚本工具的输出是一次性返回的整个值，没有 `ToolOutputSink` 那条
+  「边写边落盘」的通道；超大输出靠内核的事后截断。需要时用 `max_bytes` 这类参数自己限制。
 
 ## 示例脚本与进程
 
