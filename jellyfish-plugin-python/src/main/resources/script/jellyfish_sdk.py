@@ -23,6 +23,40 @@ import sys
 # 扩展点类型名 → 处理函数。类型名与 Java 侧 codec 的 typeName() 必须逐字一致。
 _HANDLERS = {}
 
+#: 处理函数 → 它声明的关键字参数名集合（``None`` 表示接受全部，即带 ``**kwargs``）。
+#: 按函数对象缓存（函数本身被 ``_HANDLERS`` 持有，不存在回收后 id 复用的问题）。
+_SIGNATURE_CACHE = {}
+
+
+def _accepted_kwargs(func):
+    """取处理函数声明的关键字参数名。
+
+    **为什么要看签名**：扩展点的实参由能力档的 args 函数给出，而处理器往往只用得上其中一两个
+    （例如 ``session_before_close`` 只看 ``veto_supported``）。强制作者把用不到的参数也
+    一个一个列进签名，是把「协议里有什么」泄到「实现要用什么」上；不列又会在调用时报
+    「unexpected keyword argument」——两种都不好。
+
+    因此这里采「声明什么就给什么」：签了名的参数才传，带 ``**kwargs`` 的收全部。
+    这与命令候选查询那套签名约束同源（那里也只能给函数声明过的槽位）。
+
+    :param func: 处理函数
+    :return: 声明的参数名集合；``None`` 表示接受全部
+    """
+    if func in _SIGNATURE_CACHE:
+        return _SIGNATURE_CACHE[func]
+    try:
+        parameters = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        # 没有可内省的签名（内建函数、某些 C 扩展）：按「收全部」处理，保持原行为
+        _SIGNATURE_CACHE[func] = None
+        return None
+    if any(item.kind == inspect.Parameter.VAR_KEYWORD for item in parameters.values()):
+        accepted = None
+    else:
+        accepted = frozenset(name for name in parameters if name != "ctx")
+    _SIGNATURE_CACHE[func] = accepted
+    return accepted
+
 #: 候选查询调用时固定填 ``None`` 的两个实参：约定「``tokens is None`` ⇒ 这次是候选查询」。
 #: 放在 SDK 而不是某个装饰器里，是为了让 ``has_options=True`` 与 ``@command_options``
 #: 两个入口共用同一份约定——两处各写一遍的话，它们迟早会不一致
@@ -36,6 +70,9 @@ _SUBSCRIPTIONS = []
 
 # 声明过的贡献类型，用于检测「同一类型声明了两个函数」。
 _CONTRIBUTION_TYPES = set()
+
+#: 带路由键、且路由键来自用户配置的处理器声明（目前只有 ``model_catalog``）。
+_HANDLERS_DECL = []
 
 # 可以发布的事件名（与 Java 侧 ScriptEventFactory 的白名单一致）。
 #
@@ -375,7 +412,9 @@ def contributes(type_name):
     """声明一个类型级扩展点贡献。
 
     支持的类型：``prompt`` / ``status_line`` / ``panel`` / ``permission`` /
-    ``session_persist`` / ``session_restore`` / ``session_delete`` / ``compaction``。
+    ``session_persist`` / ``session_restore`` / ``session_delete`` / ``compaction`` /
+    ``tool_argument_pre`` / ``tool_result_post`` / ``turn_context`` /
+    ``session_before_close`` / ``session_before_fork`` / ``compaction_pre``。
 
     同一类型只能声明一个函数：清单里的 ``contributions`` 是「类型名集合」，
     它表达不了「同一个类型挂两个函数」，因此第二个声明会被当场拒绝，
@@ -425,6 +464,30 @@ def subscribe(*event_names):
 # ---------------------------------------------------------------- 清单生成
 
 
+def handler(type_name, route):
+    """声明一个带路由键的处理器（目前只有 ``model_catalog`` 需要）。
+
+    路由键由**用户配置**决定（provider 名），脚本无法从自己的声明里推出来，因此必须显式写出来。
+    它对应清单里的 ``handlers`` 条目，而处理函数走的是「同键唯一」那一路（与工具、命令同构）。
+
+    :param type_name: 扩展点类型名（如 ``model_catalog``）
+    :param route: 路由键（如 provider 名）
+    """
+
+    def decorate(func):
+        cleaned = None if route is None else str(route).strip()
+        if not cleaned:
+            raise ScriptError("handler 的 route 不能为空")
+        if any(item["type"] == type_name and item["route"] == cleaned
+               for item in _HANDLERS_DECL):
+            raise ScriptError("处理器重复声明: %s route=%s" % (type_name, cleaned))
+        _HANDLERS_DECL.append({"type": type_name, "route": cleaned})
+        _HANDLERS[(type_name, cleaned)] = func
+        return func
+
+    return decorate
+
+
 def declarations():
     """返回全部声明，供 worker 做清单校验与 ``--dump-manifest`` 使用。"""
     return {
@@ -433,6 +496,7 @@ def declarations():
         "commandOptions": _COMMAND_OPTIONS,
         "contributions": sorted(_CONTRIBUTION_TYPES),
         "events": list(_SUBSCRIPTIONS),
+        "handlers": [dict(item) for item in _HANDLERS_DECL],
     }
 
 
@@ -465,6 +529,8 @@ def dump_manifest(script_id=None, entry="main.py"):
         manifest["contributions"] = sorted(_CONTRIBUTION_TYPES)
     if _SUBSCRIPTIONS:
         manifest["events"] = list(_SUBSCRIPTIONS)
+    if _HANDLERS_DECL:
+        manifest["handlers"] = [dict(item) for item in _HANDLERS_DECL]
     return manifest
 
 
@@ -492,6 +558,10 @@ def compare_with(manifest):
     _compare_names(problems, "contributions", sorted(_CONTRIBUTION_TYPES),
                    list(manifest.get("contributions", [])))
     _compare_names(problems, "events", _SUBSCRIPTIONS, list(manifest.get("events", [])))
+    # 路由处理器按 ``type::route`` 比：宿主下发的是这个键，路由名写错一样是「模型调不到」
+    _compare_names(problems, "handlers",
+                   [item["type"] + "::" + item["route"] for item in _HANDLERS_DECL],
+                   list(manifest.get("handlers", [])))
     return problems
 
 
@@ -792,6 +862,204 @@ _define_args("request", _args_request)
 _define_shape("mapping", _as_mapping)
 
 
+# ---- 二期打通的能力档（数据进出、不在渲染线程/启动期）------------------------
+
+
+def _args_tool_argument_pre(payload):
+    return {
+        "agent_id": payload.get("agentId"),
+        "tool_name": payload.get("toolName"),
+        "arguments": payload.get("arguments") or {},
+        "source": payload.get("source"),
+        "session_id": payload.get("sessionId"),
+    }
+
+
+#: 参数改写能表达的三态；刻意没有「放行」——改写之后照旧要过权限判定。
+_ARGUMENT_OUTCOMES = ("ABSTAIN", "REPLACE", "DENY")
+
+
+def _shape_argument_decision(result):
+    """参数改写裁定的整形。
+
+    接受的写法：``None`` / ``False``（不改）、``True``（拒绝）、原因字符串（带理由的拒绝）、
+    ``{"arguments": {...}}``（替换）、``{"outcome": ..., "arguments": ..., "reason": ...}``。
+    未知 outcome 一律报错而不是静默按「不改」处理。
+    """
+    if result is None or result is False:
+        return {"outcome": "ABSTAIN"}
+    if result is True:
+        return {"outcome": "DENY"}
+    if isinstance(result, str):
+        return {"outcome": "DENY", "reason": result}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("参数改写返回值必须是 None、布尔、原因字符串或 {outcome, arguments, reason}")
+    if "outcome" in mapping:
+        outcome = str(mapping.get("outcome") or "").strip().upper()
+        if outcome not in _ARGUMENT_OUTCOMES:
+            raise ScriptError("outcome 必须是 %s，实际是 %r"
+                              % (" / ".join(_ARGUMENT_OUTCOMES), mapping.get("outcome")))
+        shaped = {"outcome": outcome}
+        if outcome == "REPLACE":
+            shaped["arguments"] = mapping.get("arguments") or {}
+        if mapping.get("reason") is not None:
+            shaped["reason"] = mapping["reason"]
+        return shaped
+    if "arguments" in mapping:
+        return {"outcome": "REPLACE", "arguments": mapping["arguments"] or {}}
+    raise ScriptError("参数改写返回值含未知键，允许：outcome / arguments / reason")
+
+
+def _args_tool_result_post(payload):
+    return {
+        "agent_id": payload.get("agentId"),
+        "tool_name": payload.get("toolName"),
+        "arguments": payload.get("arguments") or {},
+        "output": payload.get("output"),
+        "metadata": payload.get("metadata") or {},
+        "failed": bool(payload.get("failed")),
+        "session_id": payload.get("sessionId"),
+    }
+
+
+def _shape_result_adjustment(result):
+    """结果整形的整形：``None`` 表示不改；``{output, metadata}`` 只改给出的那一项。
+
+    **输出保持原始类型**：字符串就是字符串、结构化对象就是结构化对象。
+    """
+    if result is None:
+        return None
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("结果整形返回值必须是 None 或 {output, metadata}")
+    shaped = {}
+    if mapping.get("output") is not None:
+        shaped["output"] = mapping["output"]
+    if mapping.get("metadata") is not None:
+        shaped["metadata"] = mapping["metadata"]
+    return shaped or None
+
+
+def _args_turn_context(payload):
+    return {
+        "session_id": payload.get("sessionId"),
+        "user_input": payload.get("userInput") or "",
+        "nested": bool(payload.get("nested")),
+    }
+
+
+def _shape_turn_context(result):
+    if result is None:
+        return None
+    if isinstance(result, str):
+        return {"text": result}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("回合上下文返回值必须是 None、字符串或 {text: ...}")
+    return mapping
+
+
+def _args_session_before_close(payload):
+    return {
+        "session_id": payload.get("sessionId"),
+        "agent_id": payload.get("agentId"),
+        "reason": payload.get("reason"),
+        "veto_supported": bool(payload.get("vetoSupported")),
+    }
+
+
+def _args_session_before_fork(payload):
+    return {
+        "session_id": payload.get("sessionId"),
+        "agent_id": payload.get("agentId"),
+        "message_id": payload.get("messageId"),
+        "cut_index": payload.get("cutIndex"),
+        "message_count": payload.get("messageCount"),
+    }
+
+
+def _shape_lifecycle_verdict(result):
+    """生命周期裁定的整形：``None`` / ``False`` 放行，``True`` 拦下，字符串是带理由的拦下。"""
+    if result is None or result is False:
+        return {"cancel": False}
+    if result is True:
+        return {"cancel": True}
+    if isinstance(result, str):
+        return {"cancel": True, "reason": result}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("生命周期裁定必须是 None、布尔、原因字符串或 {cancel, reason}")
+    shaped = {"cancel": bool(mapping.get("cancel"))}
+    if mapping.get("reason") is not None:
+        shaped["reason"] = mapping["reason"]
+    return shaped
+
+
+def _args_compaction_pre(payload):
+    return {
+        "session_id": payload.get("sessionId"),
+        "trigger": payload.get("trigger"),
+        "message_count": payload.get("messageCount"),
+        "tokens_before": payload.get("tokensBefore"),
+        "keep_recent_messages": payload.get("keepRecentMessages"),
+        "previous_boundary_message_id": payload.get("previousBoundaryMessageId"),
+    }
+
+
+def _shape_compaction_directive(result):
+    """压缩指令的整形：``None`` 放行，``{"cancel": true}`` 拦下，``{"keepRecent": n}`` 改保留条数。"""
+    if result is None:
+        return None
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("压缩指令必须是 None 或 {cancel, reason, keepRecent}")
+    if mapping.get("cancel"):
+        shaped = {"cancel": True}
+        if mapping.get("reason") is not None:
+            shaped["reason"] = mapping["reason"]
+        return shaped
+    if mapping.get("keepRecent") is not None:
+        return {"keepRecent": mapping["keepRecent"]}
+    return None
+
+
+def _args_model_catalog(payload):
+    return {
+        "provider_name": payload.get("providerName"),
+        "provider_type": payload.get("providerType"),
+    }
+
+
+def _shape_model_catalog(result):
+    """模型目录的整形：空列表含义是「我不表态」，回落成配置里的 models。"""
+    if result is None:
+        return {"models": []}
+    if isinstance(result, (list, tuple)):
+        return {"models": list(result)}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("模型目录返回值必须是 None、列表或 {models: [...]}")
+    shaped = dict(mapping)
+    shaped.setdefault("models", [])
+    return shaped
+
+
+_define_args("tool_argument_pre", _args_tool_argument_pre)
+_define_shape("argument_decision", _shape_argument_decision)
+_define_args("tool_result_post", _args_tool_result_post)
+_define_shape("result_adjustment", _shape_result_adjustment)
+_define_args("turn_context", _args_turn_context)
+_define_shape("turn_context", _shape_turn_context)
+_define_args("session_before_close", _args_session_before_close)
+_define_args("session_before_fork", _args_session_before_fork)
+_define_shape("lifecycle_verdict", _shape_lifecycle_verdict)
+_define_args("compaction_pre", _args_compaction_pre)
+_define_shape("compaction_directive", _shape_compaction_directive)
+_define_args("model_catalog", _args_model_catalog)
+_define_shape("model_catalog", _shape_model_catalog)
+
+
 # ---- 事件 -----------------------------------------------------------------
 
 
@@ -836,7 +1104,11 @@ def invoke(script_id, type_name, route_key, payload, emitter=None):
         raise ScriptError("没有处理 %s=%s 的函数" % (type_name, lookup_key))
     arguments, shaper = _DISPATCH[type_name]
     context = ScriptContext(script_id, payload, emitter)
-    result = handler(**arguments(payload or {}), ctx=context)
+    kwargs = arguments(payload or {})
+    accepted = _accepted_kwargs(handler)
+    if accepted is not None:
+        kwargs = {name: value for name, value in kwargs.items() if name in accepted}
+    result = handler(**kwargs, ctx=context)
     return shaper(result) if shaper is not None else None
 
 
@@ -858,6 +1130,7 @@ __all__ = [
     "ScriptContext",
     "configuration",
     "tool",
+    "handler",
     "command",
     "command_options",
     "contributes",

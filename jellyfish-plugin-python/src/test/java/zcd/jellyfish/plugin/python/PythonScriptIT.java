@@ -16,6 +16,18 @@ import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
 import zcd.jellyfish.api.extension.ToolMetadata;
 import zcd.jellyfish.api.extension.ToolOutputSink;
+import zcd.jellyfish.api.extension.CompactionDirective;
+import zcd.jellyfish.api.extension.CompactionPreRequest;
+import zcd.jellyfish.api.extension.CompactionTrigger;
+import zcd.jellyfish.api.extension.ModelCatalogRequest;
+import zcd.jellyfish.api.extension.ModelCatalogResult;
+import zcd.jellyfish.api.extension.SessionBeforeCloseRequest;
+import zcd.jellyfish.api.extension.SessionBeforeForkRequest;
+import zcd.jellyfish.api.extension.ToolArgumentDecision;
+import zcd.jellyfish.api.extension.ToolArgumentPreRequest;
+import zcd.jellyfish.api.extension.ToolResultAdjustment;
+import zcd.jellyfish.api.extension.ToolResultPostRequest;
+import zcd.jellyfish.api.extension.TurnContextRequest;
 import zcd.jellyfish.infra.action.ActionQueue;
 import zcd.jellyfish.infra.metrics.MetricsRegistry;
 import zcd.jellyfish.infra.shell.ShellIngress;
@@ -249,6 +261,50 @@ class PythonScriptIT {
                 Collections.<String, Object>singletonMap("key", "PROJ-1"));
 
         assertTrue(result.getMetadata().isEmpty());
+    }
+
+    @Test
+    @DisplayName("二期扩展点应能被脚本声明并真实调用（含 routed handler）")
+    void secondWaveExtensions_should_beInvoked_endToEnd() throws IOException {
+        writeScript("ext", SECOND_WAVE_SCRIPT, SECOND_WAVE_MANIFEST);
+        startRuntime();
+
+        assertEquals("now: 2026-10-04", extensions.invoke(
+                extensions.handler(TurnContextRequest.class, null),
+                new TurnContextRequest("s-1", "hi", false)).getText());
+
+        ToolArgumentDecision decision = extensions.invoke(
+                extensions.handler(ToolArgumentPreRequest.class, null),
+                new ToolArgumentPreRequest("coder", "read_file", Collections.<String, Object>emptyMap(),
+                        ToolArgumentPreRequest.Source.MODEL, "s-1"));
+        assertTrue(decision.isReplace());
+        assertEquals("/tmp/read_file", decision.getArguments().get("path"));
+
+        ToolResultAdjustment adjustment = extensions.invoke(
+                extensions.handler(ToolResultPostRequest.class, null),
+                new ToolResultPostRequest("coder", "read_file", Collections.<String, Object>emptyMap(),
+                        "body", Collections.<String, Object>emptyMap(), false, "s-1"));
+        assertTrue(adjustment.hasMetadata());
+        assertEquals("已脱敏", adjustment.getMetadata().get("summary"));
+
+        assertTrue(extensions.invoke(extensions.handler(SessionBeforeCloseRequest.class, null),
+                new SessionBeforeCloseRequest("s-1", "coder",
+                        SessionBeforeCloseRequest.Reason.USER_REQUEST)).isCancelled());
+
+        assertTrue(extensions.invoke(extensions.handler(SessionBeforeForkRequest.class, null),
+                new SessionBeforeForkRequest("s-1", "coder", "m-1", 0, 1)).isCancelled());
+
+        CompactionDirective directive = extensions.invoke(
+                extensions.handler(CompactionPreRequest.class, null),
+                new CompactionPreRequest("s-1", CompactionTrigger.MANUAL, 10, 1000, 5, null));
+        assertEquals(3, directive.getKeepRecent().intValue());
+
+        ModelCatalogResult catalog = extensions.invoke(
+                extensions.handler(ModelCatalogRequest.class, "local"),
+                new ModelCatalogRequest("local", "openai"));
+        assertEquals(1, catalog.getModels().size());
+        assertEquals("local-model", catalog.getModels().get(0).getId());
+        assertEquals(8192, catalog.getModels().get(0).getContextLength());
     }
 
     @Test
@@ -1435,6 +1491,49 @@ class PythonScriptIT {
     /** 与 {@link #METADATA_SCRIPT} 逐字对应的清单。 */
     private static final String METADATA_MANIFEST = "{\"entry\":\"main.py\","
             + "\"tools\":[{\"name\":\"web_meta\"}]}";
+
+    /**
+     * 二期扩展点夹具：六个类型级贡献 + 一个带路由键的处理器（{@code model_catalog}）。
+     * <p>
+     * 处理器签名刻意不一致：有的只声明 {@code ctx}（不关心的参数就不必列），有的声明了用得上的槽位。
+     * 两种写法都要能跑——这是 SDK “声明什么就给什么”的约定。
+     */
+    private static final String SECOND_WAVE_SCRIPT = ""
+            + "from jellyfish_sdk import contributes, handler\n"
+            + "\n"
+            + "@contributes(\"turn_context\")\n"
+            + "def turn_context(ctx):\n"
+            + "    return \"now: 2026-10-04\"\n"
+            + "\n"
+            + "@contributes(\"tool_argument_pre\")\n"
+            + "def tool_argument_pre(tool_name, ctx):\n"
+            + "    return {\"arguments\": {\"path\": \"/tmp/\" + str(tool_name)}}\n"
+            + "\n"
+            + "@contributes(\"tool_result_post\")\n"
+            + "def tool_result_post(ctx):\n"
+            + "    return {\"metadata\": {\"summary\": \"已脱敏\"}}\n"
+            + "\n"
+            + "@contributes(\"session_before_close\")\n"
+            + "def session_before_close(veto_supported, ctx):\n"
+            + "    return \"dirty\" if veto_supported else None\n"
+            + "\n"
+            + "@contributes(\"session_before_fork\")\n"
+            + "def session_before_fork(ctx):\n"
+            + "    return True\n"
+            + "\n"
+            + "@contributes(\"compaction_pre\")\n"
+            + "def compaction_pre(ctx):\n"
+            + "    return {\"keepRecent\": 3}\n"
+            + "\n"
+            + "@handler(\"model_catalog\", route=\"local\")\n"
+            + "def local_catalog(provider_name, provider_type, ctx):\n"
+            + "    return [{\"id\": \"local-model\", \"contextLength\": 8192}]\n";
+
+    /** 与 {@link #SECOND_WAVE_SCRIPT} 逐字对应的清单。 */
+    private static final String SECOND_WAVE_MANIFEST = "{\"entry\":\"main.py\","
+            + "\"contributions\":[\"turn_context\",\"tool_argument_pre\",\"tool_result_post\","
+            + "\"session_before_close\",\"session_before_fork\",\"compaction_pre\"],"
+            + "\"handlers\":[{\"type\":\"model_catalog\",\"route\":\"local\"}]}";
 
     /**
      * 启动插件并完成注册。

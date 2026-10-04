@@ -261,6 +261,25 @@ class NodeScriptIT {
     }
 
     @Test
+    @DisplayName("带路由键的处理器（model_catalog）应能声明并真实调用")
+    void routedHandler_should_beInvoked_endToEnd() throws IOException {
+        writeScript("ext", HANDLER_SCRIPT, HANDLER_MANIFEST);
+        startRuntime();
+
+        zcd.jellyfish.api.extension.ModelCatalogResult catalog = extensions.invoke(
+                extensions.handler(zcd.jellyfish.api.extension.ModelCatalogRequest.class, "local"),
+                new zcd.jellyfish.api.extension.ModelCatalogRequest("local", "openai"));
+        assertEquals(1, catalog.getModels().size());
+        assertEquals("local-model", catalog.getModels().get(0).getId());
+        assertEquals(8192, catalog.getModels().get(0).getContextLength());
+
+        zcd.jellyfish.api.extension.TurnContext context = extensions.invoke(
+                extensions.handler(zcd.jellyfish.api.extension.TurnContextRequest.class, null),
+                new zcd.jellyfish.api.extension.TurnContextRequest("s-1", "hi", false));
+        assertEquals("now: 2026-10-04", context.getText());
+    }
+
+    @Test
     @DisplayName("调用超时应隔离 worker，并把原因作为失败回灌")
     void timeout_should_isolateWorker_andReportReason() throws IOException, InterruptedException {
         writeScript("jira", TOOL_SCRIPT, FULL_MANIFEST);
@@ -833,4 +852,17 @@ class NodeScriptIT {
     /** 与 {@link #METADATA_SCRIPT} 逐字对应的清单。 */
     private static final String METADATA_MANIFEST = "{\"entry\":\"main.js\","
             + "\"tools\":[{\"name\":\"web_meta\"}]}";
+
+    /** 路由处理器夹具：一个类型级贡献 + 一个 {@code handler}（路由键来自用户配置）。 */
+    private static final String HANDLER_SCRIPT = ""
+            + "'use strict';\n"
+            + "const { contributes, handler } = require('jellyfish_sdk');\n"
+            + "contributes('turn_context', () => 'now: 2026-10-04');\n"
+            + "handler({ type: 'model_catalog', route: 'local' },\n"
+            + "    () => [{ id: 'local-model', contextLength: 8192 }]);\n";
+
+    /** 与 {@link #HANDLER_SCRIPT} 逐字对应的清单。 */
+    private static final String HANDLER_MANIFEST = "{\"entry\":\"main.js\","
+            + "\"contributions\":[\"turn_context\"],"
+            + "\"handlers\":[{\"type\":\"model_catalog\",\"route\":\"local\"}]}";
 }
