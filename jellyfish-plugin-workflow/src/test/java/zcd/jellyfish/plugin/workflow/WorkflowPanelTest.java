@@ -49,7 +49,7 @@ class WorkflowPanelTest {
     }
 
     @Test
-    @DisplayName("渲染标题、进度与每个步骤的标记；落停靠区")
+    @DisplayName("渲染标题、进度与每个步骤的标记；落消息区上方")
     void handle_shouldRenderProgressAndSteps() {
         String id = tracker.started("s-1", spec(3));
         tracker.stepFinished(id, "step-0", StepState.DONE);
@@ -58,7 +58,7 @@ class WorkflowPanelTest {
         PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
 
         assertEquals(WorkflowPanel.TITLE, contribution.getTitle());
-        assertEquals(UiRegion.DOCK, contribution.getPreferredRegion());
+        assertEquals(UiRegion.TOP, contribution.getPreferredRegion());
         List<String> texts = textsOf(contribution);
         assertEquals("小任务 · 1/3 步", texts.get(0));
         assertEquals("[x] step-0（scout）", texts.get(1));

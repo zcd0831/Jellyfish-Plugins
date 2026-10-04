@@ -35,7 +35,7 @@ import java.nio.file.Path;
  *     <b>而不是往 system prompt 里注</b>——待办是会话中途反复改写的状态，放进缓存前缀的第 0 个 token
  *     意味着每勾掉一件事，整个请求连同全部历史都要重新计费一次；</li>
  *     <li>状态栏进度 → {@link StatusLineContributionRequest}，不敲命令也能看到还剩几件事；</li>
- *     <li>待办面板 → {@link PanelContributionRequest}，在侧栏常驻显示完整清单，
+ *     <li>待办面板 → {@link PanelContributionRequest}，在左栏常驻显示完整清单，
  *     被认领的条目还会带上「谁在做」；</li>
  *     <li>run 通知订阅 → {@link AgentRunProgressEvent}，把认领者的 run 标识翻成人看得懂的类型与状态
  *     （见 {@link RunPresence}）；</li>

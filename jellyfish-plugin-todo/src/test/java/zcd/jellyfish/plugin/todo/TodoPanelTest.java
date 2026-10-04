@@ -47,7 +47,7 @@ class TodoPanelTest {
     }
 
     @Test
-    @DisplayName("把清单渲染成面板：标题 + 每行一条 + 建议右栏")
+    @DisplayName("把清单渲染成面板：标题 + 每行一条 + 建议左栏")
     void handle_should_renderList() {
         store.replace("s-1", Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED),
                 new TodoItem("跑测试", TodoStatus.IN_PROGRESS), new TodoItem("提交", TodoStatus.PENDING)));
@@ -55,7 +55,7 @@ class TodoPanelTest {
         PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
 
         assertEquals("待办", contribution.getTitle());
-        assertEquals(UiRegion.RIGHT, contribution.getPreferredRegion());
+        assertEquals(UiRegion.LEFT, contribution.getPreferredRegion());
         assertEquals(3, contribution.getLines().size());
         assertEquals("[x] 写文档", contribution.getLines().get(0).text());
         assertEquals("[~] 跑测试", contribution.getLines().get(1).text());
