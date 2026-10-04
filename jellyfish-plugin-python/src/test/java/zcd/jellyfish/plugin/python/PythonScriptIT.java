@@ -28,6 +28,15 @@ import zcd.jellyfish.api.extension.ToolArgumentPreRequest;
 import zcd.jellyfish.api.extension.ToolResultAdjustment;
 import zcd.jellyfish.api.extension.ToolResultPostRequest;
 import zcd.jellyfish.api.extension.TurnContextRequest;
+import zcd.jellyfish.api.extension.AgingStrategyRequest;
+import zcd.jellyfish.api.extension.InputDirectiveRequest;
+import zcd.jellyfish.api.extension.InputDirectiveResult;
+import zcd.jellyfish.api.extension.InputTransformRequest;
+import zcd.jellyfish.api.extension.InputTransformResult;
+import zcd.jellyfish.api.extension.RequestTuningRequest;
+import zcd.jellyfish.api.extension.ToolActivationRequest;
+import zcd.jellyfish.api.extension.ToolDescriptor;
+import zcd.jellyfish.api.extension.TurnBeforeRequest;
 import zcd.jellyfish.infra.action.ActionQueue;
 import zcd.jellyfish.infra.metrics.MetricsRegistry;
 import zcd.jellyfish.infra.shell.ShellIngress;
@@ -54,6 +63,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -305,6 +315,61 @@ class PythonScriptIT {
         assertEquals(1, catalog.getModels().size());
         assertEquals("local-model", catalog.getModels().get(0).getId());
         assertEquals(8192, catalog.getModels().get(0).getContextLength());
+    }
+
+    @Test
+    @DisplayName("三期扩展点应能被脚本声明并真实调用（含 input_directive 的标记路由）")
+    void thirdWaveExtensions_should_beInvoked_endToEnd() throws IOException {
+        writeScript("ext", THIRD_WAVE_SCRIPT, THIRD_WAVE_MANIFEST);
+        startRuntime();
+
+        // 先暖网关（热路径点不冷启动）
+        assertTrue(extensions.invoke(extensions.handler(TurnBeforeRequest.class, null),
+                new TurnBeforeRequest("s-1", "coder", "干活", false, 0)).hasInput());
+
+        assertTrue(extensions.invoke(extensions.handler(ToolActivationRequest.class, null),
+                new ToolActivationRequest("s-1", "coder", new ToolDescriptor("bad", "坏工具")))
+                .isHidden());
+        assertFalse(extensions.invoke(extensions.handler(ToolActivationRequest.class, null),
+                new ToolActivationRequest("s-1", "coder", new ToolDescriptor("good", "好工具")))
+                .isDecided());
+
+        assertEquals(1, extensions.invoke(extensions.handler(RequestTuningRequest.class, null),
+                new RequestTuningRequest("s-1", "openai", "m", "k", 1, 1)).getCacheBreakpoints()
+                .intValue());
+        assertEquals(30, extensions.invoke(extensions.handler(AgingStrategyRequest.class, null),
+                new AgingStrategyRequest("s-1", 1, 1, 1, 1, 1, 1)).getAgingPercent().intValue());
+
+        InputTransformResult transformed = extensions.invoke(
+                extensions.handler(InputTransformRequest.class, null),
+                new InputTransformRequest("s-1", "!ls", InputTransformRequest.Source.CLI, true));
+        assertTrue(transformed.isHandled());
+        assertEquals("已接过去", transformed.getNotice());
+
+        InputDirectiveResult directive = extensions.invoke(
+                extensions.handler(InputDirectiveRequest.class, "!"),
+                new InputDirectiveRequest("!", "ls -la", "s-1"));
+        assertTrue(directive.isToolCall());
+        assertEquals("shell", directive.getToolName());
+        assertEquals("ls -la", directive.getArguments().get("command"));
+    }
+
+    @Test
+    @DisplayName("热路径点在 worker 未热时按「不表态」处理，不冷启动")
+    void hotPath_should_notColdStart() throws IOException {
+        writeScript("ext", THIRD_WAVE_SCRIPT, THIRD_WAVE_MANIFEST);
+        startRuntime();
+
+        // 未做任何调用 → 网关没起来 → 热路径点应直接返回「不表态」
+        assertNull(extensions.invoke(extensions.handler(RequestTuningRequest.class, null),
+                new RequestTuningRequest("s-1", "openai", "m", "k", 1, 1)).getCacheBreakpoints());
+
+        // 调一个非热路径的点把 worker 拉起来，再问一次——这次应该拿到脚本的答案
+        assertTrue(extensions.invoke(extensions.handler(TurnBeforeRequest.class, null),
+                new TurnBeforeRequest("s-1", "coder", "干活", false, 0)).hasInput());
+        assertEquals(1, extensions.invoke(extensions.handler(RequestTuningRequest.class, null),
+                new RequestTuningRequest("s-1", "openai", "m", "k", 1, 1)).getCacheBreakpoints()
+                .intValue());
     }
 
     @Test
@@ -1534,6 +1599,40 @@ class PythonScriptIT {
             + "\"contributions\":[\"turn_context\",\"tool_argument_pre\",\"tool_result_post\","
             + "\"session_before_close\",\"session_before_fork\",\"compaction_pre\"],"
             + "\"handlers\":[{\"type\":\"model_catalog\",\"route\":\"local\"}]}";
+
+    /** 三期夹具：五个类型级贡献 + 一个带标记路由的 {@code input_directive}。 */
+    private static final String THIRD_WAVE_SCRIPT = ""
+            + "from jellyfish_sdk import contributes, handler\n"
+            + "\n"
+            + "@contributes(\"tool_activation\")\n"
+            + "def tool_activation(tool_name, ctx):\n"
+            + "    return \"service down\" if tool_name == \"bad\" else None\n"
+            + "\n"
+            + "@contributes(\"request_tuning\")\n"
+            + "def request_tuning(ctx):\n"
+            + "    return {\"cacheBreakpoints\": 1}\n"
+            + "\n"
+            + "@contributes(\"aging_strategy\")\n"
+            + "def aging_strategy(ctx):\n"
+            + "    return {\"agingPercent\": 30}\n"
+            + "\n"
+            + "@contributes(\"input_transform\")\n"
+            + "def input_transform(ctx):\n"
+            + "    return {\"handled\": True, \"notice\": \"已接过去\"}\n"
+            + "\n"
+            + "@contributes(\"turn_before\")\n"
+            + "def turn_before(ctx):\n"
+            + "    return {\"input\": \"改写后的输入\"}\n"
+            + "\n"
+            + "@handler(\"input_directive\", route=\"!\")\n"
+            + "def bang(marker, input, ctx):\n"
+            + "    return {\"toolName\": \"shell\", \"arguments\": {\"command\": input}}\n";
+
+    /** 与 {@link #THIRD_WAVE_SCRIPT} 逐字对应的清单。 */
+    private static final String THIRD_WAVE_MANIFEST = "{\"entry\":\"main.py\","
+            + "\"contributions\":[\"tool_activation\",\"request_tuning\",\"aging_strategy\","
+            + "\"input_transform\",\"turn_before\"],"
+            + "\"handlers\":[{\"type\":\"input_directive\",\"route\":\"!\"}]}";
 
     /**
      * 启动插件并完成注册。

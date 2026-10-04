@@ -280,6 +280,35 @@ class NodeScriptIT {
     }
 
     @Test
+    @DisplayName("标记路由（input_directive）与三期扩展点应能真实调用")
+    void thirdWaveExtensions_should_beInvoked_endToEnd() throws IOException {
+        writeScript("ext", THIRD_WAVE_SCRIPT, THIRD_WAVE_MANIFEST);
+        startRuntime();
+
+        // 先暖网关（热路径点 request_tuning 不冷启动）
+        assertTrue(extensions.invoke(
+                extensions.handler(zcd.jellyfish.api.extension.TurnBeforeRequest.class, null),
+                new zcd.jellyfish.api.extension.TurnBeforeRequest("s-1", "coder", "干活", false, 0))
+                .hasInput());
+
+        zcd.jellyfish.api.extension.InputDirectiveResult directive = extensions.invoke(
+                extensions.handler(zcd.jellyfish.api.extension.InputDirectiveRequest.class, "!"),
+                new zcd.jellyfish.api.extension.InputDirectiveRequest("!", "ls -la", "s-1"));
+        assertTrue(directive.isToolCall());
+        assertEquals("shell", directive.getToolName());
+        assertEquals("ls -la", directive.getArguments().get("command"));
+
+        assertTrue(extensions.invoke(
+                extensions.handler(zcd.jellyfish.api.extension.ToolActivationRequest.class, null),
+                new zcd.jellyfish.api.extension.ToolActivationRequest("s-1", "coder",
+                        new zcd.jellyfish.api.extension.ToolDescriptor("bad", "坏工具"))).isHidden());
+        assertEquals(1, extensions.invoke(
+                extensions.handler(zcd.jellyfish.api.extension.RequestTuningRequest.class, null),
+                new zcd.jellyfish.api.extension.RequestTuningRequest("s-1", "openai", "m", "k", 1, 1))
+                .getCacheBreakpoints().intValue());
+    }
+
+    @Test
     @DisplayName("调用超时应隔离 worker，并把原因作为失败回灌")
     void timeout_should_isolateWorker_andReportReason() throws IOException, InterruptedException {
         writeScript("jira", TOOL_SCRIPT, FULL_MANIFEST);
@@ -865,4 +894,21 @@ class NodeScriptIT {
     private static final String HANDLER_MANIFEST = "{\"entry\":\"main.js\","
             + "\"contributions\":[\"turn_context\"],"
             + "\"handlers\":[{\"type\":\"model_catalog\",\"route\":\"local\"}]}";
+
+    /** 三期夹具：四个类型级贡献 + 一个带标记路由的 {@code input_directive}。 */
+    private static final String THIRD_WAVE_SCRIPT = ""
+            + "'use strict';\n"
+            + "const { contributes, handler } = require('jellyfish_sdk');\n"
+            + "contributes('turn_before', () => ({ input: '改写后的输入' }));\n"
+            + "contributes('input_transform', () => ({ handled: true, notice: '已接过去' }));\n"
+            + "contributes('request_tuning', () => ({ cacheBreakpoints: 1 }));\n"
+            + "contributes('tool_activation',\n"
+            + "    (params) => (params.toolName === 'bad' ? 'service down' : null));\n"
+            + "handler({ type: 'input_directive', route: '!' },\n"
+            + "    (params) => ({ toolName: 'shell', arguments: { command: params.input } }));\n";
+
+    /** 与 {@link #THIRD_WAVE_SCRIPT} 逐字对应的清单。 */
+    private static final String THIRD_WAVE_MANIFEST = "{\"entry\":\"main.js\","
+            + "\"contributions\":[\"turn_before\",\"input_transform\",\"request_tuning\",\"tool_activation\"],"
+            + "\"handlers\":[{\"type\":\"input_directive\",\"route\":\"!\"}]}";
 }

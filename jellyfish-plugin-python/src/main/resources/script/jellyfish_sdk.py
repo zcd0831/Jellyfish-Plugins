@@ -414,7 +414,9 @@ def contributes(type_name):
     支持的类型：``prompt`` / ``status_line`` / ``panel`` / ``permission`` /
     ``session_persist`` / ``session_restore`` / ``session_delete`` / ``compaction`` /
     ``tool_argument_pre`` / ``tool_result_post`` / ``turn_context`` /
-    ``session_before_close`` / ``session_before_fork`` / ``compaction_pre``。
+    ``session_before_close`` / ``session_before_fork`` / ``compaction_pre`` /
+    ``tool_activation`` / ``request_tuning`` / ``aging_strategy`` / ``input_transform`` / ``turn_before``。
+    带路由键的点（``model_catalog`` 的 provider 名、``input_directive`` 的标记）用 ``handler``。
 
     同一类型只能声明一个函数：清单里的 ``contributions`` 是「类型名集合」，
     它表达不了「同一个类型挂两个函数」，因此第二个声明会被当场拒绝，
@@ -1058,6 +1060,187 @@ _define_args("compaction_pre", _args_compaction_pre)
 _define_shape("compaction_directive", _shape_compaction_directive)
 _define_args("model_catalog", _args_model_catalog)
 _define_shape("model_catalog", _shape_model_catalog)
+
+
+# ---- 热路径与提交路径的扩展点（三期）------------------------------------
+
+
+def _args_tool_activation(payload):
+    return {
+        "session_id": payload.get("sessionId"),
+        "agent_id": payload.get("agentId"),
+        "tool_name": payload.get("toolName"),
+        "description": payload.get("description"),
+    }
+
+
+def _shape_tool_activation(result):
+    """工具激活裁定的整形。
+
+    ``None`` = 不表态（后续插件继续）；``True`` = 明确要它可见（能压过后面的插件）；
+    ``False`` / 原因字符串 = 明确隐藏。布尔会把「不想管」与「明确要它可见」变成同一个值，
+    因此这里把它们区分开。
+    """
+    if result is None:
+        return None
+    if result is True:
+        return {"visible": True}
+    if result is False:
+        return {"hidden": True}
+    if isinstance(result, str):
+        return {"hidden": True, "reason": result}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("工具激活返回值必须是 None、布尔、原因字符串或 {visible, hidden, reason}")
+    if mapping.get("visible"):
+        return {"visible": True}
+    if mapping.get("hidden"):
+        shaped = {"hidden": True}
+        if mapping.get("reason") is not None:
+            shaped["reason"] = mapping["reason"]
+        return shaped
+    return None
+
+
+def _args_request_tuning(payload):
+    return {
+        "provider_type": payload.get("providerType"),
+        "model_id": payload.get("modelId"),
+        "default_cache_key": payload.get("defaultCacheKey"),
+        "message_count": payload.get("messageCount"),
+        "tool_count": payload.get("toolCount"),
+        "session_id": payload.get("sessionId"),
+    }
+
+
+def _shape_request_tuning(result):
+    """请求调优的整形：``None`` 表示不改；只读已知字段（cacheKey / cacheRetention / cacheBreakpoints）。"""
+    if result is None:
+        return None
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("请求调优返回值必须是 None 或 {cacheKey, cacheRetention, cacheBreakpoints}")
+    return mapping
+
+
+def _args_aging_strategy(payload):
+    return {
+        "message_count": payload.get("messageCount"),
+        "used_tokens": payload.get("usedTokens"),
+        "budget_tokens": payload.get("budgetTokens"),
+        "compression_boundary": payload.get("compressionBoundary"),
+        "default_keep_recent_messages": payload.get("defaultKeepRecentMessages"),
+        "default_aging_percent": payload.get("defaultAgingPercent"),
+        "session_id": payload.get("sessionId"),
+    }
+
+
+def _shape_aging_strategy(result):
+    """老化策略的整形：``None`` 表示不改；已知字段 keepRecentMessages / agingPercent /
+    stubText / stubTextsByTool。"""
+    if result is None:
+        return None
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("老化策略返回值必须是 None 或 {keepRecentMessages, agingPercent, stubText}")
+    return mapping
+
+
+def _args_input_transform(payload):
+    return {
+        "text": payload.get("text") or "",
+        "source": payload.get("source"),
+        "has_session": bool(payload.get("hasSession")),
+        "session_id": payload.get("sessionId"),
+    }
+
+
+def _shape_input_transform(result):
+    """输入改写的整形：``None`` 不改；字符串 = 改成这句；``{"handled": true, "notice": ...}``
+    = 接过去、不进对话（像命令那样，只给用户一句说明）。"""
+    if result is None:
+        return None
+    if isinstance(result, str):
+        return {"text": result}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("输入改写返回值必须是 None、字符串或 {text, handled, notice}")
+    if mapping.get("handled"):
+        shaped = {"handled": True}
+        if mapping.get("notice") is not None:
+            shaped["notice"] = mapping["notice"]
+        return shaped
+    if mapping.get("text") is not None:
+        return {"text": mapping["text"]}
+    return None
+
+
+def _args_turn_before(payload):
+    return {
+        "agent_id": payload.get("agentId"),
+        "input": payload.get("input") or "",
+        "nested": bool(payload.get("nested")),
+        "depth": payload.get("depth"),
+        "session_id": payload.get("sessionId"),
+    }
+
+
+def _shape_turn_before(result):
+    """回合前指令的整形：``None`` 放行；``True`` / 原因字符串 = 拦下；``{"input": ...}`` = 改写输入。"""
+    if result is None or result is False:
+        return None
+    if result is True:
+        return {"cancel": True}
+    if isinstance(result, str):
+        return {"cancel": True, "reason": result}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("回合前指令必须是 None、布尔、原因字符串或 {cancel, input}")
+    if mapping.get("cancel"):
+        shaped = {"cancel": True}
+        if mapping.get("reason") is not None:
+            shaped["reason"] = mapping["reason"]
+        return shaped
+    if mapping.get("input") is not None:
+        return {"input": mapping["input"]}
+    return None
+
+
+def _args_input_directive(payload):
+    return {
+        "marker": payload.get("marker"),
+        "input": payload.get("input") or "",
+        "session_id": payload.get("sessionId"),
+    }
+
+
+def _shape_input_directive(result):
+    """输入指令的整形：``None`` / ``{"unclaimed": true}`` 不认领；字符串或 ``{toolName, arguments}``
+    声明一次工具调用（真正的执行走内核完整的权限与审批链）。"""
+    if result is None:
+        return None
+    if isinstance(result, str):
+        return {"toolName": result, "arguments": {}}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("输入指令返回值必须是 None、工具名字符串或 {toolName, arguments}")
+    if mapping.get("unclaimed") or not mapping.get("toolName"):
+        return None
+    return {"toolName": mapping["toolName"], "arguments": mapping.get("arguments") or {}}
+
+
+_define_args("tool_activation", _args_tool_activation)
+_define_shape("tool_activation", _shape_tool_activation)
+_define_args("request_tuning", _args_request_tuning)
+_define_shape("request_tuning", _shape_request_tuning)
+_define_args("aging_strategy", _args_aging_strategy)
+_define_shape("aging_strategy", _shape_aging_strategy)
+_define_args("input_transform", _args_input_transform)
+_define_shape("input_transform", _shape_input_transform)
+_define_args("turn_before", _args_turn_before)
+_define_shape("turn_before", _shape_turn_before)
+_define_args("input_directive", _args_input_directive)
+_define_shape("input_directive", _shape_input_directive)
 
 
 # ---- 事件 -----------------------------------------------------------------

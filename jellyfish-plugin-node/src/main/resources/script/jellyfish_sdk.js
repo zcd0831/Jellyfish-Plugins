@@ -410,7 +410,9 @@ function commandOptions(commandName, handler) {
  * 支持的类型：`prompt` / `status_line` / `panel` / `permission` /
  * `session_persist` / `session_restore` / `session_delete` / `compaction` /
  * `tool_argument_pre` / `tool_result_post` / `turn_context` /
- * `session_before_close` / `session_before_fork` / `compaction_pre`。
+ * `session_before_close` / `session_before_fork` / `compaction_pre` /
+ * `tool_activation` / `request_tuning` / `aging_strategy` / `input_transform` / `turn_before`。
+ * 带路由键的点（`model_catalog` 的 provider 名、`input_directive` 的标记）用 `handler`。
  *
  * 同一类型只能声明一个函数：清单里的 `contributions` 是「类型名集合」，
  * 它表达不了「同一个类型挂两个函数」，因此第二个声明会被当场拒绝，
@@ -1108,6 +1110,193 @@ defineShape('model_catalog', (result) => {
 defineArgs('model_catalog', (payload) => ({
     providerName: payload.providerName,
     providerType: payload.providerType === undefined ? null : payload.providerType,
+}));
+
+// ---- 热路径与提交路径的扩展点（三期）-------------------------------------
+
+/**
+ * 工具激活裁定的整形。
+ *
+ * `null` = 不表态（后续插件继续）；`true` = 明确要它可见（能压过后面的插件）；
+ * `false` / 原因字符串 = 明确隐藏。布尔会把「不想管」与「明确要它可见」变成同一个值，
+ * 因此这里把它们区分开。
+ */
+defineShape('tool_activation', (result) => {
+    if (result === undefined || result === null) {
+        return null;
+    }
+    if (result === true) {
+        return { visible: true };
+    }
+    if (result === false) {
+        return { hidden: true };
+    }
+    if (typeof result === 'string') {
+        return { hidden: true, reason: result };
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('工具激活返回值必须是 null、布尔、原因字符串或 {visible, hidden, reason}');
+    }
+    if (mapping.visible) {
+        return { visible: true };
+    }
+    if (mapping.hidden) {
+        const shaped = { hidden: true };
+        if (mapping.reason !== undefined && mapping.reason !== null) {
+            shaped.reason = mapping.reason;
+        }
+        return shaped;
+    }
+    return null;
+});
+
+defineArgs('tool_activation', (payload) => ({
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+    agentId: payload.agentId === undefined ? null : payload.agentId,
+    toolName: payload.toolName,
+    description: payload.description === undefined ? null : payload.description,
+}));
+
+/** 请求调优的整形：`null` 表示不改；只读已知字段（cacheKey / cacheRetention / cacheBreakpoints）。 */
+defineShape('request_tuning', (result) => {
+    if (result === undefined || result === null) {
+        return null;
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('请求调优返回值必须是 null 或 {cacheKey, cacheRetention, cacheBreakpoints}');
+    }
+    return mapping;
+});
+
+defineArgs('request_tuning', (payload) => ({
+    providerType: payload.providerType === undefined ? null : payload.providerType,
+    modelId: payload.modelId === undefined ? null : payload.modelId,
+    defaultCacheKey: payload.defaultCacheKey === undefined ? null : payload.defaultCacheKey,
+    messageCount: payload.messageCount,
+    toolCount: payload.toolCount,
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+}));
+
+/** 老化策略的整形：`null` 表示不改；只读已知字段。 */
+defineShape('aging_strategy', (result) => {
+    if (result === undefined || result === null) {
+        return null;
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('老化策略返回值必须是 null 或 {keepRecentMessages, agingPercent, stubText}');
+    }
+    return mapping;
+});
+
+defineArgs('aging_strategy', (payload) => ({
+    messageCount: payload.messageCount,
+    usedTokens: payload.usedTokens,
+    budgetTokens: payload.budgetTokens,
+    compressionBoundary: payload.compressionBoundary,
+    defaultKeepRecentMessages: payload.defaultKeepRecentMessages,
+    defaultAgingPercent: payload.defaultAgingPercent,
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+}));
+
+/**
+ * 输入改写的整形：`null` 不改；字符串 = 改成这句；
+ * `{handled: true, notice: ...}` = 接过去、不进对话（像命令那样，只给用户一句说明）。
+ */
+defineShape('input_transform', (result) => {
+    if (result === undefined || result === null) {
+        return null;
+    }
+    if (typeof result === 'string') {
+        return { text: result };
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('输入改写返回值必须是 null、字符串或 {text, handled, notice}');
+    }
+    if (mapping.handled) {
+        const shaped = { handled: true };
+        if (mapping.notice !== undefined && mapping.notice !== null) {
+            shaped.notice = mapping.notice;
+        }
+        return shaped;
+    }
+    if (mapping.text !== undefined && mapping.text !== null) {
+        return { text: mapping.text };
+    }
+    return null;
+});
+
+defineArgs('input_transform', (payload) => ({
+    text: payload.text || '',
+    source: payload.source,
+    hasSession: Boolean(payload.hasSession),
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+}));
+
+/** 回合前指令的整形：`null` 放行；`true` / 原因字符串 = 拦下；`{input: ...}` = 改写输入。 */
+defineShape('turn_before', (result) => {
+    if (result === undefined || result === null || result === false) {
+        return null;
+    }
+    if (result === true) {
+        return { cancel: true };
+    }
+    if (typeof result === 'string') {
+        return { cancel: true, reason: result };
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('回合前指令必须是 null、布尔、原因字符串或 {cancel, input}');
+    }
+    if (mapping.cancel) {
+        const shaped = { cancel: true };
+        if (mapping.reason !== undefined && mapping.reason !== null) {
+            shaped.reason = mapping.reason;
+        }
+        return shaped;
+    }
+    if (mapping.input !== undefined && mapping.input !== null) {
+        return { input: mapping.input };
+    }
+    return null;
+});
+
+defineArgs('turn_before', (payload) => ({
+    agentId: payload.agentId === undefined ? null : payload.agentId,
+    input: payload.input || '',
+    nested: Boolean(payload.nested),
+    depth: payload.depth,
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+}));
+
+/**
+ * 输入指令的整形：`null` / `{unclaimed: true}` 不认领；字符串或 `{toolName, arguments}`
+ * 声明一次工具调用（真正的执行走内核完整的权限与审批链）。
+ */
+defineShape('input_directive', (result) => {
+    if (result === undefined || result === null) {
+        return null;
+    }
+    if (typeof result === 'string') {
+        return { toolName: result, arguments: {} };
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('输入指令返回值必须是 null、工具名字符串或 {toolName, arguments}');
+    }
+    if (mapping.unclaimed || !mapping.toolName) {
+        return null;
+    }
+    return { toolName: mapping.toolName, arguments: mapping.arguments || {} };
+});
+
+defineArgs('input_directive', (payload) => ({
+    marker: payload.marker,
+    input: payload.input || '',
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
 }));
 
 // ---- 事件 -----------------------------------------------------------------

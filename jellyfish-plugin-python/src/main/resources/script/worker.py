@@ -306,7 +306,8 @@ def _route_key(type_name, payload):
     """从请求载荷里取路由键。
 
     路由键由请求字段决定而不是协议字段：宿主只下发 ``type`` 与 ``request``，
-    因此 tool / command / model_catalog 的名字只能从请求里读。其余扩展点是类型级的，路由键就是类型名。
+    因此 tool / command / model_catalog / input_directive 的名字只能从请求里读。
+    其余扩展点是类型级的，路由键就是类型名。
     """
     if type_name == "tool":
         return payload.get("tool")
@@ -315,6 +316,9 @@ def _route_key(type_name, payload):
     if type_name == "model_catalog":
         # 路由键是 provider 名（来自用户配置），不是类型名——它只能从请求里读
         return payload.get("providerName")
+    if type_name == "input_directive":
+        # 路由键是标记本身（! / @）
+        return payload.get("marker")
     return type_name
 
 
