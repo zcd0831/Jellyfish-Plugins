@@ -507,7 +507,14 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 ## 脚本插件（Python / Node 桥接）
 
 除了用 Java 写插件，还可以用 **Python 或 Node** 写。桥接插件把一个脚本目录变成内核眼里的标准
-PF4J 插件，脚本与 Java 插件**同权**（11 个扩展点全开），能力边界由进程隔离 + 静态清单 + 熔断三层承担：
+PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
+
+**脚本不是「与 Java 插件同权」**：两者在机制上同构（同样的注册、owner、回收、生命周期），
+但**扩展点覆盖的是一份「能力档」而不是全部**——已打通 11 个（工具、命令、候选查询、
+提示词 / 状态栏 / 面板贡献、权限拦截、会话持久化三段、压缩策略）。哪些待做、哪些明确不做，
+写在 `jellyfish-script/src/main/resources/script/extension-points.json`，并由单测守着：
+**内核新增扩展点而未分档，本仓库会构建失败**。明确不做的两类是「返回 Java 对象的扩展点」
+与「跑在渲染线程 / 启动期的扩展点」——脚本调用是一次可能冷启动的进程往返，那些位置付不起。
 
 | 模块 | 脚本根目录（默认） | 解释器（配置键） |
 | --- | --- | --- |
@@ -534,7 +541,10 @@ PF4J 插件，脚本与 Java 插件**同权**（11 个扩展点全开），能�
         "pythonPath": "python3",
         "invokeTimeoutSeconds": 30,
         "workerIdleSeconds": 300,
-        "gatewayIdleSeconds": 600
+        "gatewayIdleSeconds": 600,
+        "scripts": {
+          "web": { "provider": "brave", "apiKey": "${BRAVE_API_KEY}", "timeoutSeconds": 20 }
+        }
       },
       "jellyfish-plugin-node": {
         "scriptsRoot": "scripts/node",
@@ -545,6 +555,15 @@ PF4J 插件，脚本与 Java 插件**同权**（11 个扩展点全开），能�
 }
 ```
 
+- `scripts` 是**逐脚本配置段**：`scripts.<脚本 id>`（脚本目录名就是脚本 id）只属于那一个脚本，
+  值对桥接层不透明——写密钥、baseUrl、超时随便写。脚本用 `ctx.configuration` 读
+  （Python 还可用模块级 `configuration()`，在模块顶层就能调）。字符串值里的 `${ENV}` 照常插值，
+  因此与 Java 插件是同一条密钥通道。**密钥不能靠环境变量传给脚本**：脚本进程的环境是严格白名单
+  （仅解释器运行与依赖解析必需的那几个），这是有意的安全取舍。脚本 id 写错会在启动时告警。
+- **async handler（Node）**：工具 / 命令 / 贡献 / 事件的处理函数都可以是 `async`，桥接会 `await` 它，
+  因此 Node 脚本可以直接用 `fetch` / `undici` / `@mozilla/readability` 这类异步生态。
+  这不改变「在途请求只有一个」——worker 仍是一次只处理一帧，只是允许 handler 等 I/O。
+  事件处理器同样可以是 async，但它**不会被等待**（事件是旁路，不能拖住请求）。Python 无需这个改造。
 - `scriptsRoot` 相对**进程工作目录**解析，其下每个含 `manifest.json` 的子目录是一个脚本插件；目录不存在等于「还没建脚本」（正常的冷启动状态）。
 - `invokeTimeoutSeconds` 是单次调用超时，写 `0` 表示**没有截止时间**（不是「立刻超时」）；超时会隔离该脚本的 worker，并把这次失败计入熔断。
 - `workerIdleSeconds` / `gatewayIdleSeconds` 分别为 worker 与网关的空闲自毁秒数（写 `0` 关闭），空闲回零是「懒启动」的配套。

@@ -33,6 +33,56 @@
 Node 侧零第三方依赖：网关与 worker 只用 Node 内置模块，因此**不需要 `npm install`**；
 你自己的脚本当然可以有自己的 `node_modules`（那是脚本目录的事，与宿主无关）。
 
+## 读配置：`ctx.configuration`
+
+脚本自己的配置段写在桥接插件的 `scripts.<脚本 id>` 下（脚本目录名就是脚本 id）：
+
+```json
+{
+  "plugins": {
+    "configurations": {
+      "jellyfish-plugin-python": {
+        "scripts": { "web": { "provider": "brave", "apiKey": "${BRAVE_API_KEY}" } }
+      }
+    }
+  }
+}
+```
+
+```python
+@tool(name="web_search", description="联网搜索")
+def web_search(args, ctx):
+    cfg = ctx.configuration          # 与 module 级 configuration() 是同一份
+    return call_provider(cfg["provider"], cfg["apiKey"], args["query"])
+```
+
+```javascript
+tool({ name: 'web_search', description: '联网搜索' }, async (params, ctx) => {
+    const cfg = ctx.configuration;   // 与 module 级 configuration() 是同一份
+    return await callProvider(cfg.provider, cfg.apiKey, params.args.query);
+});
+```
+
+- `${ENV}` 由内核插值，因此密钥不落在配置文件里；**不能靠环境变量直接传给脚本**——
+  脚本进程的环境是严格白名单（只透传解释器运行与依赖解析必需的那几个），
+  这是有意的安全取舍，因此这条配置段就是脚本拿密钥的唯一通道。
+- **注入发生在 import 脚本之前**，所以模块顶层 `configuration()` 也拿得到值。
+
+## async handler（Node）
+
+Node 侧的工具 / 命令 / 贡献 / 事件处理器都可以是 `async`：桥接会 `await` 它，
+因此可以直接用 `fetch` / `undici` / `@mozilla/readability` 这类异步生态（Python 无需这个改造，
+它的 HTTP 客户端本来就是同步的）。
+
+```javascript
+tool({ name: 'web_fetch', description: '抓取网页正文' },
+     async (params) => (await fetch(params.args.url)).text());
+```
+
+- **在途请求仍然只有一个**：worker 仍是一次只处理一帧，只是允许 handler 等 I/O。
+  脚本作者依旧不必考虑并发。
+- **事件处理器的 async 不会被等**：事件是旁路，不能拖住后续请求。
+
 ## 跑起来
 
 每个示例目录就是一个脚本插件，目录名就是脚本标识：

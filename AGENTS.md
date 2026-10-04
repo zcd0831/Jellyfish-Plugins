@@ -108,6 +108,28 @@ mvn -q -Pscript-it test
 - **离线生成器与运行期入口分开**：清单生成是开发期动作（进程里只该有一个脚本被加载），网关是运行期进程（同时管多个脚本）。`dump_manifest` 与 `gateway --dump-manifest` 共用同一个入口，但网关那侧是延迟加载的，正常路径上连读都不读它。
 - **清单生成器改完实现必须跑一遍**：`--check` 按名字报差异、`--write` 直接落盘（推荐；shell 重定向会先把目标文件截空，而生成器要读它确认入口名）。**注意 `--check` 只比名字**——名片的 `summary` / `usage` / `aliases` / `sessionRequired` 漂移它看不出来，因此改了名片必须 `--write`，别把 `--check` 通过当成「清单是最新的」。
 
+- **内核新增扩展点时，脚本能力档会先红**：`jellyfish-script` 的 `ExtensionPointCoverageTest` 枚举 `jellyfish-api` 里
+  **全部** `ExtensionRequest` 子类，未在 `jellyfish-script/src/main/resources/script/extension-points.json` 里分档
+  （`in` / `planned` / `excluded`）即构建失败。**先做分档决策，再决定要不要实现**——那份名单是「脚本覆盖到哪」
+  这条契约的唯一真源，缺失它会让覆盖范围悄声漂移（曾长期停在 11/28）。
+- **脚本能力档不是「与 Java 插件同权」**：只覆盖数据进出、且不在渲染线程 / 启动期的扩展点。
+  `excluded` 里的两类不要试图打通：**返回 Java 对象的**（`ProviderRegistrationRequest` 要一个 `LlmTransport`，
+  脚本给不了）、**跑在渲染线程或启动期的**（`ToolRenderHintRequest` / `InputReferenceRequest` /
+  `ShortcutContributionRequest`）——脚本调用是一次可能冷启动的进程往返，这些位置不能付这个代价。
+
+## 脚本插件的两条能力
+
+- **逐脚本配置段**：`plugins.configurations.<桥接插件>.scripts.<脚本 id>` 是该脚本自己的配置，
+  值对桥接层不透明（想写密钥、baseUrl、超时都行），`${ENV}` 插值照常生效。脚本用
+  `ctx.configuration` 读；Python 另有模块级 `configuration()`（在模块顶层就能调，因此注入发生在 **import 脚本之前**）。
+  **环境变量仍是严格白名单**：密钥不能靠 env 传给脚本，要走上一条配置段——这是有意的安全取舍，不要为了「方便」改成全量透传。
+  脚本 id 写错（脚本目录不存在）会在启动时发一条 `ConfigWarningEvent`；`scripts` 段写成非对象当场报错。
+- **async handler（Node）**：`tool` / `command` / `contributes` / `subscribe` 的处理函数都可以返回 Promise，
+  桥接会 `await` 它。**这不改变「在途请求只有一个」**：worker 仍然一次只处理一帧，只是允许 handler 等 I/O。
+  两条实现细节不能丢：① 在途期间必须抑制空闲看门狗（同步 handler 会饿死定时器，async 不会，
+  否则「改成 async 反而被自己杀掉」）；② 事件处理器**不被 await**（事件是旁路，不能拖住请求）。
+  Python 侧不需要这个改造——它的 HTTP 客户端本来就是同步的。
+
 ## 示例脚本与进程
 
 - **示例脚本在仓库顶层 `examples/scripts/{python,node}/`，且被端到端用例直接加载**：示例是从进程工作目录之外的路径被加载的（先拷进临时脚本根目录，因为 `hello` 会往自己的目录写便签），因此「示例能不能用」有 CI 守着——放在文档里的示例代码会腐烂，这份不会。改示例时 `manifest.json` 与声明必须一起改，`dump_manifest --check` 就是给这件事用的；两门语言的示例共用一份 `examples/scripts/README.md`，差异列成一张表，会一门就会另一门。
