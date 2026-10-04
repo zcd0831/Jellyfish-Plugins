@@ -498,13 +498,14 @@ def stock_watch(args, ctx):
 # ---------------------------------------------------------------- 命令
 
 
-@command(name="stock", summary="A 股行情与自选股", usage="/stock [add|del|refresh|clear] [代码...]",
-         session_required=False)
+@command(name="stock", summary="A 股行情与自选股", usage="/stock [add|del|refresh|clear] [代码...]")
 def stock(tokens, raw, ctx):
     """``/stock`` 看自选股，``/stock 600519`` 看快照，``/stock add/del/refresh/clear`` 维护自选。
 
-    自选股是**用户级**的数据（存在 ``~/.jellyfish/stock``），不属于某个会话，
-    因此这条命令 ``session_required=False``：在首页就能用，也不会为了它建一个会话。
+    自选股是**用户级**的数据（存在 ``~/.jellyfish/stock``）、本身不依赖会话，
+    但这条命令**声明为需要会话**（``session_required`` 缺省 True），因此 TUI 首页不可用：
+    首页敲 ``/stock`` 不会执行（按会话约定当作用户的话发给模型），首页的 ``/help``
+    与补全清单里也不再列出它。
 
     **刻意不声明候选查询（``has_options``）**：那样按补全键会弹出选择页，
     而这条命令的用法很窄——五个子命令，``/stock`` 与 ``/stock help`` 都已列出。
