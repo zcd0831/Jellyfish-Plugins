@@ -531,7 +531,10 @@ PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
 [`examples/scripts/README.md`](examples/scripts/README.md)，仓库顶层 `examples/scripts/{python,node}/{hello,jira}`
 是可直接拷贝运行的示例（`hello` 教学最小集、`jira` 真实形态，且被端到端用例直接加载）；
 另有仅 Python 的 `examples/scripts/python/web/`——一个**零第三方依赖的联网搜索与网页抓取插件**
-（`web_search` / `web_fetch`，自带 SSRF 防护与逐跳重定向校验），是「脚本插件能不能写真实东西」的现成答案。
+（`web_search` / `web_fetch`）。它**什么都不配也能搜**：`provider` 缺省是 `auto`，兜底到 Exa 的
+公开 MCP 端点（无需 key，代价是查询会经过 Exa）；一旦配了自建 `endpoint`，`auto` 就优先用它。
+自带 SSRF 防护（搜索端点按「配置来源可信」放行，`web_fetch` 的目标永远不放行，另有 `allowRanges`
+给 TUN/假 IP 代理豁免网段），是「脚本插件能不能写真实东西」的现成答案。
 
 配置段写在 `jellyfish.json` 的 `plugins.configurations."jellyfish-plugin-python"`（或 `-node`）：
 
@@ -546,7 +549,7 @@ PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
         "workerIdleSeconds": 300,
         "gatewayIdleSeconds": 600,
         "scripts": {
-          "web": { "provider": "brave", "apiKey": "", "timeoutSeconds": 20 }
+          "web": { "provider": "auto", "endpoint": "", "timeoutSeconds": 20 }
         }
       },
       "jellyfish-plugin-node": {

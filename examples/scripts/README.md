@@ -80,21 +80,44 @@ tool({ name: 'web_search', description: '联网搜索' }, async (params, ctx) =>
 不需要 `pip install`。代价是正文提取的质量不如 `trafilatura` / `@mozilla/readability`——
 那是有意接受的取舍（换来「开箱即用」），要更好的效果只需把 `extract_text` 换掉。
 
-配置段（`plugins.configurations.jellyfish-plugin-python.scripts.web`）：
+### 开箱即用：默认走 Exa 的公开 MCP 端点
+
+**什么都配也能搜**。`provider` 缺省是 `auto`，它按这个顺序挑后端：
+
+```
+配了 endpoint（自建 SearXNG）  →  searxng
+配了 apiKey（Brave）          →  brave
+什么都没配                    →  exa-mcp   ← 零配置兜底
+```
+
+**自建的排最前是有意的**：一旦你配了自己的端点，查询就不再出你的机器。
+
+那个免费兜底是 Exa 的公开 MCP 端点（`https://mcp.exa.ai/mcp`，走 JSON-RPC + SSE，不需要任何 key）。
+代价要说清楚：
+
+- **查询会离开你的机器**，经过 Exa 的服务器；
+- 那是**引流性质的公开端点**——额度、限速、可用性都没有承诺（429 就是它在限速）；
+- 想要不依赖它，配 `endpoint` 即可，`auto` 就不再会用到它。
+
+### 配置段
+
+`plugins.configurations.jellyfish-plugin-python.scripts.web`：
 
 ```json
 {
-  "provider": "searxng",
+  "provider": "auto",
   "endpoint": "https://searx.example.org",
   "apiKey": "",
+  "exaMcpUrl": "",
+  "allowRanges": [],
   "timeoutSeconds": 15,
-  "maxChars": 20000,
-  "allowPrivateAddresses": false
+  "maxChars": 20000
 }
 ```
 
-- `provider`：`searxng`（自建，端点式、无需厂商 key）或 `brave`（需要 `apiKey`）。加一个后端 =
+- `provider`：`auto`（缺省）或显式指定 `searxng` / `brave` / `exa-mcp`。加一个后端 =
   在 `_PROVIDERS` 里加一个函数，其它地方都不用改。
+- `exaMcpUrl`：覆盖公开端点（自建网关、或把 `auto` 指到别处）。
 - **密钥走配置段，不走环境变量**：脚本进程的环境是严格白名单（不携带 JVM 的密钥），
   而配置段支持 `${ENV}` 插值——密钥因此不会落到文件里。
 
@@ -102,13 +125,30 @@ tool({ name: 'web_search', description: '联网搜索' }, async (params, ctx) =>
   > 整个进程**启动即失败**（`environment variable is not set: BRAVE_API_KEY`）。
   > 所以不用 brave 时把 `apiKey` 留成 `""`，不要写占位符——写上去就是一个定时炸弹，
   > 别人（或换个 shell）拉不到那个变量就起不来。
-- `allowPrivateAddresses`：默认 `false`，即**拒绝内网地址**。自建在内网的 SearXNG 才需要置 `true`。
 
-**SSRF 防护是这道工具的必备件**：`web_fetch` 的输入来自模型，而模型可能被网页内容诱导去访问
-`http://169.254.169.254/`（云元数据）或 `http://localhost:8080`（本机服务）。因此插件会
-把主机名解析成 IP 再逐个判定（只看字面量会漏掉解析到 `127.0.0.1` 的域名），
+### SSRF 防护：两道口子，范围刻意不同
+
+`web_fetch` 的输入来自**模型**，而模型可能被网页内容诱导去访问 `http://169.254.169.254/`
+（云元数据）或 `http://10.0.0.1`（内网服务）；没有防护，这个工具就是一台内网探测器。
+因此插件会把主机名解析成 IP 再逐个判定（只看字面量会漏掉解析到 `127.0.0.1` 的域名），
 并且**对每一跳重定向重新校验**（入口查一次不够：`https://evil.example/` 完全可以 302 到元数据地址）。
-已知边界：不防 DNS 重绑定（解析之后再改），那需要「解析-连接」用同一个 IP。
+
+放行只有两道口子，**它们覆盖的范围不一样**：
+
+| 口子 | 管什么 | 为什么这么划 |
+| --- | --- | --- |
+| 搜索端点（`endpoint` / `exaMcpUrl`） | 只放行那个端点本身 | 它来自**你的配置文件**，不是模型能拨动的，所以「我的搜索服务在内网」不需要额外开关 |
+| `allowRanges`（CIDR 列表） | 整段网段，**搜索与抓取都生效** | 给 TUN + 假 IP 代理用：Clash / Surge / Mihomo 会把**公网域名**解析成保留网段（典型 `198.18.0.0/15`），不豁免的话正常网页反而全被拦 |
+
+两条都是**刻意设计成写明的**，而不是一个布尔开关——开关会被顺手打开然后忘掉。
+
+> **已移除 `allowPrivateAddresses`**：它是个「内网全放行」的总闸，开了它连 `web_fetch` 的目标地址
+> 也一起放开。现在留着这个键会**当场报错**（不静默忽略），报错里直接给替代写法。
+> 要抓内网地址时用 `allowRanges`，例如 `["192.168.1.0/24"]`；`0.0.0.0/0` 与 `::/0` 会被拒绝。
+
+已知边界：不防 DNS 重绑定（解析之后再改），那需要让「解析」与「连接」用同一个 IP，
+标准库的 `urllib` 做不到。
+
 
 ## 给界面看的一行：`ToolResult`
 
