@@ -74,6 +74,12 @@ function startWatchdog(session) {
             fs.writeSync(2, `[${session.scriptId}] 父进程已退出，自行退出\n`);
             process.exit(0);
         }
+        // 在途调用期间不算空闲：本次调用超时由宿主（invokeTimeoutSeconds）判定，
+        // 而「这一次跑得比 idleSeconds 久」是正常的。同步 handler 会饿死本定时器，
+        // 异步 handler 不会——不补这一条，就会「改成 async 反而被自己的看门狗杀掉」
+        if (session.inFlight) {
+            return;
+        }
         if (session.idleSeconds && Date.now() - session.lastUsed > session.idleSeconds * 1000) {
             process.exit(0);
         }
@@ -155,16 +161,22 @@ function emitterFor(session, payload) {
  * 处理网关发来的一帧 `invoke`。
  *
  * 网关对每个 worker 同时只会有一个在途请求，因此这里不需要处理并发；
- * 这也是选它的原因：worker 内部因此可以完全是同步的，脚本作者不必考虑线程。
+ * 这也是选它的原因：脚本作者不必考虑并发。
+ *
+ * **handler 可以是 async 的**：返回 Promise 时这里会等它。在途期间标记 `session.inFlight`，
+ * 因为「一次调用等了 30 秒」与「worker 空闲了 30 秒」不是同一件事（见看门狗）。
+ * 等归等，**在途请求仍然只有一个**：主循环在这一次回帧之前不会读下一帧。
  *
  * @param {object} frame 请求帧
  * @param {object} session 会话状态
+ * @returns {Promise<void>} 处理完成
  */
-function handleInvoke(frame, session) {
+async function handleInvoke(frame, session) {
     const payload = frame.request || {};
+    session.inFlight = true;
     try {
-        const result = sdk.invoke(session.scriptId, frame.type, routeKey(frame.type, payload), payload,
-            emitterFor(session, payload));
+        const result = await sdk.invoke(session.scriptId, frame.type, routeKey(frame.type, payload),
+            payload, emitterFor(session, payload));
         send({ id: frame.id, result: result === undefined ? null : result }, session.maxFrameBytes);
     } catch (error) {
         if (error instanceof sdk.ScriptError) {
@@ -184,6 +196,8 @@ function handleInvoke(frame, session) {
                 message: `${error && error.name ? error.name : 'Error'}: ${error && error.message}`,
             },
         }, session.maxFrameBytes);
+    } finally {
+        session.inFlight = false;
     }
 }
 
@@ -194,15 +208,19 @@ function handleInvoke(frame, session) {
  * 处理器失败只打 stderr（由网关加 `[scriptId]` 前缀进内核日志）——事件是旁路，
  * 一个坏处理器不该影响任何在途调用，更不该把整个 worker 带走。
  *
+ * **调用方不 await 本函数**：事件处理器可以是 async 的，但事件绝不拖住后续的请求——
+ * 那是「事件是旁路」这条口径的直接推论。
+ *
  * @param {object} frame 事件帧
  * @param {object} session 会话状态
+ * @returns {Promise<void>} 处理完成
  */
-function handleEvent(frame, session) {
+async function handleEvent(frame, session) {
     const params = frame.params || {};
     const name = params.event;
     const payload = params.payload || {};
     try {
-        sdk.invoke(session.scriptId, 'event', name, payload, emitterFor(session, payload));
+        await sdk.invoke(session.scriptId, 'event', name, payload, emitterFor(session, payload));
     } catch (error) {
         fs.writeSync(2, `[${session.scriptId}] 事件 ${name} 的处理器失败: `
             + `${error && error.stack ? error.stack : error}\n`);
@@ -239,6 +257,9 @@ function handleInit(frame, session) {
     session.scriptId = params.script;
     session.maxFrameBytes = params.maxFrameBytes || wire.MAX_FRAME_BYTES;
     session.idleSeconds = Number(params.idleSeconds || 0);
+    // 必须先注入配置再加载脚本：脚本可能在模块顶层就读它，
+    // 而那种失败看起来就像「配置没生效」——最难归因的一类现场
+    sdk.setConfiguration(params.config);
     try {
         loadScript(params.dir, params.entry);
     } catch (error) {
@@ -276,8 +297,9 @@ function handleInit(frame, session) {
  *
  * @param {object} frame 帧
  * @param {object} session 会话状态
+ * @returns {Promise<void>} 处理完成
  */
-function handleFrame(frame, session) {
+async function handleFrame(frame, session) {
     if (!session.ready) {
         if (frame.method !== 'init') {
             send({
@@ -296,10 +318,11 @@ function handleFrame(frame, session) {
     }
     session.lastUsed = Date.now();
     if (frame.method === 'invoke') {
-        handleInvoke(frame, session);
+        await handleInvoke(frame, session);
         return;
     }
     if (frame.method === 'event') {
+        // 不 await：事件是旁路，不能拖住后续请求
         handleEvent(frame, session);
         return;
     }
@@ -312,8 +335,11 @@ function handleFrame(frame, session) {
 /**
  * worker 主函数。
  *
- * 不用 async/await：整个循环是「读到一帧就同步处理完」的，脚本因此永远不必考虑并发。
- * 唯一的异步是等待标准输入，而它只是本循环的入口。
+ * **帧仍然是串行处理的**：队列里一次只取一帧、`await` 完再取下一帧，因此在途请求永远只有一个，
+ * 脚本作者依旧不必考虑并发。允许 handler 是 async 只是为了让它能等 I/O（网络请求、定时器），
+ * 而不是为了并行。
+ *
+ * 唯一的例外是事件帧：它只入队处理、不被 await（事件是旁路，不该拖住请求）。
  */
 function main() {
     const session = {
@@ -322,9 +348,30 @@ function main() {
         ready: false,
         lastUsed: Date.now(),
         idleSeconds: 0,
+        inFlight: false,
     };
     let buffer = Buffer.alloc(0);
+    const pending = [];
+    let draining = false;
     const watchdog = startWatchdog(session);
+
+    async function drain() {
+        if (draining) {
+            return;
+        }
+        draining = true;
+        try {
+            while (pending.length > 0) {
+                await handleFrame(pending.shift(), session);
+            }
+        } catch (error) {
+            // 单帧处理已经各自捕获自己的异常；这里只是不让一个意外把排空循环永久卡住
+            fs.writeSync(2, `[${session.scriptId}] 排空循环异常: `
+                + `${error && error.stack ? error.stack : error}\n`);
+        } finally {
+            draining = false;
+        }
+    }
 
     process.on('SIGTERM', () => dieNow(session.scriptId, 'SIGTERM'));
     process.on('SIGINT', () => dieNow(session.scriptId, 'SIGINT'));
@@ -333,8 +380,9 @@ function main() {
         const read = wire.feed(buffer, chunk);
         buffer = read.buffer;
         for (const frame of read.frames) {
-            handleFrame(frame, session);
+            pending.push(frame);
         }
+        drain();
     });
     // 网关走了（stdin 关掉）就没有再服务的理由；这是第三条常规退出路径
     process.stdin.on('end', () => {

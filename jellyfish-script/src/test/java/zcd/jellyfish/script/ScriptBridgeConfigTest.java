@@ -358,4 +358,66 @@ class ScriptBridgeConfigTest {
         assertEquals(Paths.get("scripts/node").toAbsolutePath().normalize(), node.scriptsRoot());
         assertEquals("/opt/venv/bin/python3", parse(values).interpreterPath());
     }
+
+    @Test
+    @DisplayName("未配置 scripts 段时每个脚本都拿到空映射，而不是 null")
+    void scriptConfigFor_should_returnEmptyMap_when_noScriptsSection() {
+        ScriptBridgeConfig config = parse(Collections.<String, Object>emptyMap());
+
+        assertTrue(config.scriptConfigurations().isEmpty());
+        assertTrue(config.scriptConfigFor("anything").isEmpty());
+        assertTrue(config.scriptConfigFor(null).isEmpty());
+    }
+
+    @Test
+    @DisplayName("scripts 段应按脚本 id 切片，值对桥接层不透明")
+    void scriptConfigFor_should_sliceByScriptId() {
+        Map<String, Object> webConfig = new LinkedHashMap<String, Object>();
+        webConfig.put("apiKey", "secret");
+        Map<String, Object> scripts = new LinkedHashMap<String, Object>();
+        scripts.put("web", webConfig);
+        scripts.put("jira", Collections.<String, Object>emptyMap());
+        Map<String, Object> values = new LinkedHashMap<String, Object>();
+        values.put(ScriptBridgeConfig.KEY_SCRIPTS, scripts);
+
+        ScriptBridgeConfig config = parse(values);
+
+        assertEquals("secret", config.scriptConfigFor("web").get("apiKey"));
+        assertTrue(config.scriptConfigFor("jira").isEmpty());
+        assertTrue(config.scriptConfigFor("missing").isEmpty());
+        assertEquals(2, config.scriptConfigurations().size());
+    }
+
+    @Test
+    @DisplayName("scripts 段写成非对象应报错，而不是当成「没配」")
+    void from_should_rejectNonObjectScriptsSection() {
+        Map<String, Object> values = new LinkedHashMap<String, Object>();
+        values.put(ScriptBridgeConfig.KEY_SCRIPTS, "web");
+
+        assertThrows(JellyfishException.class, () -> parse(values));
+    }
+
+    @Test
+    @DisplayName("scripts.<id> 写成非对象应报错（缩进写错一层的最典型现场）")
+    void from_should_rejectNonObjectScriptEntry() {
+        Map<String, Object> scripts = new LinkedHashMap<String, Object>();
+        scripts.put("web", "brave");
+        Map<String, Object> values = new LinkedHashMap<String, Object>();
+        values.put(ScriptBridgeConfig.KEY_SCRIPTS, scripts);
+
+        assertThrows(JellyfishException.class, () -> parse(values));
+    }
+
+    @Test
+    @DisplayName("逐脚本配置不进 toString：它可能含密钥")
+    void toString_should_notLeakScriptConfigurationValues() {
+        Map<String, Object> webConfig = new LinkedHashMap<String, Object>();
+        webConfig.put("apiKey", "super-secret");
+        Map<String, Object> scripts = new LinkedHashMap<String, Object>();
+        scripts.put("web", webConfig);
+        Map<String, Object> values = new LinkedHashMap<String, Object>();
+        values.put(ScriptBridgeConfig.KEY_SCRIPTS, scripts);
+
+        assertFalse(parse(values).toString().contains("super-secret"));
+    }
 }

@@ -212,6 +212,8 @@ public abstract class ScriptBridgePlugin implements JellyfishPlugin {
                 .resources(new GatewayResources(config.gatewayRoot()))
                 .settings(settings)
                 .scripts(scan.plugins())
+                // 逐脚本配置：只按脚本 id 切片转发，桥接层不解释里面的键
+                .scriptConfigurations(config.scriptConfigurations())
                 .build();
         // 转发闭包拿到的就是这个带熔断的入口：因此「拒绝派发」发生在注册好的处理器内部，
         // 而**不需要把注册摘掉**——工具仍在清单里，模型看到的是一条带剩余时间的错误
@@ -226,7 +228,44 @@ public abstract class ScriptBridgePlugin implements JellyfishPlugin {
         for (ScriptPlugin plugin : scan.plugins()) {
             registrations.add(registrar.register(context.subContext(plugin.id()), plugin));
         }
+        warnUnknownScriptConfigurations(context, scan.plugins());
         return new ScriptLedger(scan.plugins(), registrations, issues, gateway, caller, events);
+    }
+
+    /**
+     * 对「配置里写了但脚本目录不存在」的 {@code scripts.<id>} 段发一条告警。
+     * <p>
+     * <b>为什么值得单独喊一声</b>：脚本 id 写错（拼写、大小写）的现场是「插件读了配置还是报未配置」，
+     * 而用户明明在 {@code jellyfish.json} 里写了——那是最难归因的一类问题。
+     * 脚本目录名就是脚本 id，因此这里能确定地判出来。
+     * <p>
+     * <b>为什么在启动时而不是使用时</b>：这是一条纯粹的配置错误，与“用没用到”无关；
+     * 放在启动时才能「配完重启那一刻」就看见。
+     *
+     * @param context 能力上下文
+     * @param plugins 实际扫描到的脚本
+     */
+    private void warnUnknownScriptConfigurations(PluginContext context, List<ScriptPlugin> plugins) {
+        List<String> unknown = new ArrayList<String>();
+        for (String configured : config.scriptConfigurations().keySet()) {
+            boolean found = false;
+            for (ScriptPlugin plugin : plugins) {
+                if (plugin.id().equals(configured)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                unknown.add(configured);
+            }
+        }
+        if (unknown.isEmpty()) {
+            return;
+        }
+        String message = "配置了 scripts." + String.join(" / scripts.", unknown)
+                + "，但没有找到对应脚本目录；该段不会生效";
+        LOG.warn(message);
+        context.emit(new ConfigWarningEvent("plugins.configurations." + context.pluginId(), message));
     }
 
     /**

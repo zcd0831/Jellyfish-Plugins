@@ -195,6 +195,53 @@ class NodeScriptIT {
     }
 
     @Test
+    @DisplayName("scripts.<id> 应按脚本 id 送达，且 async handler 的返回值正确")
+    void scriptConfiguration_should_reachAsyncScript_when_configured() throws IOException {
+        writeScript("web", ASYNC_CONFIG_SCRIPT, ASYNC_CONFIG_MANIFEST);
+        Map<String, Object> web = new LinkedHashMap<String, Object>();
+        web.put("provider", "brave");
+        web.put("apiKey", "k-123");
+        Map<String, Map<String, Object>> scripts = new LinkedHashMap<String, Map<String, Object>>();
+        scripts.put("web", web);
+        startRuntime(5, scripts);
+
+        assertEquals("provider=brave; key=k-123; module=brave",
+                invokeTool("web_probe", Collections.<String, Object>emptyMap()).getOutput());
+    }
+
+    @Test
+    @DisplayName("async 事件处理器应真的跑完，且不拖住后续调用")
+    void asyncEventHandler_should_complete_withoutBlockingRequests() throws IOException, InterruptedException {
+        writeScript("web", ASYNC_CONFIG_SCRIPT, ASYNC_CONFIG_MANIFEST);
+        startRuntime();
+
+        // 先把网关拉起来：脚本运行时是**懒启动**的，网关还没起来时事件会直接丢掉。
+        // 这不是测试技巧，而是「事件可以丢」这条契约的真实形状（冷启动窗口内的事件本来就没有接收方）
+        invokeTool("web_events", Collections.<String, Object>emptyMap());
+
+        events.publish(new zcd.jellyfish.api.event.notification.ToolCallCompletedEvent(
+                "call-1", "web_probe", true, 5L, null, "s-1"));
+
+        String handled = null;
+        long deadline = System.currentTimeMillis() + 10_000L;
+        // 先让事件先被送达：网关对「忙」的 worker 直接丢事件，而紧接着的 invoke 就会把它标记为忙。
+        // 这个先后关系同样不是测试的妥协，而是事件通道「可以丢」这条契约的真实形状
+        Thread.sleep(300L);
+        while (System.currentTimeMillis() < deadline) {
+            // 事件处理器是 async 的，因此这里必须容忍它晚一点才跑完；
+            // 关键点是这一串 invoke 不能被它拖住（否则永远读不到 handled=1）
+            String output = String.valueOf(invokeTool("web_events",
+                    Collections.<String, Object>emptyMap()).getOutput());
+            if (output.contains("handled=1")) {
+                handled = output;
+                break;
+            }
+            Thread.sleep(100L);
+        }
+        assertNotNull(handled, "async 事件处理器未在预期时间内跑完");
+    }
+
+    @Test
     @DisplayName("调用超时应隔离 worker，并把原因作为失败回灌")
     void timeout_should_isolateWorker_andReportReason() throws IOException, InterruptedException {
         writeScript("jira", TOOL_SCRIPT, FULL_MANIFEST);
@@ -331,6 +378,18 @@ class NodeScriptIT {
      * @throws IOException 安装插件失败时抛出
      */
     private void startRuntime(int invokeTimeoutSeconds) throws IOException {
+        startRuntime(invokeTimeoutSeconds, Collections.<String, Map<String, Object>>emptyMap());
+    }
+
+    /**
+     * 启动插件，并指定单次调用超时与逐脚本配置。
+     *
+     * @param invokeTimeoutSeconds 单次调用超时秒数
+     * @param scriptConfigs        逐脚本配置（脚本 id → 配置）
+     * @throws IOException 安装插件失败时抛出
+     */
+    private void startRuntime(int invokeTimeoutSeconds, Map<String, Map<String, Object>> scriptConfigs)
+            throws IOException {
         installPlugin();
         Map<String, Object> node = new LinkedHashMap<String, Object>();
         node.put(ScriptBridgeConfig.KEY_SCRIPTS_ROOT, scriptsRoot.toString());
@@ -338,6 +397,9 @@ class NodeScriptIT {
         node.put(ScriptBridgeConfig.KEY_INVOKE_TIMEOUT, Integer.valueOf(invokeTimeoutSeconds));
         node.put(NodeBridgePlugin.KEY_INTERPRETER, interpreter());
         node.put(ScriptBridgeConfig.KEY_PID_DIRECTORY, pidRoot.toString());
+        if (!scriptConfigs.isEmpty()) {
+            node.put(ScriptBridgeConfig.KEY_SCRIPTS, scriptConfigs);
+        }
         bootstrap(node);
     }
 
@@ -711,5 +773,32 @@ class NodeScriptIT {
             + "{\"name\":\"jira_boom\"},{\"name\":\"jira_hang\"}],"
             + "\"commands\":[{\"name\":\"jira\",\"descriptor\":{\"summary\":\"操作 Jira\"}}],"
             + "\"contributions\":[\"prompt\",\"status_line\"],"
+            + "\"events\":[\"ToolCallCompletedEvent\"]}";
+
+    /**
+     * 配置与异步夹具：一个 async 工具读配置，一个 async 事件处理器累加计数。
+     * <p>
+     * 两件事必须一起测：它们在现场是同一类需求（调用外部 API），而「配置能不能读到」与
+     * 「handler 能不能 await」是两个独立的失败点。
+     */
+    private static final String ASYNC_CONFIG_SCRIPT = ""
+            + "'use strict';\n"
+            + "const { tool, configuration, subscribe } = require('jellyfish_sdk');\n"
+            + "let handled = 0;\n"
+            + "tool({ name: 'web_probe', description: '读配置' },\n"
+            + "     async (params, ctx) => {\n"
+            + "         await new Promise((resolve) => setTimeout(resolve, 20));\n"
+            + "         return `provider=${ctx.configuration.provider}; key=${ctx.configuration.apiKey};"
+            + " module=${configuration().provider}`;\n"
+            + "     });\n"
+            + "tool({ name: 'web_events', description: '事件计数' }, () => `handled=${handled}`);\n"
+            + "subscribe('ToolCallCompletedEvent')(async () => {\n"
+            + "    await new Promise((resolve) => setTimeout(resolve, 10));\n"
+            + "    handled += 1;\n"
+            + "});\n";
+
+    /** 与 {@link #ASYNC_CONFIG_SCRIPT} 逐字对应的清单。 */
+    private static final String ASYNC_CONFIG_MANIFEST = "{\"entry\":\"main.js\","
+            + "\"tools\":[{\"name\":\"web_probe\"},{\"name\":\"web_events\"}],"
             + "\"events\":[\"ToolCallCompletedEvent\"]}";
 }

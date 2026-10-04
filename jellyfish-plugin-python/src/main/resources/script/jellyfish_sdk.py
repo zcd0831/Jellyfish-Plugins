@@ -48,6 +48,34 @@ _CONTRIBUTION_TYPES = set()
 # 真正的裁决仍在宿主侧，因此这份清单哪怕过时也只会多一句提醒，不会吞掉事件。
 EMITTABLE_EVENTS = frozenset(("PluginNotificationEvent", "ConfigWarningEvent"))
 
+#: 本脚本的配置段：由 worker 在 **import 脚本之前** 注入，因此模块顶层读也拿得到。
+#: 内容来自 ``plugins.configurations.<桥接插件>.scripts.<脚本 id>``，
+#: 内核已完成双源合并与 ``${ENV}`` 插值。
+_CONFIGURATION = {}
+
+
+def set_configuration(values):
+    """注入本脚本的配置段。
+
+    由 worker 调用，脚本作者不需要也不应该调它。时机必须是「import 脚本之前」，
+    否则脚本在模块顶层读 ``configuration()`` 会拿到空映射，而那种失败看起来就像
+    「配置没生效」——最难归因的一类现场。
+
+    :param values: 配置映射，可为 ``None``（等价空）
+    """
+    global _CONFIGURATION
+    _CONFIGURATION = dict(values or {})
+
+
+def configuration():
+    """获取本脚本的配置段。
+
+    与 ``ctx.configuration`` 是同一份，差别只在拿到的时机：本函数在模块顶层就能调。
+
+    :return: 只读用途的配置映射，保证非 ``None``
+    """
+    return _CONFIGURATION
+
 
 class ScriptError(Exception):
     """脚本侧的可预期失败。
@@ -84,6 +112,16 @@ class ScriptContext:
     def payload(self):
         """原始请求载荷（只读用途，改它不会影响宿主）。"""
         return dict(self._payload)
+
+    @property
+    def configuration(self):
+        """本脚本的配置段（``plugins.configurations.<桥接插件>.scripts.<脚本 id>``）。
+
+        内核已完成双源合并与 ``${ENV}`` 插值，因此这里拿到的就是最终值。
+        与模块级 ``configuration()`` 同一份；密钥写在这里比写在脚本目录的文件里更一致，
+        也与 Java 插件的 ``PluginContext.configuration()`` 同一条通道。
+        """
+        return _CONFIGURATION
 
     def emit_event(self, name, payload=None):
         """发布一条事件。
@@ -432,16 +470,51 @@ def _compare_names(problems, label, declared, expected):
 
 # ---------------------------------------------------------------- 分发
 
-# 扩展点类型名 → (实参构造, 结果整形)。
+# 扩展点实参构造与结果整形：键名来自 extension-points.json 的 args / shape 字段。
 #
-# 集中成一张表是为了让「每个扩展点怎么被调用、返回值要长什么样」一眼可见。
-# 若散落成 if/else，新增一个扩展点时最容易漏掉的恰恰是「结果形状」那一半，
-# 而漏掉的后果是宿主拿到一个形状不对的载荷后静默地当成「脚本没返回内容」。
-_DISPATCH = {}
+# 「有哪些扩展点、每个用哪个实参构造与整形」这份事实只有一份，就在那个 JSON 里；
+# 这里只按它引用到的键提供实现。因此新增一个扩展点时，只要能复用既有键，
+# 本文件一行都不用改——那份名单也不会再有第二份抄写。
+_ARGS = {}
+_SHAPES = {}
+
+#: 能力档文件位置：与 SDK 同目录（网关资源抽取目录下的 script/）。
+_CAPABILITY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "extension-points.json")
 
 
-def _register(type_name, arguments, shaper):
-    _DISPATCH[type_name] = (arguments, shaper)
+def _define_args(key, builder):
+    _ARGS[key] = builder
+
+
+def _define_shape(key, shaper):
+    _SHAPES[key] = shaper
+
+
+def _load_dispatch():
+    """按能力档构建「类型名 → (实参构造, 结果整形)」。
+
+    文件缺失、或引用了本 SDK 没有实现的键时**当场报错**：那意味着 SDK 与能力档不是同一版，
+    静默降级只会把问题推迟到某次调用上，以「脚本没返回内容」的形态出现。
+
+    :return: 类型名 → (实参构造, 结果整形)
+    """
+    try:
+        with open(_CAPABILITY_FILE, "r", encoding="utf-8") as handle:
+            table = json.load(handle)
+    except (IOError, ValueError) as error:
+        raise ScriptError("读取扩展点能力档失败: %s (%s)" % (_CAPABILITY_FILE, error))
+    dispatch = {}
+    for entry in table.get("in", []):
+        type_name = entry.get("type")
+        args_key = entry.get("args")
+        shape_key = entry.get("shape")
+        if args_key not in _ARGS or shape_key not in _SHAPES:
+            raise ScriptError(
+                "扩展点能力档引用了 SDK 未实现的键: %s (args=%r, shape=%r)；"
+                "SDK 与能力档版本不一致" % (type_name, args_key, shape_key))
+        dispatch[type_name] = (_ARGS[args_key], _SHAPES[shape_key])
+    return dispatch
 
 
 def _as_mapping(result, default=None):
@@ -461,7 +534,8 @@ def _shape_tool(result):
     return {"output": result}
 
 
-_register("tool", _args_tool, _shape_tool)
+_define_args("tool", _args_tool)
+_define_shape("tool", _shape_tool)
 
 
 # ---- 命令 -----------------------------------------------------------------
@@ -485,7 +559,8 @@ def _shape_command(result):
     return shaped
 
 
-_register("command", _args_command, _shape_command)
+_define_args("command", _args_command)
+_define_shape("command", _shape_command)
 
 
 # ---- 命令候选查询 ---------------------------------------------------------
@@ -511,7 +586,8 @@ def _shape_choices(result):
     return dict(mapping)
 
 
-_register("command_options", _args_none, _shape_choices)
+_define_args("command_options", _args_none)
+_define_shape("choices", _shape_choices)
 
 
 # ---- 只返回一段文本的贡献 -------------------------------------------------
@@ -528,8 +604,8 @@ def _shape_text(result):
     return mapping
 
 
-_register("prompt", _args_none, _shape_text)
-_register("status_line", _args_none, _shape_text)
+_define_args("none", _args_none)
+_define_shape("text", _shape_text)
 
 
 # ---- 面板 -----------------------------------------------------------------
@@ -546,7 +622,7 @@ def _shape_panel(result):
     return mapping
 
 
-_register("panel", _args_none, _shape_panel)
+_define_shape("panel", _shape_panel)
 
 
 # ---- 权限拦截 -------------------------------------------------------------
@@ -609,7 +685,7 @@ def _shaped_verdict(mapping):
     return shaped
 
 
-_register("permission", _args_none, _shape_permission)
+_define_shape("permission", _shape_permission)
 
 
 # ---- 会话持久化 / 恢复 / 删除 ---------------------------------------------
@@ -625,7 +701,8 @@ def _shape_nothing(result):
     return None
 
 
-_register("session_persist", _args_snapshot, _shape_nothing)
+_define_args("snapshot", _args_snapshot)
+_define_shape("nothing", _shape_nothing)
 
 
 def _shape_sessions(result):
@@ -641,14 +718,14 @@ def _shape_sessions(result):
     return shaped
 
 
-_register("session_restore", _args_none, _shape_sessions)
+_define_shape("sessions", _shape_sessions)
 
 
 def _args_session_id(payload):
     return {"session_id": payload.get("sessionId")}
 
 
-_register("session_delete", _args_session_id, _shape_nothing)
+_define_args("session_id", _args_session_id)
 
 
 # ---- 压缩策略 -------------------------------------------------------------
@@ -658,7 +735,8 @@ def _args_request(payload):
     return {"request": dict(payload or {})}
 
 
-_register("compaction", _args_request, _as_mapping)
+_define_args("request", _args_request)
+_define_shape("mapping", _as_mapping)
 
 
 # ---- 事件 -----------------------------------------------------------------
@@ -674,7 +752,12 @@ def _shape_nothing_ignored(_result):
     return None
 
 
-_register("event", _args_event, _shape_nothing_ignored)
+_define_args("event", _args_event)
+
+#: 类型名 → (实参构造, 结果整形)。事件不是扩展点（它是协议里的通知方法），
+#: 但走同一张分发表，因此在这里单独补一条。
+_DISPATCH = _load_dispatch()
+_DISPATCH["event"] = (_ARGS["event"], _shape_nothing_ignored)
 
 
 # ---- 入口 -----------------------------------------------------------------
@@ -719,6 +802,7 @@ __all__ = [
     "ScriptError",
     "EMITTABLE_EVENTS",
     "ScriptContext",
+    "configuration",
     "tool",
     "command",
     "command_options",

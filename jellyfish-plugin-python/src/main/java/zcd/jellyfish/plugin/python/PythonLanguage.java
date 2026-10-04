@@ -60,11 +60,13 @@ final class PythonLanguage implements ScriptLanguage {
      * 四个文件各司其职：{@code gateway.py} 是控制面（只与宿主说话），{@code worker.py} 是
      * 每个脚本一个的数据面，{@code script_wire.py} 是两侧共用的分帧，{@code jellyfish_sdk.py}
      * 是脚本作者看到的全部 API。后两个必须与前者同目录：网关靠自身目录做 {@code sys.path}
-     * 起点，脚本则靠它 import 到 SDK。
+     * 起点，脚本则靠它 import 到 SDK。{@code extension-points.json} 不是语言资源，
+     * 而是<b>两种语言共享</b>的扩展点能力档（显式列在这里，是为了让它与 SDK 落在同一目录）；
+     * 它由 {@code jellyfish-script} 提供、被 shade 进本插件包。
      */
     static final List<String> GATEWAY_RESOURCES = Collections.unmodifiableList(Arrays.asList(
             GATEWAY_ENTRY, "script/worker.py", "script/script_wire.py", "script/jellyfish_sdk.py",
-            "script/dump_manifest.py"));
+            "script/dump_manifest.py", "script/extension-points.json"));
 
     /** 解释器可执行文件。 */
     private final String pythonPath;

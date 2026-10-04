@@ -95,6 +95,13 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
     /** 需要下发给网关的脚本清单。 */
     private final List<ScriptPlugin> scripts;
 
+    /**
+     * 逐脚本配置段：脚本 id → 该脚本自己的配置，随 {@code initialize} 下发给网关。
+     * <p>
+     * 它可能含密钥，因此只搬运、不记日志、不进台账。
+     */
+    private final Map<String, Map<String, Object>> scriptConfigurations;
+
     /** 保护启动、关闭与运行态字段的锁。 */
     private final Object lock = new Object();
 
@@ -158,6 +165,7 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
         this.resources = builder.resources;
         this.settings = builder.settings;
         this.scripts = Collections.unmodifiableList(new ArrayList<ScriptPlugin>(builder.scripts));
+        this.scriptConfigurations = builder.scriptConfigurations;
     }
 
     /**
@@ -506,6 +514,10 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
             payload.put(ScriptProtocol.PARAM_DIRECTORY, plugin.directory().toAbsolutePath().toString());
             payload.put(ScriptProtocol.PARAM_ENTRY, plugin.entryFile().toAbsolutePath().toString());
             payload.put(ScriptProtocol.PARAM_MANIFEST, manifestDigestOf(plugin));
+            Map<String, Object> scriptConfig = scriptConfigurations.get(plugin.id());
+            if (scriptConfig != null && !scriptConfig.isEmpty()) {
+                payload.put(ScriptProtocol.PARAM_CONFIG, scriptConfig);
+            }
             payloads.add(payload);
         }
         return ScriptJson.treeOf(payloads);
@@ -890,6 +902,9 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
         /** 脚本清单。 */
         private final List<ScriptPlugin> scripts = new ArrayList<ScriptPlugin>();
 
+        /** 逐脚本配置段；缺省为空（不下发 config）。 */
+        private Map<String, Map<String, Object>> scriptConfigurations = Collections.emptyMap();
+
         /**
          * 构造构建器。
          *
@@ -924,6 +939,21 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
         public Builder scripts(List<ScriptPlugin> value) {
             if (value != null) {
                 scripts.addAll(value);
+            }
+            return this;
+        }
+
+        /**
+         * 设置逐脚本配置段。
+         * <p>
+         * 它只按脚本 id 切片转发：桥接层不解释里面的键，否则每加一个脚本插件都要改运行时。
+         *
+         * @param value 脚本 id → 配置映射，为 {@code null} 时保持空
+         * @return 本构建器
+         */
+        public Builder scriptConfigurations(Map<String, Map<String, Object>> value) {
+            if (value != null) {
+                this.scriptConfigurations = value;
             }
             return this;
         }

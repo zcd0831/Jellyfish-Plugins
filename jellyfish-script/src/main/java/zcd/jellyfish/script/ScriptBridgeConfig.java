@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -26,6 +27,8 @@ import java.util.Map;
  * <p>
  * <b>只解析已经落地的键</b>：声明了一堆没人读的键，只会让人误以为配置已经生效。
  * 因此这里与 {@link #gatewaySettings(String)} / {@link #circuitBreakerSettings()} 的消费者严格同步。
+ * 唯一例外是 {@link #KEY_SCRIPTS}：它按脚本 id 原样转发给脚本，值本身对桥接层<b>不透明</b>
+ * （桥接不需要认识里面的 key，否则每加一个脚本插件就要改内核）。
  * <p>
  * <b>类型不对就报错，不退回默认值</b>：写错的配置静默走默认值，是「配置不生效」这类
  * 最难排查问题的标准成因——用户改了三处配置，只有一处没生效，而他没有任何线索。
@@ -78,6 +81,19 @@ public final class ScriptBridgeConfig {
     /** 熔断参数里的转永久轮数字段名。 */
     public static final String KEY_ROUNDS_TO_PERMANENT = "roundsToPermanent";
 
+    /**
+     * 逐脚本配置段键：{@code scripts.<脚本 id>} → 该脚本自己的一段配置。
+     * <p>
+     * <b>为什么要有它</b>：脚本插件此前拿不到 {@code PluginContext.configuration()}，
+     * 于是每一个真实 API 插件（搜索、Jira、Slack……）都只能把密钥写在脚本目录的自有文件里——
+     * 与 {@code jellyfish.json} + {@code ${ENV}} 那套配置体系脱节。这一段就是那条受控通道。
+     * <p>
+     * <b>为什么不是放开环境变量白名单</b>：环境变量透传会把 JVM 进程的整个环境（可能含全部密钥）
+     * 复制给一个子进程，而这一段是用户<b>显式声明</b>「哪个脚本拿哪些值」，且复用内核已经做好的
+     * 双源合并与 {@code ${ENV}} 插值。
+     */
+    public static final String KEY_SCRIPTS = "scripts";
+
     /** 脚本根目录。 */
     private final Path scriptsRoot;
 
@@ -109,6 +125,13 @@ public final class ScriptBridgeConfig {
     private final CircuitBreakerSettings circuitBreaker;
 
     /**
+     * 逐脚本配置段：脚本 id → 该脚本自己的配置，对桥接层是<b>不透明</b>的键值。
+     * <p>
+     * 它可能含密钥，因此不参与 {@link #toString()}，也不该被日志或台账渲染。
+     */
+    private final Map<String, Map<String, Object>> scriptConfigurations;
+
+    /**
      * 构造配置。
      *
      * @param scriptsRoot          脚本根目录
@@ -121,11 +144,13 @@ public final class ScriptBridgeConfig {
      * @param pidDirectory         网关 PID 文件目录
      * @param allowedEvents        额外收窄的事件白名单
      * @param circuitBreaker       熔断参数
+     * @param scriptConfigurations 逐脚本配置段
      */
     private ScriptBridgeConfig(Path scriptsRoot, String interpreterPath, int invokeTimeoutSeconds,
                                int workerIdleSeconds, int gatewayIdleSeconds, boolean manifestStrict,
                                Path gatewayRoot, Path pidDirectory, List<String> allowedEvents,
-                               CircuitBreakerSettings circuitBreaker) {
+                               CircuitBreakerSettings circuitBreaker,
+                               Map<String, Map<String, Object>> scriptConfigurations) {
         this.scriptsRoot = scriptsRoot;
         this.interpreterPath = interpreterPath;
         this.invokeTimeoutSeconds = invokeTimeoutSeconds;
@@ -136,6 +161,7 @@ public final class ScriptBridgeConfig {
         this.pidDirectory = pidDirectory;
         this.allowedEvents = allowedEvents;
         this.circuitBreaker = circuitBreaker;
+        this.scriptConfigurations = scriptConfigurations;
     }
 
     /**
@@ -171,7 +197,8 @@ public final class ScriptBridgeConfig {
                 resolveGatewayRoot(values.get(KEY_GATEWAY_ROOT)),
                 resolvePidDirectory(values.get(KEY_PID_DIRECTORY)),
                 allowedEvents(values.get(KEY_EVENTS)),
-                circuitBreaker(values.get(KEY_CIRCUIT_BREAKER)));
+                circuitBreaker(values.get(KEY_CIRCUIT_BREAKER)),
+                scriptConfigurations(values.get(KEY_SCRIPTS)));
     }
 
     /**
@@ -269,12 +296,37 @@ public final class ScriptBridgeConfig {
         return circuitBreaker;
     }
 
+    /**
+     * 获取逐脚本配置段。
+     *
+     * @return 脚本 id → 配置映射，保证非 {@code null}（未配置时为空映射）
+     */
+    public Map<String, Map<String, Object>> scriptConfigurations() {
+        return scriptConfigurations;
+    }
+
+    /**
+     * 取某个脚本的配置段。
+     *
+     * @param scriptId 脚本标识，可为 {@code null}
+     * @return 该脚本的配置映射；未配置时为空映射，保证非 {@code null}
+     */
+    public Map<String, Object> scriptConfigFor(String scriptId) {
+        if (scriptId == null) {
+            return Collections.emptyMap();
+        }
+        Map<String, Object> values = scriptConfigurations.get(scriptId);
+        return values == null ? Collections.<String, Object>emptyMap() : values;
+    }
+
     @Override
     public String toString() {
+        // 逐脚本配置可能含密钥，因此只报「有几个脚本配了」，不报内容
         return "ScriptBridgeConfig{scriptsRoot=" + scriptsRoot + ", interpreter=" + interpreterPath
                 + ", invokeTimeout=" + invokeTimeoutSeconds + "s, workerIdle=" + workerIdleSeconds
                 + "s, gatewayIdle=" + gatewayIdleSeconds + "s, manifestStrict=" + manifestStrict
                 + ", gatewayRoot=" + gatewayRoot + ", pidDirectory=" + pidDirectory
+                + ", scriptConfigurations=" + scriptConfigurations.size()
                 + ", " + circuitBreaker + '}';
     }
 
@@ -467,6 +519,46 @@ public final class ScriptBridgeConfig {
                         key(KEY_ROUNDS_TO_PERMANENT),
                         CircuitBreakerSettings.DEFAULT_ROUNDS_TO_PERMANENT))
                 .build();
+    }
+
+    /**
+     * 解析逐脚本配置段。
+     * <p>
+     * <b>值对桥接层是不透明的</b>：桥接只负责按脚本 id 切片并原样下发，不知道也不该知道
+     * 里面是 API key 还是 baseUrl——那样每加一个脚本插件就要求内核发版。但<b>结构</b>必须校验：
+     * 写成非对象时静默丢掉，现场是「脚本读到的配置永远是空的」，而真正的原因（写错一层缩进）
+     * 没有任何线索。
+     *
+     * @param raw 配置原值，可为 {@code null}
+     * @return 脚本 id → 配置映射，保证非 {@code null}
+     * @throws JellyfishException 结构非法时抛出
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Map<String, Object>> scriptConfigurations(Object raw) {
+        if (raw == null) {
+            return Collections.emptyMap();
+        }
+        if (!(raw instanceof Map)) {
+            throw new JellyfishException(KEY_SCRIPTS + " 必须是对象（脚本 id → 该脚本的配置段），实际为 " + raw);
+        }
+        Map<String, Map<String, Object>> collected = new LinkedHashMap<String, Map<String, Object>>();
+        for (Map.Entry<String, Object> entry : ((Map<String, Object>) raw).entrySet()) {
+            String scriptId = entry.getKey();
+            if (scriptId == null || scriptId.trim().isEmpty()) {
+                throw new JellyfishException(KEY_SCRIPTS + " 里出现了空白脚本 id");
+            }
+            Object value = entry.getValue();
+            if (value == null) {
+                collected.put(scriptId.trim(), Collections.<String, Object>emptyMap());
+                continue;
+            }
+            if (!(value instanceof Map)) {
+                throw new JellyfishException(KEY_SCRIPTS + '.' + scriptId + " 必须是对象，实际为 " + value);
+            }
+            collected.put(scriptId.trim(), Collections.unmodifiableMap(
+                    new LinkedHashMap<String, Object>((Map<String, Object>) value)));
+        }
+        return Collections.unmodifiableMap(collected);
     }
 
     /**

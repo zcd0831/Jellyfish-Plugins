@@ -61,11 +61,13 @@ final class NodeLanguage implements ScriptLanguage {
      * 每个脚本一个的数据面，{@code script_wire.js} 是两侧共用的分帧，{@code jellyfish_sdk.js}
      * 是脚本作者看到的全部 API，{@code dump_manifest.js} 是离线清单生成器。
      * 它们必须落在同一个目录：网关靠自身目录拼 worker 与 {@code NODE_PATH} 的路径，
-     * 脚本则靠 {@code NODE_PATH} require 到 SDK。
+     * 脚本则靠 {@code NODE_PATH} require 到 SDK。{@code extension-points.json} 不是语言资源，
+     * 而是<b>两种语言共享</b>的扩展点能力档（显式列在这里，是为了让它与 SDK 落在同一目录）；
+     * 它由 {@code jellyfish-script} 提供、被 shade 进本插件包。
      */
     static final List<String> GATEWAY_RESOURCES = Collections.unmodifiableList(Arrays.asList(
             GATEWAY_ENTRY, "script/worker.js", "script/script_wire.js", "script/jellyfish_sdk.js",
-            "script/dump_manifest.js"));
+            "script/dump_manifest.js", "script/extension-points.json"));
 
     /** 解释器可执行文件。 */
     private final String nodePath;

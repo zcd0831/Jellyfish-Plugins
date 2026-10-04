@@ -122,6 +122,14 @@ class ScriptState(object):
     def manifest(self):
         return self.spec.get("manifest") or {}
 
+    @property
+    def config(self):
+        """本脚本的配置段（由宿主下发的 ``scripts.<id>`` 原样转发）。
+
+        可能含密钥，因此网关只把它交给对应 worker，不记日志、不进台账。
+        """
+        return self.spec.get("config") or {}
+
 
 class Gateway(object):
     """事件循环与全部状态。"""
@@ -849,7 +857,8 @@ class Gateway(object):
                                          os.path.basename(spec["entry"]),
                                          state.manifest,
                                          bool(self.settings.get("manifestStrict", True)),
-                                         self.settings.get("workerIdleSeconds") or 0)
+                                         self.settings.get("workerIdleSeconds") or 0,
+                                         state.config)
             except BaseException as error:  # noqa: BLE001  子进程绝不能把异常带进网关的栈
                 print("worker 异常退出: %s: %s" % (type(error).__name__, error),
                       file=sys.stderr, flush=True)

@@ -127,6 +127,33 @@ class PythonScriptIT {
     }
 
     @Test
+    @DisplayName("scripts.<id> 应按脚本 id 送达：ctx.configuration 与模块级 configuration() 都读得到")
+    void scriptConfiguration_should_reachScript_when_configured() throws IOException {
+        writeScript("web", CONFIG_SCRIPT, CONFIG_MANIFEST);
+        Map<String, Object> web = new LinkedHashMap<String, Object>();
+        web.put("provider", "brave");
+        web.put("apiKey", "k-123");
+        Map<String, Map<String, Object>> scripts = new LinkedHashMap<String, Map<String, Object>>();
+        scripts.put("web", web);
+        startRuntime(5, scripts);
+
+        ToolCallResult result = invokeTool("web_probe", Collections.<String, Object>emptyMap());
+
+        assertEquals("provider=brave; key=k-123; module=brave", result.getOutput());
+    }
+
+    @Test
+    @DisplayName("没配 scripts 的脚本读到空配置，而不是报错")
+    void scriptConfiguration_should_beEmpty_when_notConfigured() throws IOException {
+        writeScript("web", CONFIG_SCRIPT, CONFIG_MANIFEST);
+        startRuntime();
+
+        ToolCallResult result = invokeTool("web_probe", Collections.<String, Object>emptyMap());
+
+        assertEquals("provider=None; key=None; module=None", result.getOutput());
+    }
+
+    @Test
     @DisplayName("脚本抛出的异常应变成可读的调用失败，而不是静默的空结果")
     void tool_should_failWithMessage_when_scriptRaises() throws IOException {
         writeScript("jira", TOOL_SCRIPT, FULL_MANIFEST);
@@ -1292,12 +1319,43 @@ class PythonScriptIT {
             + "\"tools\":[{\"name\":\"git_status\"}]}";
 
     /**
+     * 读配置的脚本：同时从 ``ctx.configuration`` 与模块级 ``configuration()`` 取值。
+     * <p>
+     * 两个入口都要试：模块级那个要求 worker **在 import 脚本之前**注入配置，
+     * 而这是一个很容易在重构中丢掉、且现场看起来像「配置没生效」的细节。
+     */
+    private static final String CONFIG_SCRIPT = ""
+            + "from jellyfish_sdk import tool, configuration\n"
+            + "\n"
+            + "@tool(name=\"web_probe\", description=\"读配置\")\n"
+            + "def web_probe(args, ctx):\n"
+            + "    cfg = ctx.configuration\n"
+            + "    return \"provider=%s; key=%s; module=%s\" % (cfg.get(\"provider\"),"
+            + " cfg.get(\"apiKey\"), configuration().get(\"provider\"))\n";
+
+    /** 与 {@link #CONFIG_SCRIPT} 逐字对应的清单。 */
+    private static final String CONFIG_MANIFEST = "{\"entry\":\"main.py\","
+            + "\"tools\":[{\"name\":\"web_probe\"}]}";
+
+    /**
      * 启动插件并完成注册。
      *
      * @param invokeTimeoutSeconds 单次调用超时秒数
      * @throws IOException 安装插件失败时抛出
      */
     private void startRuntime(int invokeTimeoutSeconds) throws IOException {
+        startRuntime(invokeTimeoutSeconds, Collections.<String, Map<String, Object>>emptyMap());
+    }
+
+    /**
+     * 启动插件并完成注册，同时下发逐脚本配置。
+     *
+     * @param invokeTimeoutSeconds 单次调用超时秒数
+     * @param scriptConfigs        逐脚本配置（脚本 id → 配置）
+     * @throws IOException 安装插件失败时抛出
+     */
+    private void startRuntime(int invokeTimeoutSeconds, Map<String, Map<String, Object>> scriptConfigs)
+            throws IOException {
         installPlugin();
         Map<String, Object> python = new LinkedHashMap<String, Object>();
         python.put(ScriptBridgeConfig.KEY_SCRIPTS_ROOT, scriptsRoot.toString());
@@ -1305,6 +1363,9 @@ class PythonScriptIT {
         python.put(ScriptBridgeConfig.KEY_INVOKE_TIMEOUT, Integer.valueOf(invokeTimeoutSeconds));
         python.put(PythonBridgePlugin.KEY_INTERPRETER, interpreter());
         python.put(ScriptBridgeConfig.KEY_PID_DIRECTORY, pidRoot.toString());
+        if (!scriptConfigs.isEmpty()) {
+            python.put(ScriptBridgeConfig.KEY_SCRIPTS, scriptConfigs);
+        }
         Map<String, Map<String, Object>> configurations = new LinkedHashMap<String, Map<String, Object>>();
         configurations.put("jellyfish-plugin-python", python);
         manager = new PF4JPluginManager(new PluginContextFactory(

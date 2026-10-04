@@ -25,6 +25,10 @@
 /** 本模块所在目录：网关资源抽取目录，也就是 SDK 与 worker 所在的地方。 */
 const HERE = __dirname;
 
+/** 读能力档与解析路径：两者都是 Node 内置模块，不需要 npm install。 */
+const fs = require('fs');
+const path = require('path');
+
 /**
  * 让脚本里的 `require('jellyfish_sdk')` 在任何工作目录下都能解析出来。
  *
@@ -89,6 +93,39 @@ const contributionTypes = new Set();
 const EMITTABLE_EVENTS = Object.freeze(['PluginNotificationEvent', 'ConfigWarningEvent']);
 
 /**
+ * 本脚本的配置段：由 worker 在 **加载脚本之前** 注入，因此模块顶层读也拿得到。
+ * 内容来自 `plugins.configurations.<桥接插件>.scripts.<脚本 id>`，
+ * 内核已完成双源合并与 `${ENV}` 插值。
+ */
+let currentConfiguration = {};
+
+/**
+ * 注入本脚本的配置段。
+ *
+ * 由 worker 调用，脚本作者不需要也不应该调它。时机必须是「加载脚本之前」，
+ * 否则脚本在模块顶层读 `configuration()` 会拿到空对象，而那种失败看起来就像
+ * 「配置没生效」——最难归因的一类现场。
+ *
+ * @param {object|null} values 配置映射，可为 `null`（等价空）
+ */
+function setConfiguration(values) {
+    currentConfiguration = Object.assign({}, values || {});
+}
+
+/**
+ * 获取本脚本的配置段。
+ *
+ * 与 `ctx.configuration` 是同一份，差别只在拿到的时机：本函数在模块顶层就能调。
+ * 密钥写在这里比写在脚本目录的文件里更一致，也与 Java 插件的
+ * `PluginContext.configuration()` 同一条通道。
+ *
+ * @returns {object} 配置映射，保证非 `null`
+ */
+function configuration() {
+    return currentConfiguration;
+}
+
+/**
  * 权限拦截能表达的三态；刻意没有「放行」——脚本只能收紧，不能放宽内核已经允许的调用。
  */
 const PERMISSION_VERDICTS = Object.freeze(['ABSTAIN', 'ASK', 'DENY']);
@@ -145,6 +182,18 @@ class ScriptContext {
     /** 原始请求载荷（只读用途，改它不会影响宿主）。 */
     get payload() {
         return Object.assign({}, this.payloadData);
+    }
+
+    /**
+     * 本脚本的配置段（`plugins.configurations.<桥接插件>.scripts.<脚本 id>`）。
+     *
+     * 内核已完成双源合并与 `${ENV}` 插值，因此这里拿到的就是最终值。
+     * 与模块级 `configuration()` 同一份。
+     *
+     * @returns {object} 配置映射，保证非 `null`
+     */
+    get configuration() {
+        return currentConfiguration;
     }
 
     /**
@@ -483,17 +532,65 @@ function compareNames(problems, label, declared, expected) {
  * 若散落成 if/else，新增一个扩展点时最容易漏掉的恰恰是「结果形状」那一半，
  * 而漏掉的后果是宿主拿到一个形状不对的载荷后静默地当成「脚本没返回内容」。
  */
-const dispatch = new Map();
+/**
+ * 扩展点实参构造与结果整形：键名来自 extension-points.json 的 args / shape 字段。
+ *
+ * 「有哪些扩展点、每个用哪个实参构造与整形」这份事实只有一份，就在那个 JSON 里；
+ * 这里只按它引用到的键提供实现。因此新增一个扩展点时，只要能复用既有键，
+ * 本文件一行都不用改——那份名单也不会再有第二份抄写。
+ */
+const ARGS = new Map();
+const SHAPES = new Map();
+
+/** 能力档文件位置：与 SDK 同目录（网关资源抽取目录下的 script/）。 */
+const CAPABILITY_FILE = path.join(HERE, 'extension-points.json');
 
 /**
- * 登记一个扩展点的实参构造与结果整形。
+ * 登记一个键对应的实参构造。
  *
- * @param {string} typeName 扩展点类型名
- * @param {Function} buildParams 载荷 → 处理函数的第一个参数
- * @param {Function|null} shape 处理函数返回值 → 协议结果
+ * @param {string} key 键名（来自能力档的 args 字段）
+ * @param {Function} builder 载荷 → 处理函数的第一个参数
  */
-function register(typeName, buildParams, shape) {
-    dispatch.set(typeName, { buildParams: buildParams, shape: shape });
+function defineArgs(key, builder) {
+    ARGS.set(key, builder);
+}
+
+/**
+ * 登记一个键对应的结果整形。
+ *
+ * @param {string} key 键名（来自能力档的 shape 字段）
+ * @param {Function} shaper 处理函数返回值 → 协议结果
+ */
+function defineShape(key, shaper) {
+    SHAPES.set(key, shaper);
+}
+
+/**
+ * 按能力档构建「类型名 → (实参构造, 结果整形)」。
+ *
+ * 文件缺失、或引用了本 SDK 没有实现的键时**当场报错**：那意味着 SDK 与能力档不是同一版，
+ * 静默降级只会把问题推迟到某次调用上，以「脚本没返回内容」的形态出现。
+ *
+ * @returns {Map<string, {buildParams: Function, shape: Function}>} 分发表
+ */
+function loadDispatch() {
+    let table;
+    try {
+        table = JSON.parse(fs.readFileSync(CAPABILITY_FILE, 'utf8'));
+    } catch (error) {
+        throw new ScriptError(`读取扩展点能力档失败: ${CAPABILITY_FILE} (${error.message})`);
+    }
+    const built = new Map();
+    for (const entry of table.in || []) {
+        const argsKey = entry.args;
+        const shapeKey = entry.shape;
+        if (!ARGS.has(argsKey) || !SHAPES.has(shapeKey)) {
+            throw new ScriptError(`扩展点能力档引用了 SDK 未实现的键: ${entry.type} `
+                + `(args=${argsKey}, shape=${shapeKey})；SDK 与能力档版本不一致`);
+        }
+        built.set(entry.type, { buildParams: ARGS.get(argsKey), shape: SHAPES.get(shapeKey) });
+    }
+    return built;
 }
 
 /**
@@ -510,17 +607,20 @@ function asMapping(result, fallback) {
 
 // ---- 工具 -----------------------------------------------------------------
 
-register('tool', (payload) => ({ args: payload.arguments || {} }),
-    // 任意 JSON 都能作为 output：字符串、数字、对象、数组都合法，
-    // 因为内核的截断与序列化对它们的处理是统一的（见 ToolCodec）
-    (result) => ({ output: result === undefined ? null : result }));
+defineArgs('tool', (payload) => ({ args: payload.arguments || {} }));
+
+// 任意 JSON 都能作为 output：字符串、数字、对象、数组都合法，
+// 因为内核的截断与序列化对它们的处理是统一的（见 ToolCodec）
+defineShape('tool', (result) => ({ output: result === undefined ? null : result }));
 
 // ---- 命令 -----------------------------------------------------------------
 
-register('command', (payload) => {
+defineArgs('command', (payload) => {
     const arguments_ = payload.arguments || {};
     return { tokens: listOf(arguments_.tokens), raw: arguments_.raw || '' };
-}, (result) => {
+});
+
+defineShape('command', (result) => {
     if (result === undefined || result === null) {
         return { kind: 'OK', output: null };
     }
@@ -543,7 +643,9 @@ register('command', (payload) => {
 // 与执行那条路**同一套形状**，只是两个实参为 null：约定「tokens === null ⇒ 这次是候选查询」。
 // 早先这里给的是空对象，于是「同一个函数回答两条路」（hasOptions: true）在用户按下补全键时
 // 才会炸，而报出来的是与候选查询看不出关系的 undefined 相关错误
-register('command_options', () => ({ tokens: null, raw: null }), (result) => {
+defineArgs('command_options', () => ({ tokens: null, raw: null }));
+
+defineShape('choices', (result) => {
     if (result === undefined || result === null) {
         return { choices: [] };
     }
@@ -585,12 +687,12 @@ function shapeText(result) {
     return mapping;
 }
 
-register('prompt', () => ({}), shapeText);
-register('status_line', () => ({}), shapeText);
+defineArgs('none', () => ({}));
+defineShape('text', shapeText);
 
 // ---- 面板 -----------------------------------------------------------------
 
-register('panel', () => ({}), (result) => {
+defineShape('panel', (result) => {
     if (result === undefined || result === null) {
         return null;
     }
@@ -606,7 +708,7 @@ register('panel', () => ({}), (result) => {
 
 // ---- 权限拦截 -------------------------------------------------------------
 
-register('permission', () => ({}), (result) => {
+defineShape('permission', (result) => {
     if (result === undefined || result === null || result === false) {
         return { verdict: 'ABSTAIN' };
     }
@@ -676,9 +778,10 @@ function shapeNothing() {
     return null;
 }
 
-register('session_persist', (payload) => ({ snapshot: payload.snapshot }), shapeNothing);
+defineArgs('snapshot', (payload) => ({ snapshot: payload.snapshot }));
+defineShape('nothing', shapeNothing);
 
-register('session_restore', () => ({}), (result) => {
+defineShape('sessions', (result) => {
     if (result === undefined || result === null) {
         return { sessions: [] };
     }
@@ -696,18 +799,29 @@ register('session_restore', () => ({}), (result) => {
     return shaped;
 });
 
-register('session_delete', (payload) => ({ sessionId: payload.sessionId }), shapeNothing);
+defineArgs('session_id', (payload) => ({ sessionId: payload.sessionId }));
 
 // ---- 压缩策略 -------------------------------------------------------------
 
-register('compaction', (payload) => Object.assign({}, payload || {}), (result) => asMapping(result, null));
+defineArgs('request', (payload) => Object.assign({}, payload || {}));
+defineShape('mapping', (result) => asMapping(result, null));
 
 // ---- 事件 -----------------------------------------------------------------
 
-register('event', (payload) => ({ event: payload }),
+defineArgs('event', (payload) => ({ event: payload }));
+
+/**
+ * 类型名 → (实参构造, 结果整形)。
+ *
+ * 事件不是扩展点（它是协议里的通知方法），但走同一张分发表，因此在这里单独补一条。
+ */
+const dispatch = loadDispatch();
+dispatch.set('event', {
+    buildParams: ARGS.get('event'),
     // 事件处理器的返回值没有去处：事件是通知，不是请求。返回 null 让调用方
     // 不必因为脚本「顺手 return 了一个值」而报错
-    () => null);
+    shape: () => null,
+});
 
 /**
  * 按类型分发一次调用。
@@ -716,14 +830,17 @@ register('event', (payload) => ({ event: payload }),
  * 「失败」这条路，而不是返回一个看起来正常的空结果——后者会让模型以为
  * 「脚本说没有内容」，问题就此静默。
  *
+ * **handler 可以是 async 的**（返回 Promise），这里会等它；同步 handler 行为不变。
+ * 因此本函数返回 Promise，调用方必须 `await`。
+ *
  * @param {string} scriptId 脚本标识，用于填上下文
  * @param {string} typeName 扩展点类型名
  * @param {string} routeKey 路由键（工具名 / 命令名）；类型级扩展点用类型名
  * @param {object} payload 请求载荷
  * @param {Function|null} emitter 事件发布回调（由 worker 注入）；`null` 表示当前上下文不支持发布事件
- * @returns {*} 结果载荷，可为 `null`
+ * @returns {Promise<*>} 结果载荷，可为 `null`
  */
-function invoke(scriptId, typeName, routeKey, payload, emitter) {
+async function invoke(scriptId, typeName, routeKey, payload, emitter) {
     const lookupKey = routeKey === undefined || routeKey === null ? typeName : routeKey;
     const handler = handlers.get(`${typeName}\u0000${lookupKey}`);
     if (!handler) {
@@ -734,7 +851,7 @@ function invoke(scriptId, typeName, routeKey, payload, emitter) {
         throw new ScriptError(`未知的扩展点类型: ${typeName}`);
     }
     const context = new ScriptContext(scriptId, payload, emitter);
-    const result = handler(entry.buildParams(payload || {}), context);
+    const result = await handler(entry.buildParams(payload || {}), context);
     return entry.shape ? entry.shape(result) : null;
 }
 
@@ -768,6 +885,8 @@ module.exports = {
     ScriptError,
     ensureResolvable,
     ScriptContext,
+    configuration,
+    setConfiguration,
     tool,
     command,
     commandOptions,

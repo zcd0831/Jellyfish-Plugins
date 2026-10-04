@@ -137,6 +137,13 @@ public final class ScriptProtocol {
     /** 参数键：清单摘要。 */
     public static final String PARAM_MANIFEST = "manifest";
 
+    /**
+     * 参数键：该脚本的配置段（{@code scripts.<脚本 id>} 的原样转发）。
+     * <p>
+     * 它可能含密钥，因此协议只负责搬运：网关不记日志、不渲染台账，只交给对应 worker。
+     */
+    public static final String PARAM_CONFIG = "config";
+
     /** 参数键：初始化逐脚本结果。 */
     public static final String PARAM_OK = "ok";
 
