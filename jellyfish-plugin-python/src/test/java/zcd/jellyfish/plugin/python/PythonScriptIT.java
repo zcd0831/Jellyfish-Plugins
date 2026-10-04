@@ -801,21 +801,49 @@ class PythonScriptIT {
     }
 
     @Test
-    @DisplayName("web 示例：搜索、抓取正文与重定向都应真的生效（打本地 mock，不碰真网络）")
-    void webExample_should_searchAndFetch_againstLocalServer() throws Exception {
+    @DisplayName("web 示例：搜索端点在内网不需要任何放行开关，但 web_fetch 不沾这个光")
+    void webExample_should_trustConfiguredEndpoint_without_unlockingFetch() throws Exception {
         HttpServer server = startMockServer();
         try {
             String base = "http://127.0.0.1:" + server.getAddress().getPort();
             installExample("web");
-            startRuntime(10, webScriptConfig(base, true));
+            // 只配了 endpoint，没有任何「允许内网」的开关：auto 认出端点是自建的，用它
+            startRuntime(10, scripts(webConfig("endpoint", base)));
 
+            // 搜索打的是用户自己配的端点——它来自配置文件、不是模型能拨动的，因此直接放行
             ToolCallResult search = invokeTool("web_search",
                     Collections.<String, Object>singletonMap("query", "jellyfish"));
             String listed = String.valueOf(search.getOutput());
             assertTrue(listed.contains("示例标题一"), listed);
             assertTrue(listed.contains("http://example.com/a"), listed);
-            // 摘要进 metadata（给人看），正文给模型
-            assertEquals("搜到 2 条", ToolMetadata.summaryOf(search.getMetadata()));
+            // 摘要进 metadata（给人看），并且把服务它的后端也写出来
+            assertEquals("搜到 2 条（searxng）", ToolMetadata.summaryOf(search.getMetadata()));
+
+            // 同样是 127.0.0.1，web_fetch 的目标却是模型给的 —— 因此照旧拒绝。
+            // 「我有内网搜索服务」不该顺带放开抓取，这是这次修复的核心
+            JellyfishException failure = assertThrows(JellyfishException.class,
+                    () -> invokeTool("web_fetch",
+                            Collections.<String, Object>singletonMap("url", base + "/page")));
+            assertTrue(failure.getMessage().contains("内网地址"), failure.getMessage());
+            assertTrue(failure.getMessage().contains("allowRanges"),
+                    "报错要直接给出下一步: " + failure.getMessage());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("web 示例：allowRanges 放行网段后，抓取正文与重定向都走得通")
+    void webExample_should_fetchWithinAllowedRanges() throws Exception {
+        HttpServer server = startMockServer();
+        try {
+            String base = "http://127.0.0.1:" + server.getAddress().getPort();
+            installExample("web");
+            // allowRanges 是「整段网段豁免」，真正的用途是 TUN + 假 IP 代理（公网域名被解析到保留网段）。
+            // 这里拿它给回环网段放行，因为走的是同一条判定路径
+            Map<String, Object> web = webConfig("endpoint", base);
+            web.put("allowRanges", Collections.singletonList("127.0.0.0/8"));
+            startRuntime(10, scripts(web));
 
             ToolCallResult fetch = invokeTool("web_fetch",
                     Collections.<String, Object>singletonMap("url", base + "/page"));
@@ -827,7 +855,7 @@ class PythonScriptIT {
             assertFalse(text.contains("页脚应被丢弃"), text);
             assertFalse(text.contains("var x=1"), text);
 
-            // 重定向要能跟上（逐跳校验只在 allowPrivateAddresses=true 时放行内网）
+            // 重定向是逐跳校验的，因此豁免也必须跟着带过去；否则第二跳会被拦下来
             ToolCallResult redirected = invokeTool("web_fetch",
                     Collections.<String, Object>singletonMap("url", base + "/redirect"));
             assertTrue(String.valueOf(redirected.getOutput()).contains("第一段正文"),
@@ -838,44 +866,73 @@ class PythonScriptIT {
     }
 
     @Test
-    @DisplayName("web 示例：默认拒绝内网地址（SSRF 防护）")
-    void webExample_should_blockPrivateAddresses_byDefault() throws Exception {
+    @DisplayName("web 示例：什么都不配时默认走 Exa 的公开 MCP 端点（零配置就能搜）")
+    void webExample_should_defaultToExaMcp_withoutAnyKey() throws Exception {
         HttpServer server = startMockServer();
         try {
             String base = "http://127.0.0.1:" + server.getAddress().getPort();
             installExample("web");
-            // 刻意不写 allowPrivateAddresses：缺省就是拒绝
-            startRuntime(10, webScriptConfig(base, false));
+            // 没有 provider、没有 endpoint、没有 apiKey，只把公开端点指向 mock：
+            // 这条路径要证明的就是「不填任何东西也有得用」
+            startRuntime(10, scripts(webConfig("exaMcpUrl", base + "/mcp")));
 
-            JellyfishException failure = assertThrows(JellyfishException.class,
-                    () -> invokeTool("web_fetch",
-                            Collections.<String, Object>singletonMap("url", base + "/page")));
-
-            assertTrue(failure.getMessage().contains("内网地址"), failure.getMessage());
+            ToolCallResult search = invokeTool("web_search",
+                    Collections.<String, Object>singletonMap("query", "jellyfish"));
+            String listed = String.valueOf(search.getOutput());
+            // 端点回的是 SSE，解析器必须能从 data: 行里把结果抠出来
+            assertTrue(listed.contains("MCP-标题一"), listed);
+            assertTrue(listed.contains("http://example.com/mcp-1"), listed);
+            assertTrue(String.valueOf(ToolMetadata.summaryOf(search.getMetadata())).contains("exa-mcp"),
+                    String.valueOf(ToolMetadata.summaryOf(search.getMetadata())));
         } finally {
             server.stop(0);
         }
     }
 
-    /**
-     * 造一份 {@code scripts.web} 配置。
-     *
-     * @param base          mock 服务器地址（当作 SearXNG 端点）
-     * @param allowPrivate  是否允许内网地址
-     * @return 逐脚本配置
-     */
-    private static Map<String, Map<String, Object>> webScriptConfig(String base, boolean allowPrivate) {
-        Map<String, Object> web = new LinkedHashMap<String, Object>();
-        web.put("provider", "searxng");
-        web.put("endpoint", base);
-        web.put("allowPrivateAddresses", Boolean.valueOf(allowPrivate));
-        Map<String, Map<String, Object>> scripts = new LinkedHashMap<String, Map<String, Object>>();
-        scripts.put("web", web);
-        return scripts;
+    @Test
+    @DisplayName("web 示例：已移除的 allowPrivateAddresses 要当场报错，而不是被静默忽略")
+    void webExample_should_rejectRemovedFlag() throws Exception {
+        installExample("web");
+        Map<String, Object> web = webConfig("endpoint", "https://searx.example.org");
+        web.put("allowPrivateAddresses", Boolean.TRUE);
+        startRuntime(10, scripts(web));
+
+        JellyfishException failure = assertThrows(JellyfishException.class,
+                () -> invokeTool("web_search",
+                        Collections.<String, Object>singletonMap("query", "x")));
+
+        // 静默忽略会让人以为「已经配好了」，然后在另一个地方莫名其妙地失败
+        assertTrue(failure.getMessage().contains("allowPrivateAddresses"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("allowRanges"), failure.getMessage());
     }
 
     /**
-     * 起一个只在回环上监听的 mock 服务：搜索接口、一个 HTML 页面、一条重定向。
+     * 造一份只放一个键的 {@code scripts.web} 配置。
+     *
+     * @param key   配置键
+     * @param value 配置值
+     * @return scripts.web 段
+     */
+    private static Map<String, Object> webConfig(String key, Object value) {
+        Map<String, Object> web = new LinkedHashMap<String, Object>();
+        web.put(key, value);
+        return web;
+    }
+
+    /**
+     * 把一份 {@code scripts.web} 段包成逐脚本配置。
+     *
+     * @param web scripts.web 段
+     * @return 逐脚本配置
+     */
+    private static Map<String, Map<String, Object>> scripts(Map<String, Object> web) {
+        Map<String, Map<String, Object>> all = new LinkedHashMap<String, Map<String, Object>>();
+        all.put("web", web);
+        return all;
+    }
+
+    /**
+     * 起一个只在回环上监听的 mock 服务：搜索接口、一个 MCP 端点、一个 HTML 页面、一条重定向。
      *
      * @return 已启动的服务
      * @throws IOException 启动失败时抛出
@@ -888,6 +945,28 @@ class PythonScriptIT {
                         + "\"content\":\"摘要一\",\"engine\":\"mock\"},"
                         + "{\"title\":\"示例标题二\",\"url\":\"http://example.com/b\","
                         + "\"content\":\"摘要二\",\"engine\":\"mock\"}]}"));
+        // Exa 的公开端点回的是 SSE（text/event-stream）而不是裸 JSON。
+        // mock 也照真实形状回，否则「两种形态都试一次」的分支永远没被跨过。
+        // 并且照真实服务那样**校验请求头**：少了 Content-Type: application/json 就回 415。
+        // 这不是凑数——urllib 带 body 时会自己塞 application/x-www-form-urlencoded，
+        // 不校的话测试会绿而真实调用 415（真撞过一次）
+        server.createContext("/mcp", exchange -> {
+            String contentType = String.valueOf(exchange.getRequestHeaders().getFirst("Content-Type"));
+            String accept = String.valueOf(exchange.getRequestHeaders().getFirst("Accept"));
+            if (!contentType.startsWith("application/json") || !accept.contains("text/event-stream")) {
+                respond(exchange, 415, "text/plain; charset=utf-8",
+                        "需要 Content-Type: application/json 且 Accept 含 text/event-stream");
+                return;
+            }
+            respond(exchange, 200, "text/event-stream",
+                    "event: message\n"
+                            + "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":["
+                            + "{\"type\":\"text\",\"text\":"
+                            + "\"Title: MCP-标题一\\nURL: http://example.com/mcp-1\\n"
+                            + "Published: N/A\\nHighlights:\\n来自 MCP 的正文一。\\n---\\n"
+                            + "Title: MCP-标题二\\nURL: http://example.com/mcp-2\\n"
+                            + "Highlights:\\n来自 MCP 的正文二。\"}]}}\n\n");
+        });
         server.createContext("/page", exchange -> respond(exchange, "text/html; charset=utf-8",
                 "<!doctype html><html><head><title>示例页面</title>"
                         + "<script>var x=1;</script><style>.a{color:red}</style></head>"
@@ -906,18 +985,32 @@ class PythonScriptIT {
     /**
      * 回一段固定内容。
      *
-     * @param exchange 交换对象
+     * @param exchange   交换对象
+     * @param status     状态码
      * @param contentType 内容类型
-     * @param body      正文
+     * @param body       正文
+     * @throws IOException 写入失败时抛出
+     */
+    private static void respond(com.sun.net.httpserver.HttpExchange exchange, int status,
+                                String contentType, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().add("Content-Type", contentType);
+        exchange.sendResponseHeaders(status, bytes.length);
+        exchange.getResponseBody().write(bytes);
+        exchange.close();
+    }
+
+    /**
+     * 回一段 200 固定内容。
+     *
+     * @param exchange    交换对象
+     * @param contentType 内容类型
+     * @param body        正文
      * @throws IOException 写入失败时抛出
      */
     private static void respond(com.sun.net.httpserver.HttpExchange exchange, String contentType,
                                 String body) throws IOException {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().add("Content-Type", contentType);
-        exchange.sendResponseHeaders(200, bytes.length);
-        exchange.getResponseBody().write(bytes);
-        exchange.close();
+        respond(exchange, 200, contentType, body);
     }
 
     @Test
