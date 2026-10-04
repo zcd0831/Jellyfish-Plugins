@@ -589,6 +589,11 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
         digest.put("commandOptions", new ArrayList<String>(manifest.commandOptions()));
         digest.put("contributions", new ArrayList<String>(manifest.contributions()));
         digest.put("events", new ArrayList<String>(manifest.events()));
+        List<String> handlers = new ArrayList<String>();
+        for (ScriptManifest.Handler handler : manifest.handlers()) {
+            handlers.add(handler.key());
+        }
+        digest.put("handlers", handlers);
         return digest;
     }
 

@@ -125,6 +125,7 @@ public final class ExtensionCodecs {
                 new ToolCodec(),
                 new CommandCodec(),
                 new CommandOptionsCodec(),
+                new ModelCatalogCodec(),
                 // 类型级：同一类型允许多个贡献
                 new PromptCodec(),
                 new StatusLineCodec(),
@@ -133,6 +134,13 @@ public final class ExtensionCodecs {
                 new SessionPersistCodec(),
                 new SessionRestoreCodec(),
                 new SessionDeleteCodec(),
-                new CompactionCodec()));
+                new CompactionCodec(),
+                // 二期打通：数据进出、不在渲染线程/启动期的扩展点
+                new ToolResultPostCodec(),
+                new ToolArgumentPreCodec(),
+                new TurnContextCodec(),
+                new SessionBeforeCloseCodec(),
+                new SessionBeforeForkCodec(),
+                new CompactionPreCodec()));
     }
 }

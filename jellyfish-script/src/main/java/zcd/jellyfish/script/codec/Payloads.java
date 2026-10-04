@@ -62,6 +62,40 @@ final class Payloads {
     }
 
     /**
+     * 把对象节点还原成映射。
+     * <p>
+     * 不是对象时返回 {@code null} 而不是空映射：这两者对调用点的含义不同——
+     * 「一个字段都没给」与「给了一个不是对象的东西」在前者那里是常态、在后者那里是脚本写错了。
+     *
+     * @param node 节点，可为 {@code null}
+     * @return 映射；不是对象时返回 {@code null}
+     */
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> map(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return null;
+        }
+        Object value = ScriptJson.treeToValue(node, Object.class);
+        if (!(value instanceof Map)) {
+            return null;
+        }
+        return (Map<String, Object>) value;
+    }
+
+    /**
+     * 把节点还原成任意 JSON 值，<b>保持原始类型</b>。
+     * <p>
+     * 工具结果整形那个扩展点靠它才能把「字符串就是字符串、结构化对象就是结构化对象」这件事
+     * 原样交给内核——在那里序列化成文本会让下游选错截断算法（见 {@code ToolResultPostRequest}）。
+     *
+     * @param node 节点，可为 {@code null}
+     * @return JSON 值；缺失或为 {@code null} 时返回 {@code null}
+     */
+    static Object value(JsonNode node) {
+        return node == null || node.isNull() ? null : ScriptJson.treeToValue(node, Object.class);
+    }
+
+    /**
      * 取可空整数字段，非数字或缺失一律返回 {@code null}。
      * <p>
      * 返回 {@code null} 而不是 0 是刻意的：这些字段在协议里是「本插件不表态」的表达，

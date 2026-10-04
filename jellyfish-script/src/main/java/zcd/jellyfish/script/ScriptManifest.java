@@ -49,7 +49,7 @@ public final class ScriptManifest {
 
     /** 顶层允许的键。 */
     private static final Set<String> TOP_KEYS = keys("id", "entry", "tools", "commands", "commandOptions",
-            "contributions", "events");
+            "contributions", "events", "handlers");
 
     /** 工具允许的键。 */
     private static final Set<String> TOOL_KEYS = keys("name", "description", "parameters", "required");
@@ -62,6 +62,17 @@ public final class ScriptManifest {
 
     /** 候选查询条目允许的键。 */
     private static final Set<String> COMMAND_OPTION_KEYS = keys("name");
+
+    /** 路由处理器条目允许的键。 */
+    private static final Set<String> HANDLER_KEYS = keys("type", "route");
+
+    /**
+     * 已经在清单里有专用字段的路由键类型。
+     * <p>
+     * 它们不能用 {@code handlers} 再声明一遍：同一件事两条写法，迟早出现「两处不一致」——
+     * 而那种不一致会以「注册了两个处理器，其中一个永远不被调用」的形式静默存在着。
+     */
+    private static final Set<String> DEDICATED_ROUTE_TYPES = keys("tool", "command", "command_options");
 
     /** 脚本标识。 */
     private final String id;
@@ -81,6 +92,9 @@ public final class ScriptManifest {
     /** 类型级扩展点贡献声明（类型名）。 */
     private final Set<String> contributions;
 
+    /** 带路由键、但没有专用清单字段的处理器声明。 */
+    private final List<Handler> handlers;
+
     /** 想订阅的事件名。 */
     private final Set<String> events;
 
@@ -94,9 +108,11 @@ public final class ScriptManifest {
      * @param commandOptions 显式声明候选查询的命令名
      * @param contributions  类型级扩展点贡献声明
      * @param events         想订阅的事件名
+     * @param handlers       带路由键的处理器声明
      */
     private ScriptManifest(String id, String entry, List<Tool> tools, List<Command> commands,
-                           Set<String> commandOptions, Set<String> contributions, Set<String> events) {
+                           Set<String> commandOptions, Set<String> contributions, Set<String> events,
+                           List<Handler> handlers) {
         this.id = id;
         this.entry = entry;
         this.tools = Collections.unmodifiableList(tools);
@@ -104,6 +120,7 @@ public final class ScriptManifest {
         this.commandOptions = Collections.unmodifiableSet(commandOptions);
         this.contributions = Collections.unmodifiableSet(contributions);
         this.events = Collections.unmodifiableSet(events);
+        this.handlers = Collections.unmodifiableList(handlers);
     }
 
     /**
@@ -127,7 +144,7 @@ public final class ScriptManifest {
         List<Command> commands = parseCommands(root.get("commands"));
         return new ScriptManifest(id, entry, tools, commands,
                 parseCommandOptions(root.get("commandOptions"), commands), parseContributions(root, codecs),
-                parseEvents(root.get("events")));
+                parseEvents(root.get("events")), parseHandlers(root.get("handlers"), codecs));
     }
 
     /**
@@ -193,9 +210,19 @@ public final class ScriptManifest {
         return events;
     }
 
+    /**
+     * 获取带路由键的处理器声明。
+     *
+     * @return 不可变列表
+     */
+    public List<Handler> handlers() {
+        return handlers;
+    }
+
     @Override
     public String toString() {
-        return "ScriptManifest{id=" + id + ", tools=" + tools.size() + ", commands=" + commands.size() + '}';
+        return "ScriptManifest{id=" + id + ", tools=" + tools.size() + ", commands=" + commands.size()
+                + ", handlers=" + handlers.size() + '}';
     }
 
     /**
@@ -370,6 +397,55 @@ public final class ScriptManifest {
             }
         }
         return contributions;
+    }
+
+    /**
+     * 解析带路由键、但没有专用清单字段的处理器声明。
+     * <p>
+     * <b>为什么需要它</b>：大部分带路由键的扩展点（工具、命令、候选查询）在清单里有专用字段，
+     * 但路由键来自<b>用户配置</b>的那些（目前是 {@code model_catalog}，路由键是 provider 名）
+     * 无法用类型级贡献声明——它们的路由键只能由作者显式写出来。
+     * <p>
+     * <b>三条硬校验</b>：类型必须已注册、必须带路由键（类型级的应写进 contributions）、
+     * 且不得是已有专用字段的那几个（否则同一件事有两条写法，而「两处不一致」会以
+     * 「注册了两个处理器、其中一个永远不被调用」的形式静默存在）。
+     *
+     * @param node   处理器数组节点，可为 {@code null}
+     * @param codecs 扩展点编解码器注册表
+     * @return 处理器声明列表，保证非 {@code null}
+     * @throws JellyfishException 结构或取值非法、类型非路由键或重复时抛出
+     */
+    private static List<Handler> parseHandlers(JsonNode node, ExtensionCodecs codecs) {
+        List<Handler> handlers = new ArrayList<Handler>();
+        if (node == null || node.isNull()) {
+            return handlers;
+        }
+        requireArray(node, "handlers");
+        Set<String> keys = new LinkedHashSet<String>();
+        for (int index = 0; index < node.size(); index++) {
+            JsonNode element = node.get(index);
+            String where = "handlers[" + index + "]";
+            requireObject(element, where);
+            rejectUnknownKeys(element, where, HANDLER_KEYS);
+            String type = requireText(element, "type", where);
+            String route = requireText(element, "route", where);
+            if (!codecs.isKnown(type)) {
+                throw new JellyfishException(where + " 含未知扩展点: " + type
+                        + "（已知: " + codecs.names() + "）");
+            }
+            if (DEDICATED_ROUTE_TYPES.contains(type)) {
+                throw new JellyfishException(where + " 的 " + type
+                        + " 在清单里有专用字段，请在 tools / commands / commandOptions 里声明");
+            }
+            if (codecs.isTypeLevel(type)) {
+                throw new JellyfishException(where + " 的 " + type + " 是类型级扩展点，应在 contributions 里声明");
+            }
+            if (!keys.add(type + "::" + route)) {
+                throw new JellyfishException(where + " 重复声明: " + type + " route=" + route);
+            }
+            handlers.add(new Handler(type, route));
+        }
+        return handlers;
     }
 
     /**
@@ -725,6 +801,68 @@ public final class ScriptManifest {
         @Override
         public String toString() {
             return "Command{name=" + name + ", hasOptions=" + hasOptions + '}';
+        }
+    }
+
+    /**
+     * 路由处理器声明：清单里的一个 {@code handlers} 条目。
+     * <p>
+     * 它适用于「路由键来自用户配置」的扩展点——作者必须把路由键写出来，因为它无法像工具名那样
+     * 从脚本自己的声明里推出来。目前的使用者是 {@code model_catalog}（路由键是 provider 名）。
+     * <p>
+     * 不可变，可安全跨线程传递。
+     *
+     * @author zcd
+     */
+    public static final class Handler {
+
+        /** 扩展点类型名。 */
+        private final String type;
+
+        /** 路由键。 */
+        private final String route;
+
+        /**
+         * 构造处理器声明。
+         *
+         * @param type  扩展点类型名
+         * @param route 路由键
+         */
+        private Handler(String type, String route) {
+            this.type = type;
+            this.route = route;
+        }
+
+        /**
+         * 获取扩展点类型名。
+         *
+         * @return 类型名
+         */
+        public String type() {
+            return type;
+        }
+
+        /**
+         * 获取路由键。
+         *
+         * @return 路由键
+         */
+        public String route() {
+            return route;
+        }
+
+        /**
+         * 获取用于一致性比对的键。
+         *
+         * @return 形如 {@code type::route} 的键
+         */
+        public String key() {
+            return type + "::" + route;
+        }
+
+        @Override
+        public String toString() {
+            return "Handler{type=" + type + ", route=" + route + '}';
         }
     }
 }

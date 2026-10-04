@@ -91,6 +91,9 @@ public final class ScriptRegistrar {
         for (String typeName : manifest.contributions()) {
             registerContribution(context, plugin, source, typeName, subscriptions, issues);
         }
+        for (ScriptManifest.Handler handler : manifest.handlers()) {
+            registerHandler(context, plugin, source, handler, subscriptions, issues);
+        }
         return new ScriptRegistration(source, subscriptions, issues);
     }
 
@@ -164,7 +167,7 @@ public final class ScriptRegistrar {
      * 「请求类型 ↔ 结果类型」严格配对（编码时按声明类型取值、解码时按声明类型构造），
      * 而注册表只会用它注册时的那个请求类型调用它，因此运行期不存在错配的可能。
      * 转换收在这里的好处是：{@link ExtensionCodecs} 可以按「类型名」查表，
-     * 而不必为 11 个扩展点各写一条强类型分支。
+     * 而不必为每个扩展点各写一条强类型分支。
      *
      * @param context       注册落点上下文
      * @param plugin        目标脚本
@@ -189,6 +192,42 @@ public final class ScriptRegistrar {
                     RegisterOptions.DEFAULT));
         } catch (RuntimeException e) {
             issues.add(new ScriptIssue(source, "贡献注册失败 " + typeName + ": " + messageOf(e)));
+        }
+    }
+
+    /**
+     * 注册一个带路由键、但没有专用清单字段的处理器。
+     * <p>
+     * 与 {@link #registerContribution} 不同的是落点：路由键来自清单，因此走 {@code handle}
+     * 而不是 {@code contribute}。目前的使用者是 {@code model_catalog}（路由键是 provider 名，
+     * 而那个名字只有用户知道，脚本无法从自己的声明里推出来）。
+     * <p>
+     * unchecked 转换的理由与 {@link #registerContribution} 完全相同。
+     *
+     * @param context       注册落点上下文
+     * @param plugin        目标脚本
+     * @param source        问题归因用的来源
+     * @param handler       处理器声明
+     * @param subscriptions 注册句柄输出
+     * @param issues        问题输出
+     */
+    @SuppressWarnings("unchecked")
+    private void registerHandler(PluginContext context, ScriptPlugin plugin, String source,
+                                 ScriptManifest.Handler handler, List<Subscription> subscriptions,
+                                 List<ScriptIssue> issues) {
+        ExtensionCodec<?, ?> found = codecs.byName(handler.type());
+        if (found == null) {
+            // 清单解析已经校验过类型名，走到这里说明 codecs 被换成了另一份注册表
+            issues.add(new ScriptIssue(source, "未知扩展点类型: " + handler.type()));
+            return;
+        }
+        ExtensionCodec<ExtensionRequest<Object>, Object> codec =
+                (ExtensionCodec<ExtensionRequest<Object>, Object>) found;
+        try {
+            subscriptions.add(context.handle(codec.requestType(), handler.route(),
+                    handlerFor(codec, plugin), RegisterOptions.DEFAULT));
+        } catch (RuntimeException e) {
+            issues.add(new ScriptIssue(source, "处理器注册失败 " + handler.key() + ": " + messageOf(e)));
         }
     }
 

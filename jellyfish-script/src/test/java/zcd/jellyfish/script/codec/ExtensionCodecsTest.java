@@ -25,23 +25,27 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ExtensionCodecsTest {
 
     @Test
-    @DisplayName("默认注册表应覆盖全部 11 个扩展点")
-    void defaults_should_coverAllElevenExtensionPoints() {
-        assertEquals(11, ExtensionCodecs.DEFAULTS.names().size());
+    @DisplayName("默认注册表应覆盖能力档里的全部扩展点")
+    void defaults_should_coverAllDeclaredExtensionPoints() {
+        assertEquals(18, ExtensionCodecs.DEFAULTS.names().size());
         assertTrue(ExtensionCodecs.DEFAULTS.names().containsAll(Arrays.asList(
                 "tool", "command", "command_options", "prompt", "status_line", "panel",
-                "permission", "session_persist", "session_restore", "session_delete", "compaction")));
+                "permission", "session_persist", "session_restore", "session_delete", "compaction",
+                "model_catalog", "tool_result_post", "tool_argument_pre", "turn_context",
+                "session_before_close", "session_before_fork", "compaction_pre")));
     }
 
     @Test
-    @DisplayName("只有三个扩展点带路由键，其余都是类型级")
+    @DisplayName("只有四个扩展点带路由键，其余都是类型级")
     void typeLevelNames_should_containOnlyTypeLevelExtensionPoints() {
         assertFalse(ExtensionCodecs.DEFAULTS.isTypeLevel("tool"));
         assertFalse(ExtensionCodecs.DEFAULTS.isTypeLevel("command"));
         assertFalse(ExtensionCodecs.DEFAULTS.isTypeLevel("command_options"));
+        assertFalse(ExtensionCodecs.DEFAULTS.isTypeLevel("model_catalog"));
         assertTrue(ExtensionCodecs.DEFAULTS.isTypeLevel("prompt"));
         assertTrue(ExtensionCodecs.DEFAULTS.isTypeLevel("compaction"));
-        assertEquals(8, ExtensionCodecs.DEFAULTS.typeLevelNames().size());
+        assertTrue(ExtensionCodecs.DEFAULTS.isTypeLevel("tool_result_post"));
+        assertEquals(14, ExtensionCodecs.DEFAULTS.typeLevelNames().size());
     }
 
     @Test
