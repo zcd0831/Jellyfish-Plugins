@@ -8,6 +8,7 @@
 | --- | --- |
 | `hello/` | 最小可用：一个只读工具 + 一个可写工具 + 一条命令（带别名与候选）+ 两种贡献（`prompt` / `status_line`）+ 订阅一个事件 |
 | `jira/` | 更接近真实插件：多个工具（只读与可写分开声明）、带别名/用法的命令、候选查询写在单独的函数里、`prompt` + `panel` 贡献、**订阅并发布**事件 |
+| `web/`（仅 Python） | **真实形态**：联网搜索与网页抓取，零第三方依赖，有自己的配置段、外部 HTTP 调用、SSRF 防护与 `ToolResult` 摘要 |
 
 `jira` 是**内存里的假工单系统**（没有任何网络调用，重启 worker 就忘光）。真实的插件会把 HTTP
 调用放在这里，而那正是脚本进程隔离的价值所在：依赖装在脚本自己的环境里，崩了也只波及它自己。
@@ -67,6 +68,42 @@ tool({ name: 'web_search', description: '联网搜索' }, async (params, ctx) =>
   脚本进程的环境是严格白名单（只透传解释器运行与依赖解析必需的那几个），
   这是有意的安全取舍，因此这条配置段就是脚本拿密钥的唯一通道。
 - **注入发生在 import 脚本之前**，所以模块顶层 `configuration()` 也拿得到值。
+
+## 一个真实例子：`web/`（联网搜索与抓取）
+
+`examples/scripts/python/web/` 是一个可直接拷贝使用的**联网搜索插件**，两个工具：
+
+- `web_search`：搜索，返回标题 / 链接 / 摘要；支持条数、时间范围、域名收窄；
+- `web_fetch`：抓取一个网页并返回**正文文本**（去掉脚本 / 样式 / 导航 / 页脚）。
+
+**零第三方依赖**：只用 Python 标准库（`urllib` + `html.parser`），拷进 `scripts/python/` 就能跑，
+不需要 `pip install`。代价是正文提取的质量不如 `trafilatura` / `@mozilla/readability`——
+那是有意接受的取舍（换来「开箱即用」），要更好的效果只需把 `extract_text` 换掉。
+
+配置段（`plugins.configurations.jellyfish-plugin-python.scripts.web`）：
+
+```json
+{
+  "provider": "searxng",
+  "endpoint": "https://searx.example.org",
+  "apiKey": "${BRAVE_API_KEY}",
+  "timeoutSeconds": 15,
+  "maxChars": 20000,
+  "allowPrivateAddresses": false
+}
+```
+
+- `provider`：`searxng`（自建，端点式、无需厂商 key）或 `brave`（需要 `apiKey`）。加一个后端 =
+  在 `_PROVIDERS` 里加一个函数，其它地方都不用改。
+- **密钥走配置段，不走环境变量**：脚本进程的环境是严格白名单（不携带 JVM 的密钥），
+  而配置段支持 `${ENV}` 插值——因此写 `"apiKey": "${BRAVE_API_KEY}"` 仍然不会把密钥落到文件里。
+- `allowPrivateAddresses`：默认 `false`，即**拒绝内网地址**。自建在内网的 SearXNG 才需要置 `true`。
+
+**SSRF 防护是这道工具的必备件**：`web_fetch` 的输入来自模型，而模型可能被网页内容诱导去访问
+`http://169.254.169.254/`（云元数据）或 `http://localhost:8080`（本机服务）。因此插件会
+把主机名解析成 IP 再逐个判定（只看字面量会漏掉解析到 `127.0.0.1` 的域名），
+并且**对每一跳重定向重新校验**（入口查一次不够：`https://evil.example/` 完全可以 302 到元数据地址）。
+已知边界：不防 DNS 重绑定（解析之后再改），那需要「解析-连接」用同一个 IP。
 
 ## 给界面看的一行：`ToolResult`
 

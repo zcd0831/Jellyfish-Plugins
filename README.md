@@ -529,7 +529,9 @@ PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
 
 脚本插件的 API、`manifest.json` 字段与两门语言的逐条对照见
 [`examples/scripts/README.md`](examples/scripts/README.md)，仓库顶层 `examples/scripts/{python,node}/{hello,jira}`
-是可直接拷贝运行的示例（`hello` 教学最小集、`jira` 真实形态，且被端到端用例直接加载）。
+是可直接拷贝运行的示例（`hello` 教学最小集、`jira` 真实形态，且被端到端用例直接加载）；
+另有仅 Python 的 `examples/scripts/python/web/`——一个**零第三方依赖的联网搜索与网页抓取插件**
+（`web_search` / `web_fetch`，自带 SSRF 防护与逐跳重定向校验），是「脚本插件能不能写真实东西」的现成答案。
 
 配置段写在 `jellyfish.json` 的 `plugins.configurations."jellyfish-plugin-python"`（或 `-node`）：
 
