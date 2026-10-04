@@ -100,7 +100,7 @@
         "aliases": [],
         "sessionRequired": false
       },
-      "hasOptions": true
+      "hasOptions": false
     }
   ],
   "commandOptions": [],

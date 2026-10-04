@@ -499,15 +499,17 @@ def stock_watch(args, ctx):
 
 
 @command(name="stock", summary="A 股行情与自选股", usage="/stock [add|del|refresh|clear] [代码...]",
-         has_options=True, session_required=False)
+         session_required=False)
 def stock(tokens, raw, ctx):
     """``/stock`` 看自选股，``/stock 600519`` 看快照，``/stock add/del/refresh/clear`` 维护自选。
 
     自选股是**用户级**的数据（存在 ``~/.jellyfish/stock``），不属于某个会话，
     因此这条命令 ``session_required=False``：在首页就能用，也不会为了它建一个会话。
+
+    **刻意不声明候选查询（``has_options``）**：那样按补全键会弹出选择页，
+    而这条命令的用法很窄——五个子命令，``/stock`` 与 ``/stock help`` 都已列出。
+    因此它的能力只有「执行」这一路，``tokens`` 恒为真实值（不会是 ``None``）。
     """
-    if tokens is None:
-        return {"choices": _stock_choices(ctx)}
     if not tokens:
         return {"kind": "OK", "output": _watch_summary(ctx)}
 
@@ -530,32 +532,6 @@ def stock(tokens, raw, ctx):
         return {"kind": "OK", "output": _render_quotes(hits, missing)}
     except ScriptError as exc:
         return {"kind": "ERROR", "output": str(exc)}
-
-
-def _stock_choices(ctx):
-    """``/stock`` 的候选：子命令 + 自选股。
-
-    候选查询在用户按键补全时被调用，**必须只读且快**——这里只读本地文件，不联网，
-    所以不会在补全时卡住界面。
-    """
-    choices = [
-        {"value": "refresh", "label": "refresh", "description": "重新拉取自选股行情并更新面板"},
-        {"value": "add", "label": "add", "description": "加入自选股，例如 /stock add 600519"},
-        {"value": "del", "label": "del", "description": "从自选股移除，例如 /stock del 600519"},
-        {"value": "clear", "label": "clear", "description": "清空自选股"},
-        {"value": "help", "label": "help", "description": "看用法"},
-    ]
-    cached = {}
-    for item in store.load_quotes(ctx)["items"]:
-        cached[str(item.get("code", "")).lower()] = item
-    for code in store.load_watchlist(ctx):
-        item = cached.get(code.lower()) or {}
-        choices.append({
-            "value": _short(code),
-            "label": _short(code),
-            "description": item.get("name") or "自选股",
-        })
-    return choices
 
 
 def _stock_help():
