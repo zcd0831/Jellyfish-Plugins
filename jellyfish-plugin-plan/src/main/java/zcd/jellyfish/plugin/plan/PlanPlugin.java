@@ -16,7 +16,7 @@ import zcd.jellyfish.api.plugin.PluginContext;
  * <p>
  * <b>plan 模式为什么在插件里</b>：它只是一条「哪些工具此刻可用」的策略，不碰循环、会话与压缩的任何结构，
  * 也不需要只有内核才知道的事实。放进插件顺带获得 {@code jellyfish.json} 里
- * {@code plugins.configurations.jellyfish-plan} 的可配置性与热部署，而不装它的用户不必为这条策略付费。
+ * {@code plugins.configurations.jellyfish-plugin-plan} 的可配置性与热部署，而不装它的用户不必为这条策略付费。
  * <p>
  * <b>四个面各占一个扩展点，且都不需要新扩展点</b>：
  * <ul>

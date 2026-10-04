@@ -28,7 +28,7 @@ class McpLedgerTest {
 
         // Then
         assertTrue(text.contains("没有配置任何 MCP server"));
-        assertTrue(text.contains("plugins.configurations.jellyfish-mcp.servers"));
+        assertTrue(text.contains("plugins.configurations.jellyfish-plugin-mcp.servers"));
     }
 
     @Test

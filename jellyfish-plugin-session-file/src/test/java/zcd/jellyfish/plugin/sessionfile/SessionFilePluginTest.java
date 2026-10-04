@@ -47,7 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class SessionFilePluginTest {
 
     /** 本插件标识。 */
-    private static final String PLUGIN_ID = "jellyfish-session-file";
+    private static final String PLUGIN_ID = "jellyfish-plugin-session-file";
 
     /** 用例独立的工作目录。 */
     @TempDir

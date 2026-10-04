@@ -7,22 +7,22 @@
 
 | 模块 | plugin.id | 提供什么 |
 | --- | --- | --- |
-| `jellyfish-plugin-tools` | `jellyfish-tools` | 五个文件工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`grep_files` |
-| `jellyfish-plugin-session-file` | `jellyfish-session-file` | 会话持久化：一个会话一个 JSON 文件，并用 git 管理历史 |
-| `jellyfish-plugin-todo` | `jellyfish-todo` | 会话待办：模型可写的 `todo_write` 工具 + 只读 `/todo` + 随本轮消息送达的待办块 + 状态栏进度 + 左栏清单面板 |
-| `jellyfish-plugin-project` | `jellyfish-project` | 项目约定：探测工作目录下的 `AGENTS.md`，**小文件内联原文、大文件只给路径**（阈值可配） |
-| `jellyfish-plugin-compact` | `jellyfish-compact` | 会话压缩策略：提供摘要指令与保留条数/摘要上限（**不装它就没有压缩**，见下文） |
+| `jellyfish-plugin-tools` | `jellyfish-plugin-tools` | 五个文件工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`grep_files` |
+| `jellyfish-plugin-session-file` | `jellyfish-plugin-session-file` | 会话持久化：一个会话一个 JSON 文件，并用 git 管理历史 |
+| `jellyfish-plugin-todo` | `jellyfish-plugin-todo` | 会话待办：模型可写的 `todo_write` 工具 + 只读 `/todo` + 随本轮消息送达的待办块 + 状态栏进度 + 左栏清单面板 |
+| `jellyfish-plugin-project` | `jellyfish-plugin-project` | 项目约定：探测工作目录下的 `AGENTS.md`，**小文件内联原文、大文件只给路径**（阈值可配） |
+| `jellyfish-plugin-compact` | `jellyfish-plugin-compact` | 会话压缩策略：提供摘要指令与保留条数/摘要上限（**不装它就没有压缩**，见下文） |
 | `jellyfish-plugin-python` | `jellyfish-plugin-python` | Python 脚本插件运行时：把 `scripts/python/<id>/` 下的脚本目录变成标准插件（控制面网关 + 每脚本一 worker 进程） |
 | `jellyfish-plugin-node` | `jellyfish-plugin-node` | Node 脚本插件运行时：与 Python 同构（同一套协议与进程模型），零第三方依赖 |
-| `jellyfish-plugin-shell` | `jellyfish-shell` | 命令行：`shell` 工具（`/bin/sh -c` 执行命令原文）+ 命令策略（白名单准入、可信表免审批、只读不打扰、灾难形状拒绝、其余审批）。**没有沙箱**，见下文 |
-| `jellyfish-plugin-skills` | `jellyfish-skills` | skills：按目录发现 `SKILL.md`，元信息常驻 system prompt、正文由模型用 `skill` 工具按需加载，见下文 |
-| `jellyfish-plugin-mcp` | `jellyfish-mcp` | MCP 客户端：stdio 连外部 MCP server，把它的工具以 `mcp__<server>__<tool>` 接入，见下文 |
-| `jellyfish-plugin-workflow` | `jellyfish-workflow` | 编排：`workflow` 工具接受一份**声明式 spec**，按依赖并发派生子代理并聚合结果（内核只出原语，见下文） |
-| `jellyfish-plugin-plan` | `jellyfish-plan` | plan 模式：`/plan [on|off]` 在会话内开关，开启时只有白名单里的工具可用（白名单来自 `plugins.configurations.jellyfish-plan.readOnlyTools`），见下文 |
-| `jellyfish-plugin-sparkline` | `jellyfish-sparkline` | 火花线：把会话的缓存命中率、失败率与上下文规模各压成一行块字符（右栏窄图），让「趋势」可见，见下文 |
-| `jellyfish-plugin-pet` | `jellyfish-pet` | 宠物：一只住在侧栏里的宠物，你的会话把它养出形状——越久越疲惫、越烧越肥胖、连续失败留伤痕、被频繁打断就警惕，见下文 |
+| `jellyfish-plugin-shell` | `jellyfish-plugin-shell` | 命令行：`shell` 工具（`/bin/sh -c` 执行命令原文）+ 命令策略（白名单准入、可信表免审批、只读不打扰、灾难形状拒绝、其余审批）。**没有沙箱**，见下文 |
+| `jellyfish-plugin-skills` | `jellyfish-plugin-skills` | skills：按目录发现 `SKILL.md`，元信息常驻 system prompt、正文由模型用 `skill` 工具按需加载，见下文 |
+| `jellyfish-plugin-mcp` | `jellyfish-plugin-mcp` | MCP 客户端：stdio 连外部 MCP server，把它的工具以 `mcp__<server>__<tool>` 接入，见下文 |
+| `jellyfish-plugin-workflow` | `jellyfish-plugin-workflow` | 编排：`workflow` 工具接受一份**声明式 spec**，按依赖并发派生子代理并聚合结果（内核只出原语，见下文） |
+| `jellyfish-plugin-plan` | `jellyfish-plugin-plan` | plan 模式：`/plan [on|off]` 在会话内开关，开启时只有白名单里的工具可用（白名单来自 `plugins.configurations.jellyfish-plugin-plan.readOnlyTools`），见下文 |
+| `jellyfish-plugin-sparkline` | `jellyfish-plugin-sparkline` | 火花线：把会话的缓存命中率、失败率与上下文规模各压成一行块字符（右栏窄图），让「趋势」可见，见下文 |
+| `jellyfish-plugin-pet` | `jellyfish-plugin-pet` | 宠物：一只住在侧栏里的宠物，你的会话把它养出形状——越久越疲惫、越烧越肥胖、连续失败留伤痕、被频繁打断就警惕，见下文 |
 
-`jellyfish-tools` 的五个工具：
+`jellyfish-plugin-tools` 的五个工具：
 
 | 工具 | 参数 | 说明 |
 | --- | --- | --- |
@@ -61,24 +61,24 @@ cp jellyfish-plugin-pet/target/jellyfish-plugin-pet-*.jar plugins/
 {
   "plugins": {
     "configurations": {
-      "jellyfish-session-file": {
+      "jellyfish-plugin-session-file": {
         "sessionDir": "~/.jellyfish/sessions",
         "gitEnabled": true
       },
-      "jellyfish-todo": {
+      "jellyfish-plugin-todo": {
         "todoDir": "~/.jellyfish/todos"
       },
-      "jellyfish-plan": {
+      "jellyfish-plugin-plan": {
         "readOnlyTools": ["read_file", "list_dir", "grep_files", "todo_write"]
       },
-      "jellyfish-compact": {
+      "jellyfish-plugin-compact": {
         "keepRecentMessages": 20,
         "maxSummaryChars": 4000
       },
-      "jellyfish-project": {
+      "jellyfish-plugin-project": {
         "maxInlineBytes": 32768
       },
-      "jellyfish-shell": {
+      "jellyfish-plugin-shell": {
         "timeoutSeconds": 120,
         "maxTimeoutSeconds": 1800,
         "idleTimeoutSeconds": 0,
@@ -96,30 +96,30 @@ cp jellyfish-plugin-pet/target/jellyfish-plugin-pet-*.jar plugins/
 }
 ```
 
-- `readOnlyTools`（`jellyfish-plan`）：**plan 模式的工具白名单**，用户写哪些工具名，`/plan on` 之后就只有哪些可用。
+- `readOnlyTools`（`jellyfish-plugin-plan`）：**plan 模式的工具白名单**，用户写哪些工具名，`/plan on` 之后就只有哪些可用。
   - **不写就等于开启时全部不可用**——白名单语义下「用户没表态」与「用户不准」是同一件事。
   - 工具**无法自称只读**：`ToolDescriptor` 里已没有该字段（提供方声明过的旧写法也已从脚本 SDK 与 MCP 侧移除）。
     早先的口径是「提供方声明 ∪ 用户配置」，那让名单只增不减、判定权还落在被判定的一方。
   - 与插件热部署无关：名单只跟这份配置走，插件装上 / 卸下不会改变它。
-  - **注意区分同名键**：`jellyfish-mcp` 的每个 server 配置段里也有一个 `readOnlyTools`，那个只影响**该插件的审批策略**
+  - **注意区分同名键**：`jellyfish-plugin-mcp` 的每个 server 配置段里也有一个 `readOnlyTools`，那个只影响**该插件的审批策略**
     （写类工具要不要问人），与 plan 模式无关。
 - `sessionDir`（默认 `~/.jellyfish/sessions`）：会话文件目录。会话是跨项目的运行态数据，因此默认放全局级目录。
 - `gitEnabled`（默认 `true`）：首次落盘时在 `sessionDir` 里 `git init`，此后**每次内容变化的落盘留一次提交**（内容没变则不写文件、也不提交）。机器上没有 git 时只告警，文件照常落盘。
 - `todoDir`（默认 `~/.jellyfish/todos`）：待办文件目录，一个会话一个 JSON 文件，空表会删掉文件。
-- `keepRecentMessages` / `maxSummaryChars`（`jellyfish-compact`，**都可省略**）：本插件对压缩参数的覆盖值；省略时用内核 `react` 段的缺省值。省略是「不表态」，不是「用 0」。
-- `maxInlineBytes`（`jellyfish-project`，默认 `32768` 即 32 KiB）：约定文件**多大以内可以把原文放进 system prompt**。超过它只给路径指引；写 `0` 表示从不内联（彻底关掉内联的逃生门）。上限 1 MiB，超出或为负数会在启动期直接报错。约定文件名固定为 `AGENTS.md`，查找基准固定为进程工作目录——这两项不可配。
-- `timeoutSeconds`（`jellyfish-shell`，默认 `120`）：命令最多允许跑多久；单次调用可以用 `timeout_seconds` 参数覆盖，并被 `maxTimeoutSeconds`（默认 `1800`）钳制。**不支持「不超时」**——保留一个上限，避免配置写错变成无限等待。
-- `idleTimeoutSeconds`（`jellyfish-shell`，默认 `0` 即**关闭**）：连续多久没有任何输出就判定卡住。墙钟回答「最多跑多久」，它回答「多久没动静就当死了」：一条持续打印进度的 `mvn test` 跑 20 分钟不该被误杀，而 `docker build` 之类确实可能长时间无输出，所以缺省不开。**模型不能设置它**，它是用户的环境策略。
-- `environment`（`jellyfish-shell`）：额外注入或覆盖的环境变量。子进程默认**继承**父进程环境，但名字匹配 `*KEY*` / `*TOKEN*` / `*SECRET*` / `*PASSWORD*` / `*CREDENTIAL*` 的变量**不会**传下去（工具输出会送到远端 LLM），另有一组防挂死默认值（`PAGER=cat`、`GIT_PAGER=cat`、`GIT_TERMINAL_PROMPT=0`、`TERM=dumb`、`NO_COLOR=1`、`DEBIAN_FRONTEND=noninteractive`）。这里写的值可以盖掉默认值。`sensitivePatterns` 用于**追加**剔除模式。
-- `allowedCommands`（`jellyfish-shell`，默认 `[]`）：**非空即默认拒绝**的前缀白名单，支持 `git status` 这种两 token 形式（单 token 覆盖该命令的全部子命令）。它服务于 `-cli` / `-server` 这类没有人在场批准的模式，且**不受 `commandPolicy.enabled` 影响**。
-- `commandPolicy`（`jellyfish-shell`）：命令策略段，四个键都**可省略**。
+- `keepRecentMessages` / `maxSummaryChars`（`jellyfish-plugin-compact`，**都可省略**）：本插件对压缩参数的覆盖值；省略时用内核 `react` 段的缺省值。省略是「不表态」，不是「用 0」。
+- `maxInlineBytes`（`jellyfish-plugin-project`，默认 `32768` 即 32 KiB）：约定文件**多大以内可以把原文放进 system prompt**。超过它只给路径指引；写 `0` 表示从不内联（彻底关掉内联的逃生门）。上限 1 MiB，超出或为负数会在启动期直接报错。约定文件名固定为 `AGENTS.md`，查找基准固定为进程工作目录——这两项不可配。
+- `timeoutSeconds`（`jellyfish-plugin-shell`，默认 `120`）：命令最多允许跑多久；单次调用可以用 `timeout_seconds` 参数覆盖，并被 `maxTimeoutSeconds`（默认 `1800`）钳制。**不支持「不超时」**——保留一个上限，避免配置写错变成无限等待。
+- `idleTimeoutSeconds`（`jellyfish-plugin-shell`，默认 `0` 即**关闭**）：连续多久没有任何输出就判定卡住。墙钟回答「最多跑多久」，它回答「多久没动静就当死了」：一条持续打印进度的 `mvn test` 跑 20 分钟不该被误杀，而 `docker build` 之类确实可能长时间无输出，所以缺省不开。**模型不能设置它**，它是用户的环境策略。
+- `environment`（`jellyfish-plugin-shell`）：额外注入或覆盖的环境变量。子进程默认**继承**父进程环境，但名字匹配 `*KEY*` / `*TOKEN*` / `*SECRET*` / `*PASSWORD*` / `*CREDENTIAL*` 的变量**不会**传下去（工具输出会送到远端 LLM），另有一组防挂死默认值（`PAGER=cat`、`GIT_PAGER=cat`、`GIT_TERMINAL_PROMPT=0`、`TERM=dumb`、`NO_COLOR=1`、`DEBIAN_FRONTEND=noninteractive`）。这里写的值可以盖掉默认值。`sensitivePatterns` 用于**追加**剔除模式。
+- `allowedCommands`（`jellyfish-plugin-shell`，默认 `[]`）：**非空即默认拒绝**的前缀白名单，支持 `git status` 这种两 token 形式（单 token 覆盖该命令的全部子命令）。它服务于 `-cli` / `-server` 这类没有人在场批准的模式，且**不受 `commandPolicy.enabled` 影响**。
+- `commandPolicy`（`jellyfish-plugin-shell`）：命令策略段，四个键都**可省略**。
   - `enabled`（默认 `true`）：只关**分类器**这个便利机制。`false` 时只读表与「其余命令问人」都不再表态，但**白名单、可信表、拒绝形状照旧生效**——它们不是分类器的一部分。
   - `trustedCommands`（默认 `[]`）：**可信命令表，命中即免审批**（无异议、不弹批准框）。粒度与白名单一致。它是「白名单里的命令为什么还要点批准」的答案：白名单只管「能不能跑」，免审批归这张表。
   - `readOnlyCommands`（默认 `[]`）：**追加**在内置只读表之后，用于把用户认为只读的命令纳入免打扰范围。内置表**不可替换**，只能追加。
   - `deniedPatterns`（默认 `[]`）：**追加**在内置拒绝形状（`rm -rf /`、`mkfs`、`of=/dev/`、`:(){`）之后。同样是追加，内置那几条不可撤销。
 - **`allowedCommands` 与 `trustedCommands` 要在两处各写一遍才算「能跑且不打扰」**。这不是冗余失误，是刻意分工：前者回答能不能跑（默认拒绝），后者回答要不要问人（默认问）。也因此，「允许跑但每次都要我批准」这种姿态仍然写得出来——只配白名单、不配可信表即可。
 
-## 待办（jellyfish-todo）
+## 待办（jellyfish-plugin-todo）
 
 待办是模型的计划草稿，由插件自己持有（内核不再有会话待办字段、也没有 `/todo` 系统命令）：
 
@@ -172,11 +172,11 @@ cp jellyfish-plugin-pet/target/jellyfish-plugin-pet-*.jar plugins/
 （用 `/ui left off` 可以把它让出去）。
 
 `todo_write` 只写插件自己的待办文件、不动工作目录里的项目文件。注意**在 plan 模式下它并不自动可用**：只读与否只看用户在
-`plugins.configurations.jellyfish-plan.readOnlyTools` 里写了什么，工具自己没有发言权。
+`plugins.configurations.jellyfish-plugin-plan.readOnlyTools` 里写了什么，工具自己没有发言权。
 
 会话恢复：启动时内核向所有注册了恢复处理器的插件要回会话，因此上次退出前的会话在下次启动时立即可见（`/session` 会列出来）。
 
-## 项目约定（jellyfish-project）
+## 项目约定（jellyfish-plugin-project）
 
 `AGENTS.md` 是仓库里的项目约定（构建命令、编码规范、提交格式、模块边界）。这个插件把它交给模型，**按文件大小分两路**：
 
@@ -200,7 +200,7 @@ cp jellyfish-plugin-pet/target/jellyfish-plugin-pet-*.jar plugins/
 
 注意缓存省的是磁盘 I/O 与「读文件」这个动作，**不省 token**：system prompt 每轮都要随请求发出去，内联的原文每轮都要重新计费。这也正是上限必须压住的原因。
 
-## 命令行（jellyfish-shell）
+## 命令行（jellyfish-plugin-shell）
 
 `shell` 工具让模型在本机执行命令。**它没有沙箱**：命令以本进程的权限运行，能读写你这个用户的任意文件。
 
@@ -243,7 +243,7 @@ cp jellyfish-plugin-pet/target/jellyfish-plugin-pet-*.jar plugins/
 
 端到端测试会真的起进程再杀掉它们，因此单独一个 profile：`mvn -q -Pshell-it test`。
 
-## skills（jellyfish-skills）
+## skills（jellyfish-plugin-skills）
 
 把一个目录里的说明文件变成模型可以按需取用的「技能」。约定很简单：**一个子目录一个 skill，正文写在 `SKILL.md` 里**。
 
@@ -271,7 +271,7 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 {
   "plugins": {
     "configurations": {
-      "jellyfish-skills": {
+      "jellyfish-plugin-skills": {
         "roots": ["~/.jellyfish/skills", "./.jellyfish/skills"],
         "maxSkills": 50,
         "maxDescriptionChars": 200,
@@ -289,7 +289,7 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 | --- | --- |
 | `/skills` | 列出根目录、已加载清单与扫描期问题（目录写错、缺 description、名称被前面的根目录占掉） |
 
-## 编排（jellyfish-workflow）
+## 编排（jellyfish-plugin-workflow）
 
 让模型一次说清「几件事、什么顺序、怎么合起来」，由插件把它们变成一批并行跑的子代理：
 
@@ -324,7 +324,7 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 
 本插件没有配置项。
 
-## MCP（jellyfish-mcp）
+## MCP（jellyfish-plugin-mcp）
 
 连上外部的 MCP server，把它的工具当作本机工具使用：
 
@@ -332,7 +332,7 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 {
   "plugins": {
     "configurations": {
-      "jellyfish-mcp": {
+      "jellyfish-plugin-mcp": {
         "servers": [
           {
             "id": "filesystem",
@@ -356,7 +356,7 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 - **`tools/list_changed` 会实时跟随**：server 运行期增删工具时，模型下一轮就能看到。
 - **只读与审批**：只读**只认你写的 `readOnlyTools`**（server 自填的 `readOnlyHint` 不再采纳）；**缺省一律按可写**。可写的工具缺省要人工审批（`askWriteTools: false` 可关）。这里的 `readOnlyTools` **只影响本插件的审批策略**，与 plan 插件的白名单无关——后者是另一个插件配置段里的同名键（见上文「插件配置」）。
 - **协议能力**：声明 `roots`（把进程工作目录告诉 server）；**不声明也不支持 `sampling` / `elicitation`**——这两个是「server 反过来向客户端要东西」，本客户端办不到，因此被请求时回一条明确的错误而不是挂在那里等。
-- **二进制内容落盘**：server 返回的图片/音频写到系统临时目录下的 `jellyfish-mcp/<pid>/`，回灌给模型的只是一个路径（base64 塞进上下文会让一次截图就撑满窗口）。插件停止时整个目录会被删掉。
+- **二进制内容落盘**：server 返回的图片/音频写到系统临时目录下的 `jellyfish-plugin-mcp/<pid>/`，回灌给模型的只是一个路径（base64 塞进上下文会让一次截图就撑满窗口）。插件停止时整个目录会被删掉。
 - **`-cli` / `-server` 下没有审批者**：`ASK` 等于拒绝，因此这两个模式里写类 MCP 工具实际不可用（与 `shell` 同理）。
 
 | 命令 | 说明 |
@@ -365,7 +365,7 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 
 端到端测试会真的 fork 一个 server 子进程（仓库自带的极简实现），因此单独一个 profile：`mvn -q -Pmcp-it test`。
 
-## 火花线（jellyfish-sparkline）
+## 火花线（jellyfish-plugin-sparkline）
 
 **把会话的趋势压成三行窄图**。终端里的每个指标都只有「当下值」，而人真正会问的问题几乎全是趋势问题
 （这个会话是不是正在变慢？缓存是不是刚开始挺好、后来全烂了？失败是不是越来越密了）——数值一刷新，
@@ -390,7 +390,7 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 - **没有数据时不占地方**：新会话在第一次模型调用之前不会显示这块面板，也不会把右栏从别的面板手里抢走。
 - **落位是建议**：它建议落右栏，终端太窄时侧栏整体隐藏，也可能被用户用 `/ui` 改到别处。
 
-配置（`plugins.configurations.jellyfish-sparkline`）：
+配置（`plugins.configurations.jellyfish-plugin-sparkline`）：
 
 | 键 | 缺省 | 说明 |
 | --- | --- | --- |
@@ -403,7 +403,7 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 唯一拿到的是工具调用耗时——而它回答的是「命令慢不慢」，不是「这个会话在不在变慢」。
 拿它冒充后者就是一条会撒谎的线，宁可不画。
 
-## 宠物（jellyfish-pet）
+## 宠物（jellyfish-plugin-pet）
 
 **一只住在侧栏里的宠物，它的样子是你在这个会话里的工作习惯的镜像**。仪表盘上的数字会被划过去，
 镜子里的自己不会——数字可以略过、可以归咎于工具、可以明天再说，而一个**因为你的行为变了形**的东西
@@ -444,7 +444,7 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
   与一套「哪些旧经历该留」的规则，而它的价值本来就是当下的）。
 - **不依赖任何别的插件**：它只订阅内核的通知，不读待办、不读编排、不解析别家工具的参数。
 
-配置（`plugins.configurations.jellyfish-pet`）：
+配置（`plugins.configurations.jellyfish-plugin-pet`）：
 
 | 键 | 缺省 | 说明 |
 | --- | --- | --- |
@@ -454,7 +454,7 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 
 三项都是观感刻度，写错只回落缺省值并给一条配置告警，不会让宠物整只消失。
 
-## plan 模式（jellyfish-plan）
+## plan 模式（jellyfish-plugin-plan）
 
 **一套「先看，别改」的工作方式**：开启后只有你列在 `readOnlyTools` 里的工具可用，其余一律被拒
 （拒绝理由会告诉模型「plan 模式下只能使用只读工具：……」，它就不会反复去试一个注定失败的写操作）。
@@ -467,14 +467,14 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 
 - **开关按会话存**（存在会话扩展条目里，随会话一起落盘与恢复）：同一个进程里可以一个会话开着、另一个关着。
 - **子代理不继承**：开关挂在会话上，子代理是另一个会话，因此默认不受限制。
-- **白名单来自配置段**：`plugins.configurations.jellyfish-plan.readOnlyTools`，**不写就等于开启时一个工具都用不了**
+- **白名单来自配置段**：`plugins.configurations.jellyfish-plugin-plan.readOnlyTools`，**不写就等于开启时一个工具都用不了**
   （白名单语义）。因此建议把只读的常用工具都列上：`read_file`、`list_dir`、`grep_files`、`todo_write`、`skill`……
 - **不换工具清单，只拦执行**：模型看到的工具清单不变，写操作在执行时被拒。这是刻意的——清单进的是请求前缀里
   很靠前的位置，换集合会让那一轮之后的前缀（连同全部历史）全部作废。
 - **`-cli` / `-server` 下同样有效**：它不依赖审批者，因此没有人在场的模式里也能用它兜住写操作。
 - 装了这个插件才有 `/plan`；不带它的内核里没有「模式」这个概念，也没有 `--mode` 参数。
 
-## 会话压缩（jellyfish-compact）
+## 会话压缩（jellyfish-plugin-compact）
 
 压缩是**插件能力**，不是内核内置功能。内核手里只有机制——读消息、选范围、发模型调用、校验摘要、
 推进边界、记用量、落盘；「这次该压成什么样」由本插件回答：一份摘要指令（本插件 jar 里的
@@ -488,7 +488,7 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 
 三种状态一眼可辨：**没装插件**（不可用）、**装了但还没压过**（未压缩）、**压过了**（已压缩 N 条）。
 插件在 `~/.jellyfish/plugins/` 里但没有列进 `jellyfish.json` 的 `plugins.enabled` 时，算「没装」；
-启动日志里会有一条 `插件被禁用或版本不满足，未启动: pluginId=jellyfish-compact`。
+启动日志里会有一条 `插件被禁用或版本不满足，未启动: pluginId=jellyfish-plugin-compact`。
 
 插件里能调的只有两个数字，**摘要措辞改不了**（它在插件 jar 里）：`keepRecentMessages` 与
 `maxSummaryChars`，省略即「不表态」，用 `react` 段里的缺省值。内核还会把它们钳制到合法区间——

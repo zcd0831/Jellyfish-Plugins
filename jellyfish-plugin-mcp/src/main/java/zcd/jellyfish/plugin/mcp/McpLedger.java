@@ -44,7 +44,7 @@ final class McpLedger {
                 .append(" 单server工具上限=").append(config.maxToolsPerServer()).append('\n');
         List<McpRegistry.ServerStatus> statuses = registry.snapshot();
         if (statuses.isEmpty()) {
-            text.append("没有配置任何 MCP server：在 plugins.configurations.jellyfish-mcp.servers 里添加。\n");
+            text.append("没有配置任何 MCP server：在 plugins.configurations.jellyfish-plugin-mcp.servers 里添加。\n");
             return text.toString();
         }
         text.append("servers:\n");

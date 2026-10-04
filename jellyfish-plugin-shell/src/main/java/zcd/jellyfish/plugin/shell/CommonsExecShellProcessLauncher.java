@@ -33,7 +33,7 @@ import java.util.Map;
 final class CommonsExecShellProcessLauncher implements ShellProcessLauncher {
 
     /** 输出泵线程名前缀。 */
-    private static final String PUMP_PREFIX = "jellyfish-shell-";
+    private static final String PUMP_PREFIX = "jellyfish-plugin-shell-";
 
     @Override
     public ShellProcess launch(ShellInvocation invocation, OutputStream mergedOutput) throws IOException {

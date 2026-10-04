@@ -13,7 +13,7 @@ import java.util.Set;
 import java.util.function.Consumer;
 
 /**
- * 本插件的配置：{@code plugins.configurations.jellyfish-plan} 段里的只读白名单。
+ * 本插件的配置：{@code plugins.configurations.jellyfish-plugin-plan} 段里的只读白名单。
  * <p>
  * <b>白名单就是「plan 模式下哪些工具可用」的全部答案</b>：用户写了哪些工具名，plan 下就只有哪些可用。
  * 工具提供方无法自称只读——{@code ToolDescriptor} 里没有「只读」这个字段，
@@ -42,7 +42,7 @@ final class PlanConfig {
     static final String KEY_READ_ONLY_TOOLS = "readOnlyTools";
 
     /** 配置段的完整路径，用于拒绝文案与告警：只写「仅允许只读工具」，用户不知道该改哪里。 */
-    static final String CONFIGURATION_PATH = "plugins.configurations.jellyfish-plan." + KEY_READ_ONLY_TOOLS;
+    static final String CONFIGURATION_PATH = "plugins.configurations.jellyfish-plugin-plan." + KEY_READ_ONLY_TOOLS;
 
     /** 被拒文案里的「去哪儿声明」提示，与空白名单告警共用一份，避免两处说法漂移。 */
     static final String DECLARATION_HINT = "请在 " + CONFIGURATION_PATH + " 里声明 plan 模式下允许使用的工具名";

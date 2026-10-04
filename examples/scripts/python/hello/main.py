@@ -55,7 +55,7 @@ def hello_greet(args, ctx):
     """按名字打招呼。
 
     这里**没有** ``read_only`` 参数：哪些工具在 plan 模式下可用完全由用户在
-    ``plugins.configurations.jellyfish-plan.readOnlyTools`` 里决定，
+    ``plugins.configurations.jellyfish-plugin-plan.readOnlyTools`` 里决定，
     脚本无法自称只读（那会让名单只增不减，用户没法把工具拿出来）。
     """
     name = args.get("name")

@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ProjectPluginLoadingTest {
 
     /** 内核里本插件的标识，与 plugin.properties 保持一致。 */
-    private static final String PLUGIN_ID = "jellyfish-project";
+    private static final String PLUGIN_ID = "jellyfish-plugin-project";
 
     /** 插件根目录。 */
     @TempDir

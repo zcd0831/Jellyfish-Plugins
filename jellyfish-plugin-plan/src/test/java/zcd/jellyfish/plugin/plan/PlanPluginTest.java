@@ -37,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class PlanPluginTest {
 
     /** 本插件的标识，与 plugin.properties 一致。 */
-    private static final String PLUGIN_ID = "jellyfish-plan";
+    private static final String PLUGIN_ID = "jellyfish-plugin-plan";
 
     /** 共用注册表。 */
     private TypeRegistry registry;

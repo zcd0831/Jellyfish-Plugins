@@ -71,7 +71,7 @@ final class CommandPolicy {
     }
 
     /** 配置来源，用于告警定位。 */
-    private static final String SOURCE = "plugins.configurations.jellyfish-shell";
+    private static final String SOURCE = "plugins.configurations.jellyfish-plugin-shell";
 
     /**
      * 内置只读命令表。

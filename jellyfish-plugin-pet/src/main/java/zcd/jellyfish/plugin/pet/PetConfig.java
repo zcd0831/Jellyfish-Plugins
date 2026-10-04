@@ -10,7 +10,7 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 /**
- * 本插件的配置：{@code plugins.configurations.jellyfish-pet} 段。
+ * 本插件的配置：{@code plugins.configurations.jellyfish-plugin-pet} 段。
  * <p>
  * 三项都是「什么时候算过头」的刻度，而不是开关——宠物的形态本身不提供关闭选项，
  * 不需要它的人不装这个插件即可（与内核「不装 plan 插件就没有模式概念」同一口径）。

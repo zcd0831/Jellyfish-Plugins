@@ -47,7 +47,7 @@ function noteCount() {
  * 按名字打招呼。
  *
  * 这里**没有** `readOnly`：哪些工具在 plan 模式下可用完全由用户在
- * `plugins.configurations.jellyfish-plan.readOnlyTools` 里决定，
+ * `plugins.configurations.jellyfish-plugin-plan.readOnlyTools` 里决定，
  * 脚本无法自称只读（传 `readOnly` 会被 SDK 当场拒绝）。
  *
  * @param {object} params 请求参数，工具用 `params.args`

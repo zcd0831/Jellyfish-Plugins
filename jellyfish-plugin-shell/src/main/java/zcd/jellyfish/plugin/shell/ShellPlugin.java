@@ -14,7 +14,7 @@ import zcd.jellyfish.api.plugin.PluginContext;
  * <p>
  * <b>为什么命令行是一个插件而不是内核能力</b>：它与内核生命周期无关，只做两件事——
  * 用能力上下文注册工具、按需执行命令；放在插件里还顺带获得两样东西：
- * {@code jellyfish.json} 里 {@code plugins.configurations.jellyfish-shell} 的可配置性，
+ * {@code jellyfish.json} 里 {@code plugins.configurations.jellyfish-plugin-shell} 的可配置性，
  * 以及热部署。内核也不必为「执行命令」这件事背一个总是存在的安全面。
  * <p>
  * <b>它注册三个扩展点，后两个性质不同</b>：

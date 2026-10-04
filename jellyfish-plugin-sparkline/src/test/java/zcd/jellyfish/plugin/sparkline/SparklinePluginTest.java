@@ -70,7 +70,7 @@ class SparklinePluginTest {
         events = new EventChannel(EventChannelOptions.defaults(), registry);
         events.start();
         plugin = new SparklinePlugin();
-        plugin.start(new PluginContextImpl(PluginDeclaration.of("jellyfish-sparkline",
+        plugin.start(new PluginContextImpl(PluginDeclaration.of("jellyfish-plugin-sparkline",
                 new LinkedHashMap<String, Object>()), extensions, events, Mockito.mock(SessionManager.class)));
     }
 
@@ -84,7 +84,7 @@ class SparklinePluginTest {
     @DisplayName("只为面板注册一处贡献：三条线共用一块面板")
     void start_should_registerOnePanel() {
         assertEquals(1, extensions.bindings(PanelContributionRequest.class, null).size());
-        assertEquals("jellyfish-sparkline",
+        assertEquals("jellyfish-plugin-sparkline",
                 extensions.bindings(PanelContributionRequest.class, null).get(0).getOwner());
     }
 

@@ -71,7 +71,7 @@ class TodoPluginTest {
         Map<String, Object> configuration = new LinkedHashMap<String, Object>();
         configuration.put("todoDir", directory.toString());
         PluginContext context = new PluginContextImpl(
-                PluginDeclaration.of("jellyfish-todo", configuration), extensions, events,
+                PluginDeclaration.of("jellyfish-plugin-todo", configuration), extensions, events,
                 Mockito.mock(SessionManager.class));
         new TodoPlugin().start(context);
     }

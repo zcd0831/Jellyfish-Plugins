@@ -25,7 +25,7 @@ import static org.mockito.Mockito.when;
 class PlanStatusLineTest {
 
     /** 本插件的标识，与 plugin.properties 一致。 */
-    private static final String PLUGIN_ID = "jellyfish-plan";
+    private static final String PLUGIN_ID = "jellyfish-plugin-plan";
 
     @Test
     @DisplayName("开启时给出片段文本")

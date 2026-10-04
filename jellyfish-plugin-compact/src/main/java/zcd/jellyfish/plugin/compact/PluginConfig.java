@@ -9,7 +9,7 @@ import java.util.Map;
 
 /**
  * 本插件的配置解析：把 {@code jellyfish.json} 里的
- * {@code plugins.configurations.jellyfish-compact} 段解析成值对象。
+ * {@code plugins.configurations.jellyfish-plugin-compact} 段解析成值对象。
  * <p>
  * <b>两项都是可选的</b>：不填就返回 {@code null}，让内核用 {@code react} 段的缺省值——「本插件不表态」
  * 与「本插件表态为某个具体数字」是两件不同的事，插件不该用一个自己编的默认值把内核的配置压掉。

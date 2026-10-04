@@ -9,7 +9,7 @@ import java.util.Map;
 
 /**
  * 本插件的配置解析：把 {@code jellyfish.json} 里的
- * {@code plugins.configurations.jellyfish-project} 段解析成值对象。
+ * {@code plugins.configurations.jellyfish-plugin-project} 段解析成值对象。
  * <p>
  * <b>只有一项配置</b>：{@code maxInlineBytes}——约定文件多大以内可以把**原文**放进 system prompt。
  * <p>

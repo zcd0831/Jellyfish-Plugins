@@ -33,7 +33,7 @@ import static org.mockito.Mockito.when;
 class PlanStateTest {
 
     /** 本插件的标识，与 plugin.properties 一致。 */
-    private static final String PLUGIN_ID = "jellyfish-plan";
+    private static final String PLUGIN_ID = "jellyfish-plugin-plan";
 
     /** 完整 key（含 owner 前缀）。 */
     private static final String FULL_KEY = PLUGIN_ID + "::" + PlanState.KEY_ENABLED;

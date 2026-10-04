@@ -19,7 +19,7 @@ import java.util.Map;
  * 而权限拦截那一侧只看结果。把判定散到两处，迟早会出现「清单里算只读、拦截时算可写」。
  * <p>
  * 它与 plan 插件的白名单<b>无关</b>：那份名单的来源是插件自己的配置段
- * （{@code plugins.configurations.jellyfish-plan.readOnlyTools}）。本字段只驱动本插件的「写类工具要审批」。
+ * （{@code plugins.configurations.jellyfish-plugin-plan.readOnlyTools}）。本字段只驱动本插件的「写类工具要审批」。
  * <p>
  * 不可变，可安全跨线程传递。
  *

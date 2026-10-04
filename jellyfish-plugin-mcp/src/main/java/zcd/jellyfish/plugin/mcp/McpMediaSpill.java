@@ -68,7 +68,7 @@ final class McpMediaSpill {
     }
 
     /**
-     * 构造默认落盘目录：系统临时目录下的 {@code jellyfish-mcp/<pid>}。
+     * 构造默认落盘目录：系统临时目录下的 {@code jellyfish-plugin-mcp/<pid>}。
      *
      * @return 落盘目录
      */
@@ -77,7 +77,7 @@ final class McpMediaSpill {
         Path root = (tmp == null || tmp.trim().isEmpty())
                 ? new java.io.File(".").toPath().toAbsolutePath()
                 : new java.io.File(tmp).toPath().toAbsolutePath();
-        return root.resolve("jellyfish-mcp").resolve(processId());
+        return root.resolve("jellyfish-plugin-mcp").resolve(processId());
     }
 
     /**

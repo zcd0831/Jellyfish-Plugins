@@ -32,7 +32,7 @@ import static org.mockito.Mockito.when;
 class PlanCommandTest {
 
     /** 本插件的标识，与 plugin.properties 一致。 */
-    private static final String PLUGIN_ID = "jellyfish-plan";
+    private static final String PLUGIN_ID = "jellyfish-plugin-plan";
 
     /** 会话标识。 */
     private static final String SESSION_ID = "s-1";

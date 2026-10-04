@@ -55,7 +55,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ShellPluginLoadingTest {
 
     /** 内核里本插件的标识，与 plugin.properties 保持一致。 */
-    private static final String PLUGIN_ID = "jellyfish-shell";
+    private static final String PLUGIN_ID = "jellyfish-plugin-shell";
 
     /** 插件根目录。 */
     @TempDir

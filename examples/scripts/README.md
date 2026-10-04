@@ -376,7 +376,7 @@ node ~/.jellyfish/gateway/node/<digest>/script/dump_manifest.js ./jira --check
 - **清单里的描述与参数决定模型看到的工具定义**：这里的 `description` / `parameters` / `required`
   与声明里的值是两份（一致性校验只比名字），写错的表现是模型按错误签名调用。
 - **没有只读声明这回事**：哪些工具在某个模式下可用完全由用户决定（例如 plan 插件的
-  `plugins.configurations.jellyfish-plan.readOnlyTools`），
+  `plugins.configurations.jellyfish-plugin-plan.readOnlyTools`），
   脚本无法自称只读（Python / Node 的 `read_only` / `readOnly` 参数已移除，清单里写 `readOnly`
   会被判未知键并拒绝加载）。**那份名单里不写，开启 plan 时就一个工具都用不了**。
 - **用脚本自己的目录定位文件**（Python `__file__` / Node `__dirname`）：相对路径会落到进程的

@@ -16,7 +16,7 @@ import zcd.jellyfish.api.plugin.PluginContext;
  * <b>插件不做什么</b>（内核的机制边界，不是本插件的自觉）：拿不到任何一条消息正文、不能发起模型调用、
  * 没有否决权。它只回答「这一次该怎么压」——见 {@link CompactionStrategyContribution}。
  * <p>
- * <b>配置段可选</b>：{@code plugins.configurations.jellyfish-compact} 可调
+ * <b>配置段可选</b>：{@code plugins.configurations.jellyfish-plugin-compact} 可调
  * {@code keepRecentMessages} / {@code maxSummaryChars}；整段留空则两项都用内核缺省值
  * （{@code react.compactKeepRecentMessages} 与 {@code react.compactMaxSummaryChars}），
  * 摘要指令仍是本插件自带的资源。

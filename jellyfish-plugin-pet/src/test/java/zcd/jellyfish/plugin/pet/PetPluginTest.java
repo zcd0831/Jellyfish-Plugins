@@ -69,7 +69,7 @@ class PetPluginTest {
         events = new EventChannel(EventChannelOptions.defaults(), registry);
         events.start();
         plugin = new PetPlugin();
-        plugin.start(new PluginContextImpl(PluginDeclaration.of("jellyfish-pet",
+        plugin.start(new PluginContextImpl(PluginDeclaration.of("jellyfish-plugin-pet",
                 new LinkedHashMap<String, Object>()), extensions, events, Mockito.mock(SessionManager.class)));
     }
 
@@ -83,7 +83,7 @@ class PetPluginTest {
     @DisplayName("只为面板注册一处贡献：一张脸、两行身体、一行形态都在同一块面板里")
     void start_should_registerOnePanel() {
         assertEquals(1, extensions.bindings(PanelContributionRequest.class, null).size());
-        assertEquals("jellyfish-pet",
+        assertEquals("jellyfish-plugin-pet",
                 extensions.bindings(PanelContributionRequest.class, null).get(0).getOwner());
     }
 

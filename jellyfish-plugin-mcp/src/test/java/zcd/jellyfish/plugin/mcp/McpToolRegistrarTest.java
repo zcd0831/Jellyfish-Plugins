@@ -61,7 +61,7 @@ class McpToolRegistrarTest {
         extensions = new ExtensionRegistry(typeRegistry);
         events = new EventChannel(EventChannelOptions.defaults(), typeRegistry);
         events.start();
-        context = new PluginContextImpl(PluginDeclaration.of("jellyfish-mcp"), extensions, events,
+        context = new PluginContextImpl(PluginDeclaration.of("jellyfish-plugin-mcp"), extensions, events,
                 Mockito.mock(SessionManager.class));
         registry = new McpRegistry();
         registry.register("fs", McpRegistry.State.CONNECTED, "");
@@ -81,7 +81,7 @@ class McpToolRegistrarTest {
 
         // Then
         assertEquals(1, extensions.handlers(ToolCallRequest.class, "mcp__fs__read_file").size());
-        assertEquals("jellyfish-mcp::fs", typeRegistry.resolve(ToolCallRequest.class, "mcp__fs__write")
+        assertEquals("jellyfish-plugin-mcp::fs", typeRegistry.resolve(ToolCallRequest.class, "mcp__fs__write")
                 .get(0).getOwner());
         assertTrue(registry.isReadOnly("mcp__fs__read_file"));
     }

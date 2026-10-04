@@ -18,7 +18,7 @@ import java.util.List;
  * <p>
  * <b>为什么工具不做成内核自带</b>：插件侧只能注册回调，工具的实现与内核生命周期无关；
  * 放在插件里还顺带获得两样东西——{@code jellyfish.json} 的逐插件配置段（例如 plan 插件的
- * {@code plugins.configurations.jellyfish-plan.readOnlyTools} 可以声明哪些工具在它开启时可用，
+ * {@code plugins.configurations.jellyfish-plugin-plan.readOnlyTools} 可以声明哪些工具在它开启时可用，
  * 而工具自己无法自称只读），以及热部署能力。
  * <p>
  * 工具实例全部无状态，因此插件可以安全地与其它插件并发调用。

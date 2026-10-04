@@ -81,7 +81,7 @@ mvn -q -Pscript-it test
 | `jellyfish-plugin-skills` | skills：按目录发现 `SKILL.md`，元信息进 system prompt、正文由模型按需用 `skill` 工具加载、附带文件交给已有工具读取。零第三方依赖（frontmatter 手写极简解析，不引 YAML） | api（provided） |
 | `jellyfish-plugin-mcp` | MCP 客户端：stdio 连外部 server，把它的工具以 `mcp__<server>__<tool>` 注册进内核，支持 `tools/list_changed`、`roots`，**不声明也不支持 sampling / elicitation**。自带 Jackson（**shade 进插件包**） | api（provided）、jackson-databind（shade） |
 | `jellyfish-plugin-workflow` | 编排：`workflow` 工具接受声明式 spec（步骤 / 依赖 / 静态条件 / 聚合），按依赖层序并发派生子代理；提示词贡献（例句与选型）+ 编排面板贡献（每步状态）。子代理来自 `PluginContext.delegations()`（内核的委派端口，与 `task` 同一条代码路径）；**零第三方依赖**——spec 从工具参数拿到时已经是 Map / List / String | api（provided） |
-| `jellyfish-plugin-plan` | plan 模式：类型级权限贡献（白名单外的工具一律拒绝）+ `/plan [on|off]` 命令 + 状态栏片段 + 回合上下文提示。开关存**会话扩展条目**（随会话落盘与恢复），白名单来自 `plugins.configurations.jellyfish-plan.readOnlyTools`。**零第三方依赖** | api（provided） |
+| `jellyfish-plugin-plan` | plan 模式：类型级权限贡献（白名单外的工具一律拒绝）+ `/plan [on|off]` 命令 + 状态栏片段 + 回合上下文提示。开关存**会话扩展条目**（随会话落盘与恢复），白名单来自 `plugins.configurations.jellyfish-plugin-plan.readOnlyTools`。**零第三方依赖** | api（provided） |
 | `jellyfish-plugin-sparkline` | 火花线：订阅内核已有的三个通知（`LlmCallCompletedEvent` / `LlmCallFailedEvent` / `ToolCallCompletedEvent`）在内存里按会话攒采样点，面板贡献把缓存命中率、失败滑窗率与输入 token 规模各画成一行块字符（建议落右栏），采样后广播 `UiInvalidatedEvent`。**零第三方依赖**（不持久化、无新扩展点） | api（provided） |
 | `jellyfish-plugin-pet` | 宠物：订阅内核通知（`LlmCallCompletedEvent` / `LlmCallFailedEvent` / `ToolCallCompletedEvent` / `TurnCancelledEvent` / `SessionClosedEvent`）养出每个会话一只宠物——疲惫（连续工作时长，五分钟空闲重置）、肥胖（累计 token）、伤痕（工具连续失败）、警惕（被打断）、夜行（深夜活动），面板贡献画成「精灵 + 两根条 + 形态行」（建议落右栏）。**零第三方依赖**（不持久化、不依赖任何别的插件） | api（provided） |
 | `jellyfish-plugin-node` | Node 桥接插件：与 python 插件同构（同一个 `ScriptBridgePlugin` 骨架），差异只有 `NodeLanguage` 与网关资源 `script/gateway.js`（Node 事件循环）、`script/worker.js`、`script/jellyfish_sdk.js`、`script/script_wire.js`、`script/dump_manifest.js`。**零第三方依赖**（只用 Node 内置模块，因此不需要 npm install） | api（provided）、jellyfish-script（shade） |
@@ -90,7 +90,7 @@ mvn -q -Pscript-it test
 源码结构同构：`resources/plugin.properties` + `PluginConfig` + `JellyfishPlugin` 实现 + 各扩展点 handler。
 
 - **官方插件**：tools 五个文件工具（三个只读）；session-file 一会话一 JSON + git（落盘失败上抛、git/坏文件只告警）；todo `todo_write` + `/todo` + 回合上下文/状态栏/面板贡献 + 删除清理（待办块走 `TurnContextRequest` 随本轮用户消息送达，**不进 system prompt**——那是缓存前缀的第 0 个 token，待办每变一次就会作废整个请求）；plan 见下；project 按 `maxInlineBytes`（默认 32 KiB，0=不内联）内联 `AGENTS.md` 原文或只给路径（一会话只读一次）；compact 压缩策略；skills 见下；mcp 见下。
-- **plan 插件（`jellyfish-plan`）**：模式类授权是**插件**的事——内核没有权限模式字段、没有枚举、没有 `/mode`、没有 `--mode`。四条不可动的边界：① **只拦执行、不换工具清单**（清单进的是缓存前缀里很靠前的位置，换集合会让那一轮之后的前缀全部作废）；② **开关按会话存扩展条目**（`putExtensionEntry`，随会话落盘与恢复，不自建文件），因此**子代理不继承**；③ **白名单为空 = 一个都不许**，拒绝文案必须点明 `plugins.configurations.jellyfish-plan.readOnlyTools` 并配一条「每种配置只喊一次」的 `ConfigWarningEvent`；④ 提示词注入走 `TurnContextRequest`（模式会在会话中途切换，放进 system prompt 等于每次切换都作废整个请求）。
+- **plan 插件（`jellyfish-plugin-plan`）**：模式类授权是**插件**的事——内核没有权限模式字段、没有枚举、没有 `/mode`、没有 `--mode`。四条不可动的边界：① **只拦执行、不换工具清单**（清单进的是缓存前缀里很靠前的位置，换集合会让那一轮之后的前缀全部作废）；② **开关按会话存扩展条目**（`putExtensionEntry`，随会话落盘与恢复，不自建文件），因此**子代理不继承**；③ **白名单为空 = 一个都不许**，拒绝文案必须点明 `plugins.configurations.jellyfish-plugin-plan.readOnlyTools` 并配一条「每种配置只喊一次」的 `ConfigWarningEvent`；④ 提示词注入走 `TurnContextRequest`（模式会在会话中途切换，放进 system prompt 等于每次切换都作废整个请求）。
 - **project 插件必须从仓库根目录启动**：查找基准是进程工作目录（与内核 `ToolPaths` 同一处），不做向上查找。
 
 ## 新增一门语言（桥接插件）
@@ -159,7 +159,7 @@ mvn -q -Pscript-it test
 
 - **示例脚本在仓库顶层 `examples/scripts/{python,node}/`，且被端到端用例直接加载**：示例是从进程工作目录之外的路径被加载的（先拷进临时脚本根目录，因为 `hello` 会往自己的目录写便签），因此「示例能不能用」有 CI 守着——放在文档里的示例代码会腐烂，这份不会。改示例时 `manifest.json` 与声明必须一起改，`dump_manifest --check` 就是给这件事用的；两门语言的示例共用一份 `examples/scripts/README.md`，差异列成一张表，会一门就会另一门。
 
-## 命令行与进程（jellyfish-shell）
+## 命令行与进程（jellyfish-plugin-shell）
 
 - **`shell` 没有沙箱**：命令以本进程权限执行，能读写本用户任意文件。这是能力而非漏洞，但必须让用户知道。
 - **`shell` 默认不进 `askTools`，而这是刻意的**：分类器会把只读命令判成无异议（静默执行）、把其余命令升级为 `ASK`（弹一次批准框）。把 `shell` 写进 `askTools` 则是「每条命令都批准」——核心策略的 `ASK` 无法被插件的 `ABSTAIN` 降级，插件裁定只能收紧不能放宽。这一点常被写反，改动前先看 `PermissionManager.decide`。
@@ -193,12 +193,12 @@ mvn -q -Pscript-it test
 - **连接发生在启动之后，且不在启动线程上做完**：工具清单只有连上才知道，而连上要起进程、要握手。全部同步做完，等于让「某个 server 装错了」变成「内核起不来」——与脚本桥接「`start()` 期零进程」同一条纪律。折中是 `startupWaitSeconds`（缺省 5 秒）：等一等让第一轮就有工具，超时就转异步（内核 `ToolCatalog` 每轮现取注册表，工具会自己出现）。
 - **它是注册窗口演进的第一个真实需求**：工具在运行期注册与注销，因此它依赖「注册窗口是插件存活期」那条契约；若改回「只能在 `start()` 内注册」，这个插件就无法以现在的形态存在。
 - **工具名必须带 `mcp__<server>__` 前缀并清洗字符**：名字由 server 决定，server 之间与 server 和内置工具之间都可能重名（`read_file` 就是典型）；而厂商对 function name 有共同约束，带点号的名字会让**整次请求**被拒（不是「这个工具不可用」，是「这一轮对话发不出去」）。超长时保留可读前缀并追加哈希，否则截断会把两个工具变成同一个名字。
-- **只读只认用户声明、缺省可写**：`readOnlyTools` 是用户在 server 配置里写的工具名清单；**server 自填的 `annotations.readOnlyHint` 不再采纳**——那是第三方进程对自己的评价，不该由它决定我们放宽什么。写类工具缺省经 `PermissionCheckRequest` 判为 `ASK`（`askWriteTools` 可关），与 shell 分类器一样是**便利机制而不是安全边界**。注意这里的 `readOnlyTools` **只影响本插件的审批策略**，与 plan 插件的名单无关（后者是 `plugins.configurations.jellyfish-plan.readOnlyTools`，唯一来源是用户配置）。
+- **只读只认用户声明、缺省可写**：`readOnlyTools` 是用户在 server 配置里写的工具名清单；**server 自填的 `annotations.readOnlyHint` 不再采纳**——那是第三方进程对自己的评价，不该由它决定我们放宽什么。写类工具缺省经 `PermissionCheckRequest` 判为 `ASK`（`askWriteTools` 可关），与 shell 分类器一样是**便利机制而不是安全边界**。注意这里的 `readOnlyTools` **只影响本插件的审批策略**，与 plan 插件的名单无关（后者是 `plugins.configurations.jellyfish-plugin-plan.readOnlyTools`，唯一来源是用户配置）。
 - **不声明也不支持 sampling / elicitation**：`initialize` 里只声明 `roots`（答得上来），sampling / elicitation 真被请求时回一条明确的 `-32601`。声明了却办不到比不声明更糟：server 会按「客户端支持」去规划它的行为；而不回则会让对面等到它自己的超时。
 - **`tools/list` 必须处理分页**：工具多的 server 会分页返回，只取第一页的表现是「工具少了一大半，而日志里什么异常都没有」。
 - **`tools/list_changed` 的重扫必须转到另一条线程**：通知是在**读线程**上收到的，而重扫要发一个请求并等应答——应答只能由同一条读线程投递。直接在读线程上做就是一条线程等它自己（实测会挂到超时）。
 - **`isError` 是正常结果而不是异常**：它是 server 明确答复的「工具跑了但没成」，要如实带上 `ToolMetadata.KEY_TERMINAL` 让界面出警示；超时、进程退出、JSON 非法才是调用失败（抛异常）。
-- **二进制内容落盘而不是塞 base64**：base64 体积是原文件的 4/3，一次截图就能把上下文窗口撑满。落盘目录带 PID（`<tmp>/jellyfish-mcp/<pid>`），插件停止时整棵删掉——不会误删另一个并行进程的文件。
+- **二进制内容落盘而不是塞 base64**：base64 体积是原文件的 4/3，一次截图就能把上下文窗口撑满。落盘目录带 PID（`<tmp>/jellyfish-plugin-mcp/<pid>`），插件停止时整棵删掉——不会误删另一个并行进程的文件。
 - **stdio 分帧就是「一行一条消息」，`stderr` 必须单独排空**：合进去会让 JSON 流里混进服务端日志（表现为「偶尔收到一帧解析不了」），而不排空则会让日志写满管道缓冲区、把 server 卡死。
 - **关停要杀进程树**：最常见的用法是 `npx -y <package>`，真正干活的是孙进程；只杀直接子进程的现场表现是「插件已经停了，server 还占着端口」。JDK 8 没有 `ProcessHandle.descendants()`，靠 `pgrep -P` 递归，**杀不干净是已知边界**（`Process.pid()` 是 Java 9+，因此 PID 取不到时就只能杀到直接子进程）。
 

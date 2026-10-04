@@ -291,7 +291,7 @@ class ScriptContext {
  * 「参数缺失」的形式出现。
  *
  * 这里**没有** `readOnly`：哪些工具在某个模式下可用完全由用户决定
- * （例如 plan 插件的 `jellyfish.json` 段 `plugins.configurations.jellyfish-plan.readOnlyTools`），
+ * （例如 plan 插件的 `jellyfish.json` 段 `plugins.configurations.jellyfish-plugin-plan.readOnlyTools`），
  * 工具无法自称只读。传了它会被**当场拒绝**——静默忽略会让作者以为自己声明成功了。
  *
  * JS 里没有装饰器，因此用法是「声明 + 就地注册」，返回值就是那个函数：

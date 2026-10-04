@@ -14,7 +14,7 @@ import java.util.Map;
 
 /**
  * 本插件的配置解析：把 {@code jellyfish.json} 里的
- * {@code plugins.configurations.jellyfish-skills} 段解析成值对象。
+ * {@code plugins.configurations.jellyfish-plugin-skills} 段解析成值对象。
  * <p>
  * <b>根目录是列表而不是单个目录</b>：主流用法就是「用户级 + 项目级」两个根叠加，而且顺序有意义
  * ——前面的根优先，同名的 skill 只保留先出现的那一个（项目级想覆盖用户级，把它写在前面即可）。

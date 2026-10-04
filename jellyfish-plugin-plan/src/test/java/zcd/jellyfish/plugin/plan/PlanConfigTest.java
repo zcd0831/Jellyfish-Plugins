@@ -30,7 +30,7 @@ class PlanConfigTest {
     @Test
     @DisplayName("未声明白名单即空集合：plan 下所有工具都会被拒")
     void from_should_returnEmptySet_when_absent() {
-        PlanConfig config = PlanConfig.from(null, "jellyfish-plan", warnings::add);
+        PlanConfig config = PlanConfig.from(null, "jellyfish-plugin-plan", warnings::add);
 
         assertTrue(config.isEmpty());
         assertFalse(config.allows("read_file"));
@@ -57,7 +57,7 @@ class PlanConfigTest {
         String reason = config.denialReason("write_file");
 
         assertTrue(reason.contains("read_file, list_dir"), reason);
-        assertTrue(reason.contains("plugins.configurations.jellyfish-plan.readOnlyTools"), reason);
+        assertTrue(reason.contains("plugins.configurations.jellyfish-plugin-plan.readOnlyTools"), reason);
     }
 
     @Test
@@ -84,7 +84,7 @@ class PlanConfigTest {
     @Test
     @DisplayName("白名单为空时告警只喊一次：每次判定都喊会把这个提示变成刷屏噪音")
     void warnIfWhitelistIsEmpty_should_warnOnlyOnce() {
-        PlanConfig config = PlanConfig.from(Collections.<String, Object>emptyMap(), "jellyfish-plan",
+        PlanConfig config = PlanConfig.from(Collections.<String, Object>emptyMap(), "jellyfish-plugin-plan",
                 warnings::add);
 
         config.warnIfWhitelistIsEmpty("write_file");
@@ -109,16 +109,16 @@ class PlanConfigTest {
     @DisplayName("给模型看的白名单文本在为空时给出可读说明，而不是一段空白")
     void whitelistText_should_explainEmptyCase() {
         assertEquals("read_file", config(Arrays.<Object>asList("read_file")).whitelistText());
-        assertTrue(PlanConfig.from(null, "jellyfish-plan", null).whitelistText().contains("未声明"));
+        assertTrue(PlanConfig.from(null, "jellyfish-plugin-plan", null).whitelistText().contains("未声明"));
     }
 
     @Test
     @DisplayName("没有告警入口时也不抛错：告警是可选的可观测性，不该成为判定链的失败点")
     void from_should_tolerateMissingWarner() {
-        PlanConfig config = PlanConfig.from(null, "jellyfish-plan", null);
+        PlanConfig config = PlanConfig.from(null, "jellyfish-plugin-plan", null);
 
         config.warnIfWhitelistIsEmpty("write_file");
-        PlanConfig illegal = PlanConfig.from(configuration("read_file"), "jellyfish-plan", null);
+        PlanConfig illegal = PlanConfig.from(configuration("read_file"), "jellyfish-plugin-plan", null);
 
         assertTrue(illegal.isEmpty());
         assertFalse(config.allows("write_file"));
@@ -143,6 +143,6 @@ class PlanConfigTest {
      * @return 配置
      */
     private PlanConfig config(Object declared) {
-        return PlanConfig.from(configuration(declared), "jellyfish-plan", warnings::add);
+        return PlanConfig.from(configuration(declared), "jellyfish-plugin-plan", warnings::add);
     }
 }

@@ -28,7 +28,7 @@ import static org.mockito.Mockito.when;
 class PlanTurnContextTest {
 
     /** 本插件的标识，与 plugin.properties 一致。 */
-    private static final String PLUGIN_ID = "jellyfish-plan";
+    private static final String PLUGIN_ID = "jellyfish-plugin-plan";
 
     @Test
     @DisplayName("开启时带上白名单与「怎么关掉」")

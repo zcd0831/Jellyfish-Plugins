@@ -39,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class McpPluginTest {
 
     /** 内核里本插件的标识，与 plugin.properties 保持一致。 */
-    private static final String PLUGIN_ID = "jellyfish-mcp";
+    private static final String PLUGIN_ID = "jellyfish-plugin-mcp";
 
     /** 共用注册表。 */
     private TypeRegistry typeRegistry;

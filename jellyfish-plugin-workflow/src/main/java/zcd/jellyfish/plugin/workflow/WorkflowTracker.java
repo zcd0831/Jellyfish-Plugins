@@ -15,7 +15,7 @@ import java.util.UUID;
  * <p>
  * <b>为什么写完还要通知一声</b>：外壳只在缓存失效时收集面板，而「某一步跑完了」这件事外壳自己看不到
  * （它发生在回合内部）。因此每次状态变化都回调一次 {@code onChange}，由插件把它变成一条
- * {@code UiInvalidatedEvent}——与 {@code jellyfish-todo} 写完待办后广播失效是同一件事。
+ * {@code UiInvalidatedEvent}——与 {@code jellyfish-plugin-todo} 写完待办后广播失效是同一件事。
  * <b>没有这条通知，面板会在编排结束后才第一次出现，而那时它已经空了。</b>
  * <p>
  * <b>跑完就移除</b>：与内核的子代理面板同一口径——面板展示的是「此刻在跑什么」，

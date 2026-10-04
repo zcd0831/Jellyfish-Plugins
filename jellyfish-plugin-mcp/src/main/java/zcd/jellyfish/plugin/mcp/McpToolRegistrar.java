@@ -15,7 +15,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * 工具注册器：把「某个 server 当前提供哪些工具」落到内核的扩展点上。
  * <p>
  * <b>每个 server 一个子上下文</b>：注册走 {@code PluginContext.subContext(serverId)}，落在
- * {@code jellyfish-mcp::<serverId>} 下。诊断输出因此能指出「这个工具是哪个 server 提供的」，
+ * {@code jellyfish-plugin-mcp::<serverId>} 下。诊断输出因此能指出「这个工具是哪个 server 提供的」，
  * 而框架卸载时按命名空间一次性把整份注册收干净。
  * <p>
  * <b>整体替换而不是增量增删</b>：{@code tools/list} 返回的是「当前全部」，而工具的名片

@@ -10,7 +10,7 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 /**
- * 本插件的配置：{@code plugins.configurations.jellyfish-sparkline} 段。
+ * 本插件的配置：{@code plugins.configurations.jellyfish-plugin-sparkline} 段。
  * <p>
  * 只有两项，且都有保守的缺省值——本插件的价值在「有没有趋势可看」，不在可调性：
  * <ul>
