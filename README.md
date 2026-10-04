@@ -564,6 +564,10 @@ PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
   因此 Node 脚本可以直接用 `fetch` / `undici` / `@mozilla/readability` 这类异步生态。
   这不改变「在途请求只有一个」——worker 仍是一次只处理一帧，只是允许 handler 等 I/O。
   事件处理器同样可以是 async，但它**不会被等待**（事件是旁路，不能拖住请求）。Python 无需这个改造。
+- **工具结果可带元数据**：返回 `ToolResult(正文, summary=..., terminal=...)` 时，`summary` 会显示在轨迹行上、
+  `terminal` 不等于 `COMPLETED` 时出警示标记；它们不进模型上下文。普通返回值仍是 output，老脚本不受影响。
+- **工具能拿到调用者身份**：`ctx.parent_session_id` / `run_id` / `root_run_id`（Node 为驼峰）。
+  跨 run 协作的键要从内核取，**不要用 `session_id`**——子代理有独立会话，用它做键会各写一份。
 - `scriptsRoot` 相对**进程工作目录**解析，其下每个含 `manifest.json` 的子目录是一个脚本插件；目录不存在等于「还没建脚本」（正常的冷启动状态）。
 - `invokeTimeoutSeconds` 是单次调用超时，写 `0` 表示**没有截止时间**（不是「立刻超时」）；超时会隔离该脚本的 worker，并把这次失败计入熔断。
 - `workerIdleSeconds` / `gatewayIdleSeconds` 分别为 worker 与网关的空闲自毁秒数（写 `0` 关闭），空闲回零是「懒启动」的配套。

@@ -129,6 +129,12 @@ mvn -q -Pscript-it test
   两条实现细节不能丢：① 在途期间必须抑制空闲看门狗（同步 handler 会饿死定时器，async 不会，
   否则「改成 async 反而被自己杀掉」）；② 事件处理器**不被 await**（事件是旁路，不能拖住请求）。
   Python 侧不需要这个改造——它的 HTTP 客户端本来就是同步的。
+- **工具结果可以带元数据**：返回 `ToolResult(output, summary=..., terminal=...)` 时，
+  `summary` 进 `ToolMetadata.KEY_SUMMARY`（轨迹行上的一句话），`terminal` 不等于 `COMPLETED`
+  时界面出警示标记；它们**不进模型上下文**。普通返回值仍然就是 output，老脚本不受影响。
+- **工具能拿到调用者身份**：`ctx.parent_session_id` / `run_id` / `root_run_id`（Node 为
+  `parentSessionId` / `runId` / `rootRunId`）。跨 run 协作的键要从内核取，不能用 `sessionId`——
+  子代理有独立会话，用它做键会各写一份。
 
 ## 示例脚本与进程
 

@@ -68,6 +68,48 @@ tool({ name: 'web_search', description: '联网搜索' }, async (params, ctx) =>
   这是有意的安全取舍，因此这条配置段就是脚本拿密钥的唯一通道。
 - **注入发生在 import 脚本之前**，所以模块顶层 `configuration()` 也拿得到值。
 
+## 给界面看的一行：`ToolResult`
+
+普通返回值就是给模型的正文；需要让轨迹行上多一句话或带上失败标记时，返回 `ToolResult`：
+
+```python
+from jellyfish_sdk import tool, ToolResult
+
+@tool(name="web_search", description="联网搜索")
+def web_search(args, ctx):
+    hits = search(args["query"])
+    return ToolResult(render(hits), summary="搜到 %d 条" % len(hits))
+```
+
+```javascript
+const { tool, ToolResult } = require('jellyfish_sdk');
+tool({ name: 'web_search', description: '联网搜索' }, (params) => {
+    const hits = search(params.args.query);
+    return new ToolResult(render(hits), { summary: `搜到 ${hits.length} 条` });
+});
+```
+
+- `summary` 是**给人看**的一句话（外壳接在工具名后面显示），不是给模型的——模型看到的仍是正文。
+- `terminal` 取不等于 `COMPLETED` 的值（如 `FAILED` / `TIMEOUT`）时界面出警示标记。
+- 它**不进模型上下文、不进会话消息**；元数据只透传给外壳与审计。
+
+## 调用者身份：`ctx.parent_session_id` / `run_id` / `root_run_id`
+
+子代理有自己独立的会话与 run，工具常常需要知道「我此刻在替谁干活」（协作状态落在哪个会话、
+这次改动属于哪次委派）：
+
+```python
+@tool(name="todo_claim", description="认领一条待办")
+def todo_claim(args, ctx):
+    # 子代理落在父会话上，根会话落在自己身上——这个键由内核给，模型无法伪造
+    key = ctx.parent_session_id or ctx.session_id
+    return claim(key)
+```
+
+- 根会话的 `parent_session_id`、顶层回合的 `run_id` / `root_run_id` 都是 `None`（Node 里是 `null`），
+  与内核侧同名缺省一致。
+- **不要用 `session_id` 做跨 run 协作的键**：子代理有独立会话，那样会各写一份。
+
 ## async handler（Node）
 
 Node 侧的工具 / 命令 / 贡献 / 事件处理器都可以是 `async`：桥接会 `await` 它，
