@@ -510,9 +510,9 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
 
 **脚本不是「与 Java 插件同权」**：两者在机制上同构（同样的注册、owner、回收、生命周期），
-但**扩展点覆盖的是一份「能力档」而不是全部**——已打通 18 个（工具、命令、候选查询、模型目录，
-提示词 / 状态栏 / 面板贡献，权限拦截，会话持久化三段，压缩策略，工具参数改写与结果整形，
-回合上下文，会话关闭前与分支前，压缩前）。哪些待做、哪些明确不做，
+但**扩展点覆盖的是一份「能力档」而不是全部**——已打通 24 个（工具、命令、候选查询、模型目录、
+输入指令，提示词 / 状态栏 / 面板贡献，权限拦截，会话持久化三段，压缩策略，工具参数改写与结果整形，
+回合上下文，会话关闭前与分支前，压缩前，工具激活，输入改写，回合开始前，请求调优，老化策略）。哪些待做、哪些明确不做，
 写在 `jellyfish-script/src/main/resources/script/extension-points.json`，并由单测守着：
 **内核新增扩展点而未分档，本仓库会构建失败**。明确不做的两类是「返回 Java 对象的扩展点」
 与「跑在渲染线程 / 启动期的扩展点」——脚本调用是一次可能冷启动的进程往返，那些位置付不起。
@@ -572,12 +572,17 @@ PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
 - **取消会中止在途调用**：回合的取消令牌传到桥接层后，在途脚本调用失败并隔离 worker（与超时同一条链）。
   脚本侧看不到取消标志（worker 单线程，在途调用期间读不到新帧），因此不要依赖取消做资源清理；
   取消也不计入熔断。
-- **带路由键、路由键又来自用户配置的扩展点用 `@handler` 声明**：目前只有 `model_catalog`
-  （路由键是 provider 名），SDK 侧是 `@handler("model_catalog", route="local")`（Node 是
-  `handler({type, route}, fn)`），清单里还要写一份 `"handlers": [{"type": ..., "route": ...}]`。
-  其余六个二期扩展点（`tool_argument_pre` / `tool_result_post` / `turn_context` /
-  `session_before_close` / `session_before_fork` / `compaction_pre`）走普通的 `contributes`，
+- **带路由键、路由键又来自用户配置的扩展点用 `@handler` 声明**：`model_catalog`（路由键是
+  provider 名）与 `input_directive`（路由键是标记本身，如 `!`）。SDK 侧是
+  `@handler("input_directive", route="!")`（Node 是 `handler({type, route}, fn)`），
+  清单里还要写一份 `"handlers": [{"type": ..., "route": ...}]`。
+  其余类型级扩展点走普通的 `contributes`（`tool_argument_pre` / `tool_result_post` /
+  `turn_context` / `session_before_close` / `session_before_fork` / `compaction_pre` /
+  `tool_activation` / `input_transform` / `turn_before` / `request_tuning` / `aging_strategy`），
   写法见 [`examples/scripts/README.md`](examples/scripts/README.md)。
+- **热路径点不冷启动**：`request_tuning` / `aging_strategy` 是「每次组装请求都会被问到」的点。
+  worker 没热着时它们直接返回「不表态」（不冷启动），热着时也只用 2 秒截止。
+  推论：**只提供这两个贡献的脚本永远不会被拉起**——要让它跑起来，至少还要提供一个会被真正调用的点。
 - **输出捕获明确不做**：它解决的是无界流式输出（长命令），而脚本工具返回的是一次性的整个值；
   内核已会把超大结果落盘并给出恢复路径，不存在内容丢失。
 - `scriptsRoot` 相对**进程工作目录**解析，其下每个含 `manifest.json` 的子目录是一个脚本插件；目录不存在等于「还没建脚本」（正常的冷启动状态）。

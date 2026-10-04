@@ -146,7 +146,14 @@ mvn -q -Pscript-it test
   （路由键是 provider 名）。它不能用 `contributions` 声明（那个字段只收类型级），也不能用
   `tools` / `commands`（那是专用字段）。SDK 侧是 `@handler("model_catalog", route="local")`（Node 是
   `handler({type, route}, fn)`），清单里写 `"handlers": [{"type": ..., "route": ...}]`。
-  一致性校验比对的是 `type::route`，路由名写错会在启动时被拦下。
+  一致性校验比对的是 `type::route`，路由名写错会在启动时被拦下。`input_directive` 也走这条路，
+  它的路由键是**标记本身**（`"route": "!"`）。
+- **热路径点不冷启动**：`request_tuning` / `aging_strategy` 是「每次组装请求都会被问到」的点
+  （`HotPathPoints`），桥接层对它们做两件事：worker 没热着就**不冷启动**、直接返回「不表态」；
+  热着时用 **2 秒**短截止（超时不杀 worker，但如实上报失败，好让熔断能把它关掉）。
+  推论：**只提供热路径贡献、别的一个点都不提供的脚本永远不会被拉起**——这是一个真实的行为边界。
+  新增热路径点时，既要在 `HotPathPoints` 里加，也要在 `extension-points.json` 里标 `hotPath: true`，
+  `ExtensionPointCoverageTest` 会断言两者一致。
 
 ## 示例脚本与进程
 

@@ -157,6 +157,11 @@ def web_fetch(args, ctx):
 | `session_before_close` | 会话关闭前能不能关 | `None` 放行、`True` 或原因字符串拦下 |
 | `session_before_fork` | 会话分支前能不能分 | 同上 |
 | `compaction_pre` | 这次压缩要不要做、保留多少条 | `None` 放行、`{"cancel": true, "reason": ...}` 或 `{"keepRecent": n}` |
+| `tool_activation` | 某个工具该不该进本次工具清单 | `None` 不管、`True` 明确可见、`False` 或原因字符串 / `{"hidden": true}` 隐藏 |
+| `input_transform` | 用户按回车后的原文要不要改写 | `None` 不改、字符串或 `{"text": ...}` 替换、`{"handled": true, "notice": ...}` 接过去不进对话 |
+| `turn_before` | 这个回合要不要起 | `None` 放行、`True` 或原因字符串拦下、`{"input": ...}` 改写本轮输入 |
+| `request_tuning` | 这次请求的缓存参数（**热路径**） | `None` 不改、`{"cacheKey": ..., "cacheRetention": ..., "cacheBreakpoints": n}` |
+| `aging_strategy` | 较早工具结果怎么老化（**热路径**） | `None` 不改、`{"keepRecentMessages": n, "agingPercent": n, "stubText": ..., "stubTextsByTool": {...}}` |
 
 ```python
 @contributes("turn_context")
@@ -189,6 +194,28 @@ def local_catalog(provider_name, provider_type, ctx):
 
 - **空模型列表是「我不表态」**，回落成配置里 `models` 写的那份，而不是「这个 provider 没有模型」。
 - 路由名写错一样会在启动时被清单一致性校验拦下（比对的是 `type::route`）。
+
+`input_directive` 也走 `handler`，但路由键是**标记本身**（`!` / `@`）：
+
+```python
+@handler("input_directive", route="!")
+def bang(marker, input, ctx):
+    # 只声明「这行输入该当成哪次工具调用」；真正的执行走内核完整的权限与审批链
+    return {"toolName": "shell", "arguments": {"command": input}}
+```
+
+```json
+{ "entry": "main.py", "handlers": [{ "type": "input_directive", "route": "!" }] }
+```
+
+### 热路径点：`request_tuning` / `aging_strategy` 不冷启动
+
+这两个点**每次组装请求都会被问到**，而脚本调用是一次进程往返、网关又是懒启动的。因此桥接层
+对它们：① worker 没热着就**不冷启动**，直接返回「不表态」（调用点走保守缺省）；
+② 热着时也只给 **2 秒**截止（超时不杀 worker，但如实上报失败，好让熔断能把它关掉）。
+
+> **推论**：只提供这两个贡献、别的一个点都不提供的脚本**永远不会被拉起**。
+> 要让它跑起来，至少还要提供一个会被真正调用的点（工具、命令、`turn_context`、`turn_before` …）。
 
 ## 跑起来
 
