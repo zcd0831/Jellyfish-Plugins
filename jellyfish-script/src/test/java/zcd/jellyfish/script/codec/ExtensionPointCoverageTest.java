@@ -117,6 +117,25 @@ class ExtensionPointCoverageTest {
         assertTrue(missing.isEmpty(), "ExtensionCodecs 里有 codec 但能力档的 in 段没有它: " + missing);
     }
 
+    @Test
+    @DisplayName("热路径标记应与 HotPathPoints 一致")
+    void hotPathFlags_should_matchHotPathPoints() {
+        JsonNode in = readResource().get("in");
+        Set<String> fromJson = new LinkedHashSet<String>();
+        for (JsonNode entry : in) {
+            if (entry.has("hotPath") && entry.get("hotPath").asBoolean()) {
+                fromJson.add(entry.get("type").asText());
+            }
+        }
+        Set<String> fromJava = new LinkedHashSet<String>(HotPathPoints.names());
+
+        assertEquals(fromJava, fromJson, "能力档的 hotPath 标记与 HotPathPoints 不一致："
+                + "两处各写一份就会漂移，而漂移的表现是「某个点悄悄开始冷启动」");
+        for (String type : fromJava) {
+            assertNotNull(ExtensionCodecs.DEFAULTS.byName(type), "HotPathPoints 里的名字不是已注册扩展点: " + type);
+        }
+    }
+
     /**
      * 读取能力档资源。
      *

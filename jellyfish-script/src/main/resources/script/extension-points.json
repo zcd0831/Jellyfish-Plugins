@@ -1,11 +1,12 @@
 {
-  "_comment": "脚本桥接的扩展点能力档：这是「脚本能用哪些扩展点」的唯一真源。三段的语义不同，不要合并——'in' 是已打通，'planned' 是已决定要做但还没做，'excluded' 是明确不做。内核新增扩展点时，ExtensionPointCoverageTest 会因为「有扩展点没被分类」而失败，逼迫在这里做一次决策。'args' / 'shape' 是两种语言各自的实参构造与结果整形函数的键名（见 jellyfish_sdk.py / jellyfish_sdk.js 的 ARGS / SHAPES 表）。",
+  "_comment": "脚本桥接的扩展点能力档：这是「脚本能用哪些扩展点」的唯一真源。三段的语义不同，不要合并——'in' 是已打通，'planned' 是已决定要做但还没做，'excluded' 是明确不做。内核新增扩展点时，ExtensionPointCoverageTest 会因为「有扩展点没被分类」而失败，逼迫在这里做一次决策。'args' / 'shape' 是两种语言各自的实参构造与结果整形函数的键名（见 jellyfish_sdk.py / jellyfish_sdk.js 的 ARGS / SHAPES 表）。'hotPath: true' 表示「每次组装请求都会被问到」的点：桥接层不为其冷启动、并给 2 秒短截止（见 HotPathPoints）。",
 
   "in": [
     { "class": "ToolCallRequest",              "type": "tool",                "routeKey": true,  "args": "tool",                "shape": "tool" },
     { "class": "CommandRequest",               "type": "command",             "routeKey": true,  "args": "command",             "shape": "command" },
     { "class": "CommandOptionRequest",         "type": "command_options",     "routeKey": true,  "args": "command_options",     "shape": "choices" },
     { "class": "ModelCatalogRequest",          "type": "model_catalog",       "routeKey": true,  "args": "model_catalog",       "shape": "model_catalog" },
+    { "class": "InputDirectiveRequest",        "type": "input_directive",     "routeKey": true,  "args": "input_directive",     "shape": "input_directive" },
     { "class": "PromptContributionRequest",    "type": "prompt",              "routeKey": false, "args": "none",                "shape": "text" },
     { "class": "StatusLineContributionRequest","type": "status_line",         "routeKey": false, "args": "none",                "shape": "text" },
     { "class": "PanelContributionRequest",     "type": "panel",               "routeKey": false, "args": "none",                "shape": "panel" },
@@ -19,17 +20,15 @@
     { "class": "TurnContextRequest",           "type": "turn_context",        "routeKey": false, "args": "turn_context",        "shape": "turn_context" },
     { "class": "SessionBeforeCloseRequest",    "type": "session_before_close","routeKey": false, "args": "session_before_close","shape": "lifecycle_verdict" },
     { "class": "SessionBeforeForkRequest",     "type": "session_before_fork", "routeKey": false, "args": "session_before_fork", "shape": "lifecycle_verdict" },
-    { "class": "CompactionPreRequest",         "type": "compaction_pre",      "routeKey": false, "args": "compaction_pre",      "shape": "compaction_directive" }
+    { "class": "CompactionPreRequest",         "type": "compaction_pre",      "routeKey": false, "args": "compaction_pre",      "shape": "compaction_directive" },
+    { "class": "ToolActivationRequest",        "type": "tool_activation",     "routeKey": false, "args": "tool_activation",     "shape": "tool_activation" },
+    { "class": "InputTransformRequest",        "type": "input_transform",     "routeKey": false, "args": "input_transform",     "shape": "input_transform" },
+    { "class": "TurnBeforeRequest",            "type": "turn_before",         "routeKey": false, "args": "turn_before",         "shape": "turn_before" },
+    { "class": "RequestTuningRequest",         "type": "request_tuning",      "routeKey": false, "args": "request_tuning",      "shape": "request_tuning",  "hotPath": true },
+    { "class": "AgingStrategyRequest",         "type": "aging_strategy",      "routeKey": false, "args": "aging_strategy",      "shape": "aging_strategy",  "hotPath": true }
   ],
 
-  "planned": [
-    { "class": "ToolActivationRequest",      "phase": "P2", "reason": "每次冻结工具清单都问，进请求路径；先定「热路径往返」策略" },
-    { "class": "RequestTuningRequest",       "phase": "P2", "reason": "每次组装请求都问，同 ToolActivation" },
-    { "class": "AgingStrategyRequest",       "phase": "P2", "reason": "每次处理较早工具结果都问，同 ToolActivation" },
-    { "class": "InputTransformRequest",      "phase": "P2", "reason": "用户回车后的提交路径；同 ToolActivation" },
-    { "class": "TurnBeforeRequest",          "phase": "P2", "reason": "回合开始前的提交路径；同 ToolActivation" },
-    { "class": "InputDirectiveRequest",      "phase": "P2", "reason": "输入指令（! / @）的提交路径；同 ToolActivation" }
-  ],
+  "planned": [],
 
   "excluded": [
     { "class": "ProviderRegistrationRequest",  "reason": "结构上做不到：它要返回一个 LlmTransport Java 对象（带流式回调），不是数据载荷" },

@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.CancellationToken;
+import zcd.jellyfish.script.codec.HotPathPoints;
 import zcd.jellyfish.script.protocol.ScriptCancelledException;
 import zcd.jellyfish.script.protocol.ScriptConnectionException;
 import zcd.jellyfish.script.protocol.ScriptProtocol;
@@ -82,6 +83,14 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
      * 只会让「网关已经卡住」这种情况多挂住调用方十秒。
      */
     private static final long KILL_REQUEST_TIMEOUT_MILLIS = 5000L;
+
+    /**
+     * 热路径扩展点的截止时间（毫秒）。
+     * <p>
+     * 热着的往返是毫秒级，2 秒是极宽的余量；而它真正的价值是「不把一次卡住的脚本变成一次卡住的请求」——
+     * 默认的 {@code invokeTimeoutSeconds} 是 30 秒，落在「每次发请求之前」那条路径上不可接受。
+     */
+    private static final long HOT_PATH_TIMEOUT_MILLIS = 2000L;
 
     /** 语言适配。 */
     private final ScriptLanguage language;
@@ -192,6 +201,14 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
             // 已经取消就不该再起一次进程往返
             throw new ScriptCancelledException("脚本调用已被取消: " + typeName);
         }
+        boolean hotPath = HotPathPoints.contains(typeName);
+        if (hotPath && !isRunning()) {
+            // 热路径上的点不冷启动：一次进程冷启动（几百毫秒起）不该落在「每次发给厂商之前」
+            // 那条路径上。返回 null = 不表态，调用点走保守缺省
+            LOG.debug("{} 热路径扩展点 {} 按「不表态」处理（worker 未热，不冷启动）",
+                    language.id(), typeName);
+            return null;
+        }
         ScriptRpc current = ensureStarted();
         Map<String, Object> params = new LinkedHashMap<String, Object>();
         params.put(ScriptProtocol.PARAM_SCRIPT, plugin.id());
@@ -215,10 +232,16 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
         });
         try {
             return current.call(ScriptProtocol.METHOD_INVOKE, ScriptJson.treeOf(params),
-                    settings.invokeTimeoutMillis());
+                    hotPath ? hotPathTimeout(settings.invokeTimeoutMillis()) : settings.invokeTimeoutMillis());
         } catch (ScriptTimeoutException e) {
             if (cancelled.get()) {
                 throw new ScriptCancelledException("脚本调用已被取消: " + typeName, e);
+            }
+            if (hotPath) {
+                // 热路径：不杀 worker（网关自己的截止时间会收），但如实上报失败——
+                // 否则一个持续拖慢的脚本会让每次请求都白白等满 2 秒，而熔断永远开不了
+                throw new ScriptTimeoutException("热路径脚本调用超时（已等待 " + e.waitedMillis()
+                        + " ms，worker 未隔离）: " + typeName, e.waitedMillis());
             }
             // 超时处置链：宿主只发指令，**杀的动作由网关做**——回收与 PID 表都在有父子关系的一侧，
             // 宿主根本不需要知道 worker 的存在。这一步不能省：脚本卡住时连接看起来完全正常，
@@ -240,6 +263,19 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
         } finally {
             active.set(false);
         }
+    }
+
+    /**
+     * 把配置的调用超时钳到热路径上限。
+     * <p>
+     * 配置为 0（「不设截止时间」）时原样保留：那是用户的显式选择，钳成 2 秒会把「不要超时」
+     * 悄悄变成「2 秒超时」。
+     *
+     * @param configuredMillis 配置的截止毫秒数，{@code <= 0} 表示不设
+     * @return 实际使用的截止毫秒数
+     */
+    private static long hotPathTimeout(long configuredMillis) {
+        return configuredMillis <= 0L ? 0L : Math.min(configuredMillis, HOT_PATH_TIMEOUT_MILLIS);
     }
 
     /**

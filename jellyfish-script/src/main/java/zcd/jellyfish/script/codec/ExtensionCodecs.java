@@ -126,6 +126,7 @@ public final class ExtensionCodecs {
                 new CommandCodec(),
                 new CommandOptionsCodec(),
                 new ModelCatalogCodec(),
+                new InputDirectiveCodec(),
                 // 类型级：同一类型允许多个贡献
                 new PromptCodec(),
                 new StatusLineCodec(),
@@ -141,6 +142,12 @@ public final class ExtensionCodecs {
                 new TurnContextCodec(),
                 new SessionBeforeCloseCodec(),
                 new SessionBeforeForkCodec(),
-                new CompactionPreCodec()));
+                new CompactionPreCodec(),
+                // 热路径：不冷启动 + 更短的截止时间（见 HotPathPoints）
+                new ToolActivationCodec(),
+                new RequestTuningCodec(),
+                new AgingStrategyCodec(),
+                new InputTransformCodec(),
+                new TurnBeforeCodec()));
     }
 }
