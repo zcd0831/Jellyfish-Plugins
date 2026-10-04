@@ -150,6 +150,37 @@ class ScriptError extends Error {
 }
 
 /**
+ * 工具返回值：正文之外再带上给界面看的元数据。
+ *
+ * 普通返回值就是 `output`；只有需要一行摘要或失败标记时才用它。
+ * `summary` 是轨迹行上显示的一句话（给人看，不是给模型看），`terminal` 取不等于
+ * `COMPLETED` 的值时让界面出警示标记（例如 `FAILED` / `TIMEOUT`），`metadata`
+ * 里还可以放任意结构化事实（内核只透传、不解释）。
+ *
+ * 它**不进模型上下文**：模型看到的仍是 `output` 那段文本。
+ */
+class ToolResult {
+    /**
+     * 构造工具结果。
+     *
+     * @param {*} output 回灌给模型的正文（任意 JSON）
+     * @param {object} [details] `{summary, terminal, metadata}`，均可省略
+     */
+    constructor(output, details) {
+        const shape = details || {};
+        this.output = output === undefined ? null : output;
+        const merged = Object.assign({}, shape.metadata || {});
+        if (shape.summary !== undefined && shape.summary !== null) {
+            merged.summary = shape.summary;
+        }
+        if (shape.terminal !== undefined && shape.terminal !== null) {
+            merged.terminal = shape.terminal;
+        }
+        this.metadata = merged;
+    }
+}
+
+/**
  * 一次调用的上下文。
  *
  * 只暴露脚本真正需要的东西：身份、会话标识与原始请求。刻意不暴露宿主对象，
@@ -194,6 +225,28 @@ class ScriptContext {
      */
     get configuration() {
         return currentConfiguration;
+    }
+
+    /**
+     * 派生当前会话的那个会话；根会话（用户直接对话的那一个）为 `null`。
+     *
+     * 子代理有独立的会话，而协作状态往往要落在父会话上——该用哪个键只有内核知道，
+     * 模型无从指定。与 `sessionId` 的分工：后者是「我自己」，前者是「我属于谁」。
+     *
+     * @returns {string|null} 父会话标识
+     */
+    get parentSessionId() {
+        return this.payloadData.parentSessionId === undefined ? null : this.payloadData.parentSessionId;
+    }
+
+    /** 本次调用所在的 run；顶层回合或进程级调用为 `null`。 */
+    get runId() {
+        return this.payloadData.runId === undefined ? null : this.payloadData.runId;
+    }
+
+    /** 本次调用所在的 run 树根；不在任何 run 上时为 `null`。 */
+    get rootRunId() {
+        return this.payloadData.rootRunId === undefined ? null : this.payloadData.rootRunId;
     }
 
     /**
@@ -611,7 +664,16 @@ defineArgs('tool', (payload) => ({ args: payload.arguments || {} }));
 
 // 任意 JSON 都能作为 output：字符串、数字、对象、数组都合法，
 // 因为内核的截断与序列化对它们的处理是统一的（见 ToolCodec）
-defineShape('tool', (result) => ({ output: result === undefined ? null : result }));
+defineShape('tool', (result) => {
+    if (result instanceof ToolResult) {
+        const payload = { output: result.output };
+        if (Object.keys(result.metadata).length > 0) {
+            payload.metadata = result.metadata;
+        }
+        return payload;
+    }
+    return { output: result === undefined ? null : result };
+});
 
 // ---- 命令 -----------------------------------------------------------------
 
@@ -883,6 +945,7 @@ function listOf(value) {
 module.exports = {
     EMITTABLE_EVENTS,
     ScriptError,
+    ToolResult,
     ensureResolvable,
     ScriptContext,
     configuration,

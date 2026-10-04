@@ -3,8 +3,11 @@ package zcd.jellyfish.script.codec;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import zcd.jellyfish.api.extension.CancellationToken;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
+import zcd.jellyfish.api.extension.ToolMetadata;
+import zcd.jellyfish.api.extension.ToolOutputSink;
 import zcd.jellyfish.script.ScriptJson;
 
 import java.util.Arrays;
@@ -43,6 +46,48 @@ class ToolCodecTest {
         assertEquals("jira_issue", payload.get("tool").asText());
         assertEquals("PROJ-1", payload.get("arguments").get("key").asText());
         assertEquals("s-1", payload.get("sessionId").asText());
+    }
+
+    @Test
+    @DisplayName("请求应下发调用者身份：父会话与 run 树，缺省为 null")
+    void encodeRequest_should_carryCallerIdentity() {
+        JsonNode withIdentity = codec.encodeRequest(new ToolCallRequest("jira_issue",
+                Collections.<String, Object>emptyMap(), "s-1", CancellationToken.NONE,
+                ToolOutputSink.NOOP, "parent-1", "r-1", "root-1"));
+
+        assertEquals("parent-1", withIdentity.get("parentSessionId").asText());
+        assertEquals("r-1", withIdentity.get("runId").asText());
+        assertEquals("root-1", withIdentity.get("rootRunId").asText());
+
+        JsonNode withoutIdentity = codec.encodeRequest(
+                new ToolCallRequest("jira_issue", Collections.<String, Object>emptyMap(), "s-1"));
+
+        assertTrue(withoutIdentity.get("parentSessionId").isNull());
+        assertTrue(withoutIdentity.get("runId").isNull());
+        assertTrue(withoutIdentity.get("rootRunId").isNull());
+    }
+
+    @Test
+    @DisplayName("结果里的 metadata 应原样带上，不进模型看到的输出")
+    void decodeResult_should_carryMetadata_when_scriptReturnsIt() {
+        ToolCallResult result = codec.decodeResult(ScriptJson.tree(
+                "{\"output\":\"正文\",\"metadata\":{\"summary\":\"抓取了 3 条\",\"terminal\":\"FAILED\"}}"),
+                "web_fetch");
+
+        assertEquals("正文", result.getOutput());
+        assertEquals("抓取了 3 条", ToolMetadata.summaryOf(result.getMetadata()));
+        assertTrue(ToolMetadata.failed(result.getMetadata()));
+    }
+
+    @Test
+    @DisplayName("没有 metadata 时元数据为空映射；metadata 形状不对也不应把调用变成失败")
+    void decodeResult_should_tolerateMissingOrMalformedMetadata() {
+        assertTrue(codec.decodeResult(ScriptJson.tree("{\"output\":\"x\"}"), "echo")
+                .getMetadata().isEmpty());
+        // 写坏元数据不该炸掉一次已经成功的调用：元数据是给界面看的旁路信息
+        assertTrue(codec.decodeResult(
+                        ScriptJson.tree("{\"output\":\"x\",\"metadata\":\"oops\"}"), "echo")
+                .getMetadata().isEmpty());
     }
 
     @Test

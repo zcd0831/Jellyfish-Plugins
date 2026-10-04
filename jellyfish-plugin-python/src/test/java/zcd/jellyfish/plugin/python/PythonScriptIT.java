@@ -11,8 +11,11 @@ import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.CommandResult;
 import zcd.jellyfish.api.extension.PromptContributionRequest;
+import zcd.jellyfish.api.extension.CancellationToken;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
+import zcd.jellyfish.api.extension.ToolMetadata;
+import zcd.jellyfish.api.extension.ToolOutputSink;
 import zcd.jellyfish.infra.action.ActionQueue;
 import zcd.jellyfish.infra.metrics.MetricsRegistry;
 import zcd.jellyfish.infra.shell.ShellIngress;
@@ -164,6 +167,34 @@ class PythonScriptIT {
                 () -> invokeTool("jira_issue", Collections.<String, Object>emptyMap()));
 
         assertTrue(failure.getMessage().contains("缺少参数 key"), failure.getMessage());
+    }
+
+    @Test
+    @DisplayName("工具返回 ToolResult 时：正文进 output，摘要与调用者身份进 metadata")
+    void toolResult_should_carryMetadataAndIdentity_when_scriptReturnsIt() throws IOException {
+        writeScript("web", METADATA_SCRIPT, METADATA_MANIFEST);
+        startRuntime();
+
+        ToolCallResult result = extensions.invoke(
+                extensions.handler(ToolCallRequest.class, "web_meta"),
+                new ToolCallRequest("web_meta", Collections.<String, Object>emptyMap(), "s-1",
+                        CancellationToken.NONE, ToolOutputSink.NOOP, "parent-1", "r-1", "root-1"));
+
+        assertEquals("正文", result.getOutput());
+        assertEquals("parent=parent-1 run=r-1 root=root-1",
+                ToolMetadata.summaryOf(result.getMetadata()));
+    }
+
+    @Test
+    @DisplayName("没返回 ToolResult 的工具元数据为空，行为与引入之前一致")
+    void toolResult_should_beEmpty_when_scriptReturnsPlainValue() throws IOException {
+        writeScript("jira", TOOL_SCRIPT, FULL_MANIFEST);
+        startRuntime();
+
+        ToolCallResult result = invokeTool("jira_issue",
+                Collections.<String, Object>singletonMap("key", "PROJ-1"));
+
+        assertTrue(result.getMetadata().isEmpty());
     }
 
     @Test
@@ -1336,6 +1367,20 @@ class PythonScriptIT {
     /** 与 {@link #CONFIG_SCRIPT} 逐字对应的清单。 */
     private static final String CONFIG_MANIFEST = "{\"entry\":\"main.py\","
             + "\"tools\":[{\"name\":\"web_probe\"}]}";
+
+    /** 返回 {@code ToolResult} 的脚本：摘要里带上调用者身份，一次验证两件事。 */
+    private static final String METADATA_SCRIPT = ""
+            + "from jellyfish_sdk import tool, ToolResult\n"
+            + "\n"
+            + "@tool(name=\"web_meta\", description=\"带元数据的工具\")\n"
+            + "def web_meta(args, ctx):\n"
+            + "    summary = \"parent=%s run=%s root=%s\" % (\n"
+            + "        ctx.parent_session_id, ctx.run_id, ctx.root_run_id)\n"
+            + "    return ToolResult(\"正文\", summary=summary)\n";
+
+    /** 与 {@link #METADATA_SCRIPT} 逐字对应的清单。 */
+    private static final String METADATA_MANIFEST = "{\"entry\":\"main.py\","
+            + "\"tools\":[{\"name\":\"web_meta\"}]}";
 
     /**
      * 启动插件并完成注册。

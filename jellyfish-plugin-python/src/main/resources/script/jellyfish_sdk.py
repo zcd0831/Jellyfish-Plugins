@@ -86,6 +86,35 @@ class ScriptError(Exception):
     """
 
 
+class ToolResult:
+    """工具返回值：正文之外再带上给界面看的元数据。
+
+    普通返回值就是 ``output``；只有需要一行摘要或失败标记时才用它。
+    ``summary`` 是轨迹行上显示的一句话（给人看，不是给模型看），``terminal`` 取不等于
+    ``COMPLETED`` 的值时让界面出警示标记（例如 ``FAILED`` / ``TIMEOUT``），``metadata``
+    里还可以放任意结构化事实（内核只透传、不解释）。
+
+    它**不进模型上下文**：模型看到的仍是 ``output`` 那段文本。
+
+    :param output: 回灌给模型的正文（任意 JSON）
+    :param summary: 单行摘要，可为 ``None``
+    :param terminal: 终止原因，可为 ``None``（缺省表示正常完成）
+    :param metadata: 其它结构化元数据，可为 ``None``
+    """
+
+    def __init__(self, output=None, summary=None, terminal=None, metadata=None):
+        self.output = output
+        merged = dict(metadata or {})
+        if summary is not None:
+            merged["summary"] = summary
+        if terminal is not None:
+            merged["terminal"] = terminal
+        self.metadata = merged
+
+    def __repr__(self):
+        return "ToolResult(output=%r, metadata=%r)" % (self.output, self.metadata)
+
+
 class ScriptContext:
     """一次调用的上下文。
 
@@ -122,6 +151,25 @@ class ScriptContext:
         也与 Java 插件的 ``PluginContext.configuration()`` 同一条通道。
         """
         return _CONFIGURATION
+
+    @property
+    def parent_session_id(self):
+        """派生当前会话的那个会话；根会话（用户直接对话的那一个）为 ``None``。
+
+        子代理有独立的会话，而协作状态往往要落在父会话上——该用哪个键只有内核知道，
+        模型无从指定。与 ``session_id`` 的分工：后者是「我自己」，前者是「我属于谁」。
+        """
+        return self._payload.get("parentSessionId")
+
+    @property
+    def run_id(self):
+        """本次调用所在的 run；顶层回合或进程级调用为 ``None``。"""
+        return self._payload.get("runId")
+
+    @property
+    def root_run_id(self):
+        """本次调用所在的 run 树根；不在任何 run 上时为 ``None``。"""
+        return self._payload.get("rootRunId")
 
     def emit_event(self, name, payload=None):
         """发布一条事件。
@@ -531,6 +579,11 @@ def _args_tool(payload):
 def _shape_tool(result):
     # 任意 JSON 都能作为 output：字符串、数字、对象、数组都合法，
     # 因为内核的截断与序列化对它们的处理是统一的（见 ToolCodec）
+    if isinstance(result, ToolResult):
+        payload = {"output": result.output}
+        if result.metadata:
+            payload["metadata"] = result.metadata
+        return payload
     return {"output": result}
 
 
@@ -800,6 +853,7 @@ def _first_doc_line(func):
 
 __all__ = [
     "ScriptError",
+    "ToolResult",
     "EMITTABLE_EVENTS",
     "ScriptContext",
     "configuration",

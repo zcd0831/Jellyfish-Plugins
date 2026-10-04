@@ -8,11 +8,14 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mockito;
 import org.pf4j.PluginState;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.extension.CancellationToken;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.CommandResult;
 import zcd.jellyfish.api.extension.PromptContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
+import zcd.jellyfish.api.extension.ToolMetadata;
+import zcd.jellyfish.api.extension.ToolOutputSink;
 import zcd.jellyfish.infra.action.ActionQueue;
 import zcd.jellyfish.infra.metrics.MetricsRegistry;
 import zcd.jellyfish.infra.shell.ShellIngress;
@@ -239,6 +242,22 @@ class NodeScriptIT {
             Thread.sleep(100L);
         }
         assertNotNull(handled, "async 事件处理器未在预期时间内跑完");
+    }
+
+    @Test
+    @DisplayName("工具返回 ToolResult 时：正文进 output，摘要与调用者身份进 metadata")
+    void toolResult_should_carryMetadataAndIdentity_when_scriptReturnsIt() throws IOException {
+        writeScript("web", METADATA_SCRIPT, METADATA_MANIFEST);
+        startRuntime();
+
+        ToolCallResult result = extensions.invoke(
+                extensions.handler(ToolCallRequest.class, "web_meta"),
+                new ToolCallRequest("web_meta", Collections.<String, Object>emptyMap(), "s-1",
+                        CancellationToken.NONE, ToolOutputSink.NOOP, "parent-1", "r-1", "root-1"));
+
+        assertEquals("正文", result.getOutput());
+        assertEquals("parent=parent-1 run=r-1 root=root-1",
+                ToolMetadata.summaryOf(result.getMetadata()));
     }
 
     @Test
@@ -801,4 +820,17 @@ class NodeScriptIT {
     private static final String ASYNC_CONFIG_MANIFEST = "{\"entry\":\"main.js\","
             + "\"tools\":[{\"name\":\"web_probe\"},{\"name\":\"web_events\"}],"
             + "\"events\":[\"ToolCallCompletedEvent\"]}";
+
+    /** 返回 {@code ToolResult} 的脚本：摘要里带上调用者身份，一次验证两件事。 */
+    private static final String METADATA_SCRIPT = ""
+            + "'use strict';\n"
+            + "const { tool, ToolResult } = require('jellyfish_sdk');\n"
+            + "tool({ name: 'web_meta', description: '带元数据的工具' }, (params, ctx) =>\n"
+            + "    new ToolResult('正文', {\n"
+            + "        summary: `parent=${ctx.parentSessionId} run=${ctx.runId} root=${ctx.rootRunId}`,\n"
+            + "    }));\n";
+
+    /** 与 {@link #METADATA_SCRIPT} 逐字对应的清单。 */
+    private static final String METADATA_MANIFEST = "{\"entry\":\"main.js\","
+            + "\"tools\":[{\"name\":\"web_meta\"}]}";
 }
