@@ -1,5 +1,6 @@
 package zcd.jellyfish.plugin.python;
 
+import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -800,12 +801,132 @@ class PythonScriptIT {
     }
 
     @Test
+    @DisplayName("web 示例：搜索、抓取正文与重定向都应真的生效（打本地 mock，不碰真网络）")
+    void webExample_should_searchAndFetch_againstLocalServer() throws Exception {
+        HttpServer server = startMockServer();
+        try {
+            String base = "http://127.0.0.1:" + server.getAddress().getPort();
+            installExample("web");
+            startRuntime(10, webScriptConfig(base, true));
+
+            ToolCallResult search = invokeTool("web_search",
+                    Collections.<String, Object>singletonMap("query", "jellyfish"));
+            String listed = String.valueOf(search.getOutput());
+            assertTrue(listed.contains("示例标题一"), listed);
+            assertTrue(listed.contains("http://example.com/a"), listed);
+            // 摘要进 metadata（给人看），正文给模型
+            assertEquals("搜到 2 条", ToolMetadata.summaryOf(search.getMetadata()));
+
+            ToolCallResult fetch = invokeTool("web_fetch",
+                    Collections.<String, Object>singletonMap("url", base + "/page"));
+            String text = String.valueOf(fetch.getOutput());
+            assertTrue(text.contains("第一段正文"), text);
+            assertTrue(text.contains("第二段 & 实体"), text);
+            // 脚本 / 样式 / 导航 / 页脚都不是正文：它们出现在结果里就说明提取没生效
+            assertFalse(text.contains("导航应被丢弃"), text);
+            assertFalse(text.contains("页脚应被丢弃"), text);
+            assertFalse(text.contains("var x=1"), text);
+
+            // 重定向要能跟上（逐跳校验只在 allowPrivateAddresses=true 时放行内网）
+            ToolCallResult redirected = invokeTool("web_fetch",
+                    Collections.<String, Object>singletonMap("url", base + "/redirect"));
+            assertTrue(String.valueOf(redirected.getOutput()).contains("第一段正文"),
+                    String.valueOf(redirected.getOutput()));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("web 示例：默认拒绝内网地址（SSRF 防护）")
+    void webExample_should_blockPrivateAddresses_byDefault() throws Exception {
+        HttpServer server = startMockServer();
+        try {
+            String base = "http://127.0.0.1:" + server.getAddress().getPort();
+            installExample("web");
+            // 刻意不写 allowPrivateAddresses：缺省就是拒绝
+            startRuntime(10, webScriptConfig(base, false));
+
+            JellyfishException failure = assertThrows(JellyfishException.class,
+                    () -> invokeTool("web_fetch",
+                            Collections.<String, Object>singletonMap("url", base + "/page")));
+
+            assertTrue(failure.getMessage().contains("内网地址"), failure.getMessage());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /**
+     * 造一份 {@code scripts.web} 配置。
+     *
+     * @param base          mock 服务器地址（当作 SearXNG 端点）
+     * @param allowPrivate  是否允许内网地址
+     * @return 逐脚本配置
+     */
+    private static Map<String, Map<String, Object>> webScriptConfig(String base, boolean allowPrivate) {
+        Map<String, Object> web = new LinkedHashMap<String, Object>();
+        web.put("provider", "searxng");
+        web.put("endpoint", base);
+        web.put("allowPrivateAddresses", Boolean.valueOf(allowPrivate));
+        Map<String, Map<String, Object>> scripts = new LinkedHashMap<String, Map<String, Object>>();
+        scripts.put("web", web);
+        return scripts;
+    }
+
+    /**
+     * 起一个只在回环上监听的 mock 服务：搜索接口、一个 HTML 页面、一条重定向。
+     *
+     * @return 已启动的服务
+     * @throws IOException 启动失败时抛出
+     */
+    private static HttpServer startMockServer() throws IOException {
+        HttpServer server = HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/search", exchange -> respond(exchange, "application/json",
+                "{\"results\":["
+                        + "{\"title\":\"示例标题一\",\"url\":\"http://example.com/a\","
+                        + "\"content\":\"摘要一\",\"engine\":\"mock\"},"
+                        + "{\"title\":\"示例标题二\",\"url\":\"http://example.com/b\","
+                        + "\"content\":\"摘要二\",\"engine\":\"mock\"}]}"));
+        server.createContext("/page", exchange -> respond(exchange, "text/html; charset=utf-8",
+                "<!doctype html><html><head><title>示例页面</title>"
+                        + "<script>var x=1;</script><style>.a{color:red}</style></head>"
+                        + "<body><nav>导航应被丢弃</nav><article><h1>标题一</h1>"
+                        + "<p>第一段正文。</p><p>第二段 &amp; 实体。</p></article>"
+                        + "<footer>页脚应被丢弃</footer></body></html>"));
+        server.createContext("/redirect", exchange -> {
+            exchange.getResponseHeaders().add("Location", "/page");
+            exchange.sendResponseHeaders(302, -1L);
+            exchange.close();
+        });
+        server.start();
+        return server;
+    }
+
+    /**
+     * 回一段固定内容。
+     *
+     * @param exchange 交换对象
+     * @param contentType 内容类型
+     * @param body      正文
+     * @throws IOException 写入失败时抛出
+     */
+    private static void respond(com.sun.net.httpserver.HttpExchange exchange, String contentType,
+                                String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().add("Content-Type", contentType);
+        exchange.sendResponseHeaders(200, bytes.length);
+        exchange.getResponseBody().write(bytes);
+        exchange.close();
+    }
+
+    @Test
     @DisplayName("清单生成器：生成结果必须能被内核接受，且与仓库里的清单一致")
     void dumpManifest_should_agreeWithExamples() throws IOException {
         // 两件事一起验，因为它们是同一个承诺的两面：
         // ① 生成器吐出来的是内核认得的清单（能直接落盘），② 示例的清单没有落后于实现。
         // 后者是「清单与实现必须一致」这条约束唯一能自动守住的地方
-        for (String id : new String[] {"hello", "jira"}) {
+        for (String id : new String[] {"hello", "jira", "web"}) {
             Path script = examplesDirectory().resolve(id);
             String generated = runPython(resources("dump_manifest.py"), script.toString());
             zcd.jellyfish.script.ScriptManifest fromCode = zcd.jellyfish.script.ScriptManifest.parse(
