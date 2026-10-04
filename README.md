@@ -546,7 +546,7 @@ PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
         "workerIdleSeconds": 300,
         "gatewayIdleSeconds": 600,
         "scripts": {
-          "web": { "provider": "brave", "apiKey": "${BRAVE_API_KEY}", "timeoutSeconds": 20 }
+          "web": { "provider": "brave", "apiKey": "", "timeoutSeconds": 20 }
         }
       },
       "jellyfish-plugin-node": {
@@ -563,6 +563,11 @@ PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
   （Python 还可用模块级 `configuration()`，在模块顶层就能调）。字符串值里的 `${ENV}` 照常插值，
   因此与 Java 插件是同一条密钥通道。**密钥不能靠环境变量传给脚本**：脚本进程的环境是严格白名单
   （仅解释器运行与依赖解析必需的那几个），这是有意的安全取舍。脚本 id 写错会在启动时告警。
+
+  > ⚠️ **`${ENV}` 是硬失败，不是「取不到就留空」**：配置里写了 `${SOME_KEY}` 而环境变量没设，
+  > 整个进程**启动即失败**（`environment variable is not set: SOME_KEY`）。因此上面例子里的
+  > `apiKey` 是空字符串而不是占位符——写上占位符就是个定时炸弹，换个 shell、换台机器就起不来。
+  > 确实要用的密钥才写 `${...}`，并且保证它总是已设。
 - **async handler（Node）**：工具 / 命令 / 贡献 / 事件的处理函数都可以是 `async`，桥接会 `await` 它，
   因此 Node 脚本可以直接用 `fetch` / `undici` / `@mozilla/readability` 这类异步生态。
   这不改变「在途请求只有一个」——worker 仍是一次只处理一帧，只是允许 handler 等 I/O。

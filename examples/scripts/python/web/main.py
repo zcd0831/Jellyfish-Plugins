@@ -16,11 +16,16 @@
     {
       "provider": "searxng",              // searxng | brave
       "endpoint": "https://searx.example.org",
-      "apiKey": "${BRAVE_API_KEY}",       // provider=brave 时必需
+      "apiKey": "",                       // provider=brave 时填
       "timeoutSeconds": 15,
       "maxBytes": 200000,
       "allowPrivateAddresses": false      // 自建内网 SearXNG 时置 true
     }
+
+.. warning::
+   ``apiKey`` 写 ``"${BRAVE_API_KEY}"`` 是可行的，但**只有在你确实设了那个环境变量时才写**：
+   内核的 ``${ENV}`` 插值是硬失败（取不到就报 ``environment variable is not set`` 并让进程起不来），
+   不是「取不到就留空」。所以这里给的是空字符串，而不是一个看着无害的占位符。
 """
 
 import html

@@ -43,7 +43,7 @@ Node 侧零第三方依赖：网关与 worker 只用 Node 内置模块，因此*
   "plugins": {
     "configurations": {
       "jellyfish-plugin-python": {
-        "scripts": { "web": { "provider": "brave", "apiKey": "${BRAVE_API_KEY}" } }
+        "scripts": { "web": { "provider": "searxng", "endpoint": "https://searx.example.org" } }
       }
     }
   }
@@ -86,7 +86,7 @@ tool({ name: 'web_search', description: '联网搜索' }, async (params, ctx) =>
 {
   "provider": "searxng",
   "endpoint": "https://searx.example.org",
-  "apiKey": "${BRAVE_API_KEY}",
+  "apiKey": "",
   "timeoutSeconds": 15,
   "maxChars": 20000,
   "allowPrivateAddresses": false
@@ -96,7 +96,12 @@ tool({ name: 'web_search', description: '联网搜索' }, async (params, ctx) =>
 - `provider`：`searxng`（自建，端点式、无需厂商 key）或 `brave`（需要 `apiKey`）。加一个后端 =
   在 `_PROVIDERS` 里加一个函数，其它地方都不用改。
 - **密钥走配置段，不走环境变量**：脚本进程的环境是严格白名单（不携带 JVM 的密钥），
-  而配置段支持 `${ENV}` 插值——因此写 `"apiKey": "${BRAVE_API_KEY}"` 仍然不会把密钥落到文件里。
+  而配置段支持 `${ENV}` 插值——密钥因此不会落到文件里。
+
+  > ⚠️ **`${ENV}` 是硬失败，不是「取不到就留空」**：写了 `${BRAVE_API_KEY}` 而环境变量没设，
+  > 整个进程**启动即失败**（`environment variable is not set: BRAVE_API_KEY`）。
+  > 所以不用 brave 时把 `apiKey` 留成 `""`，不要写占位符——写上去就是一个定时炸弹，
+  > 别人（或换个 shell）拉不到那个变量就起不来。
 - `allowPrivateAddresses`：默认 `false`，即**拒绝内网地址**。自建在内网的 SearXNG 才需要置 `true`。
 
 **SSRF 防护是这道工具的必备件**：`web_fetch` 的输入来自模型，而模型可能被网页内容诱导去访问
