@@ -510,8 +510,9 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
 
 **脚本不是「与 Java 插件同权」**：两者在机制上同构（同样的注册、owner、回收、生命周期），
-但**扩展点覆盖的是一份「能力档」而不是全部**——已打通 11 个（工具、命令、候选查询、
-提示词 / 状态栏 / 面板贡献、权限拦截、会话持久化三段、压缩策略）。哪些待做、哪些明确不做，
+但**扩展点覆盖的是一份「能力档」而不是全部**——已打通 18 个（工具、命令、候选查询、模型目录，
+提示词 / 状态栏 / 面板贡献，权限拦截，会话持久化三段，压缩策略，工具参数改写与结果整形，
+回合上下文，会话关闭前与分支前，压缩前）。哪些待做、哪些明确不做，
 写在 `jellyfish-script/src/main/resources/script/extension-points.json`，并由单测守着：
 **内核新增扩展点而未分档，本仓库会构建失败**。明确不做的两类是「返回 Java 对象的扩展点」
 与「跑在渲染线程 / 启动期的扩展点」——脚本调用是一次可能冷启动的进程往返，那些位置付不起。
@@ -571,6 +572,14 @@ PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
 - **取消会中止在途调用**：回合的取消令牌传到桥接层后，在途脚本调用失败并隔离 worker（与超时同一条链）。
   脚本侧看不到取消标志（worker 单线程，在途调用期间读不到新帧），因此不要依赖取消做资源清理；
   取消也不计入熔断。
+- **带路由键、路由键又来自用户配置的扩展点用 `@handler` 声明**：目前只有 `model_catalog`
+  （路由键是 provider 名），SDK 侧是 `@handler("model_catalog", route="local")`（Node 是
+  `handler({type, route}, fn)`），清单里还要写一份 `"handlers": [{"type": ..., "route": ...}]`。
+  其余六个二期扩展点（`tool_argument_pre` / `tool_result_post` / `turn_context` /
+  `session_before_close` / `session_before_fork` / `compaction_pre`）走普通的 `contributes`，
+  写法见 [`examples/scripts/README.md`](examples/scripts/README.md)。
+- **输出捕获明确不做**：它解决的是无界流式输出（长命令），而脚本工具返回的是一次性的整个值；
+  内核已会把超大结果落盘并给出恢复路径，不存在内容丢失。
 - `scriptsRoot` 相对**进程工作目录**解析，其下每个含 `manifest.json` 的子目录是一个脚本插件；目录不存在等于「还没建脚本」（正常的冷启动状态）。
 - `invokeTimeoutSeconds` 是单次调用超时，写 `0` 表示**没有截止时间**（不是「立刻超时」）；超时会隔离该脚本的 worker，并把这次失败计入熔断。
 - `workerIdleSeconds` / `gatewayIdleSeconds` 分别为 worker 与网关的空闲自毁秒数（写 `0` 关闭），空闲回零是「懒启动」的配套。

@@ -144,6 +144,52 @@ def web_fetch(args, ctx):
   需要收尾就用 `finally`（同进程内）或幂等的重试。
 - 取消**不计入熔断**：它是用户主权，不是脚本的毛病。
 
+## 更多可声明的扩展点
+
+除 `prompt` / `status_line` / `panel` / `permission` / `session_persist` / `session_restore` /
+`session_delete` / `compaction` 之外，还有六个类型级贡献：
+
+| 贡献类型 | 它回答什么 | 返回值写法 |
+| --- | --- | --- |
+| `tool_argument_pre` | 工具参数要不要改写（在权限判定**之前**） | `None` 不改、`{"arguments": {...}}` 替换、原因字符串或 `True` 拒绝 |
+| `tool_result_post` | 工具结果要不要整形（在截断与落盘**之前**） | `None` 不改、`{"output": ..., "metadata": {...}}` 只改给出的那一项 |
+| `turn_context` | 本轮要随用户消息一起送达的即时状态 | 一段文本（或 `{"text": ...}`） |
+| `session_before_close` | 会话关闭前能不能关 | `None` 放行、`True` 或原因字符串拦下 |
+| `session_before_fork` | 会话分支前能不能分 | 同上 |
+| `compaction_pre` | 这次压缩要不要做、保留多少条 | `None` 放行、`{"cancel": true, "reason": ...}` 或 `{"keepRecent": n}` |
+
+```python
+@contributes("turn_context")
+def turn_context(ctx):
+    # 只声明用得上的槽位：会话内会变的状态走这里，而不是提示词贡献
+    return "现在：%s" % now()
+
+@contributes("tool_result_post")
+def tool_result_post(tool_name, output, ctx):
+    # 必须排在截断与落盘之前：事后改文本会与 _path 里的内容永久分叉
+    return {"output": redact(output), "metadata": {"summary": "已脱敏"}}
+```
+
+**带路由键的扩展点用 `@handler` 声明**（Python 与 Node 各叫 `handler`）：路由键来自**用户配置**
+（目前只有 `model_catalog`，路由键是 provider 名），脚本无法从自己的声明里推出来，因此必须写出来，
+并且**要在清单里重复一份**：
+
+```python
+@handler("model_catalog", route="local")
+def local_catalog(provider_name, provider_type, ctx):
+    return [{"id": "qwen2.5", "contextLength": 32768}]
+```
+
+```json
+{
+  "entry": "main.py",
+  "handlers": [{ "type": "model_catalog", "route": "local" }]
+}
+```
+
+- **空模型列表是「我不表态」**，回落成配置里 `models` 写的那份，而不是「这个 provider 没有模型」。
+- 路由名写错一样会在启动时被清单一致性校验拦下（比对的是 `type::route`）。
+
 ## 跑起来
 
 每个示例目录就是一个脚本插件，目录名就是脚本标识：
