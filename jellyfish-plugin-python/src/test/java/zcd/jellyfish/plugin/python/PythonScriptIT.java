@@ -25,6 +25,7 @@ import zcd.jellyfish.infra.plugin.PluginRuntimeConfig;
 import zcd.jellyfish.infra.plugin.RuntimeInfoHolder;
 import zcd.jellyfish.infra.session.SessionManager;
 import zcd.jellyfish.script.ScriptBridgeConfig;
+import zcd.jellyfish.script.protocol.ScriptCancelledException;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -36,9 +37,11 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -167,6 +170,57 @@ class PythonScriptIT {
                 () -> invokeTool("jira_issue", Collections.<String, Object>emptyMap()));
 
         assertTrue(failure.getMessage().contains("缺少参数 key"), failure.getMessage());
+    }
+
+    @Test
+    @DisplayName("取消令牌触发时，在途脚本调用应立即失败，而不是等满超时")
+    void cancellation_should_abortInflightCall() throws Exception {
+        writeScript("jira", TOOL_SCRIPT, FULL_MANIFEST);
+        // 超时给足：失败必须来自取消，而不是超时
+        startRuntime(60);
+        // 先把网关拉起来（懒启动），否则取消回调会在冷启动窗口里的另一条路径上
+        invokeTool("jira_issue", Collections.<String, Object>singletonMap("key", "PROJ-1"));
+
+        AtomicReference<Runnable> canceller = new AtomicReference<Runnable>();
+        CancellationToken token = new CancellationToken() {
+            @Override
+            public boolean isCancelled() {
+                return false;
+            }
+
+            @Override
+            public void onCancel(Runnable callback) {
+                canceller.set(callback);
+            }
+        };
+        ToolCallRequest request = new ToolCallRequest("jira_hang", Collections.<String, Object>emptyMap(),
+                "s-1", token, ToolOutputSink.NOOP, null, null, null);
+
+        AtomicReference<Throwable> failure = new AtomicReference<Throwable>();
+        long started = System.currentTimeMillis();
+        Thread call = new Thread(() -> {
+            try {
+                extensions.invoke(extensions.handler(ToolCallRequest.class, "jira_hang"), request);
+            } catch (Throwable error) {
+                failure.set(error);
+            }
+        }, "cancel-it-call");
+        call.start();
+
+        long deadline = System.currentTimeMillis() + 10_000L;
+        while (canceller.get() == null && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50L);
+        }
+        assertNotNull(canceller.get(), "取消回调未被注册，说明令牌没被传到网关");
+        canceller.get().run();
+        call.join(15_000L);
+        long elapsed = System.currentTimeMillis() - started;
+
+        assertNotNull(failure.get(), "取消后调用仍未返回");
+        assertTrue(failure.get() instanceof ScriptCancelledException
+                        || String.valueOf(failure.get().getMessage()).contains("已取消"),
+                String.valueOf(failure.get()));
+        assertTrue(elapsed < 20_000L, "取消后耗时过长: " + elapsed + "ms");
     }
 
     @Test

@@ -203,7 +203,7 @@ public final class ScriptRegistrar {
      */
     private <C extends ExtensionRequest<R>, R> ExtensionHandler<C, R> handlerFor(
             ExtensionCodec<C, R> codec, ScriptPlugin plugin) {
-        return codec.handlerTo((typeName, request) -> caller.call(plugin, typeName, request));
+        return codec.handlerTo((typeName, request, token) -> caller.call(plugin, typeName, request, token));
     }
 
     /**

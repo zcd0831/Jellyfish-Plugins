@@ -1,6 +1,7 @@
 package zcd.jellyfish.script.codec;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import zcd.jellyfish.api.extension.CancellationToken;
 import zcd.jellyfish.api.extension.ExtensionHandler;
 import zcd.jellyfish.api.extension.ExtensionRequest;
 import zcd.jellyfish.script.ScriptInvoker;
@@ -81,11 +82,17 @@ public interface ExtensionCodec<C extends ExtensionRequest<R>, R> {
      * 把编解码器与调用通道拼成内核认得的处理器。
      * <p>
      * 顺序有意固定为「先编码、再调用、后解码」：编码失败就不该发起一次无意义的进程往返。
+     * <p>
+     * <b>取消令牌默认是 {@link CancellationToken#NONE}</b>：只有工具调用带令牌，
+     * 而它是唯一一个需要它语义的扩展点。 {@link ToolCodec} 覆盖本方法把真实令牌传下去，
+     * 其余扩展点因此不必在签名里多一个永远为空的参数。
      *
      * @param invoker 调用通道，不可为 {@code null}
      * @return 处理器
      */
     default ExtensionHandler<C, R> handlerTo(ScriptInvoker invoker) {
-        return request -> decodeResult(invoker.invoke(typeName(), encodeRequest(request)), request.getRouteKey());
+        return request -> decodeResult(
+                invoker.invoke(typeName(), encodeRequest(request), CancellationToken.NONE),
+                request.getRouteKey());
     }
 }

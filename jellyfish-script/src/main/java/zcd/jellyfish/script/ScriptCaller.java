@@ -1,6 +1,7 @@
 package zcd.jellyfish.script;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import zcd.jellyfish.api.extension.CancellationToken;
 
 /**
  * 脚本调用入口：把一个扩展点调用送到脚本进程并取回结果。
@@ -30,4 +31,23 @@ public interface ScriptCaller {
      * @throws zcd.jellyfish.api.JellyfishException 调用失败时抛出
      */
     JsonNode call(ScriptPlugin plugin, String typeName, JsonNode request);
+
+    /**
+     * 调用一次脚本扩展点，并在调用期间遵守取消令牌。
+     * <p>
+     * <b>默认实现忽略令牌</b>：只有工具调用会传真实令牌（见 {@code ToolCodec}），
+     * 其余扩展点一律传 {@link CancellationToken#NONE}。默认实现让「不关心取消的实现」
+     * （测试桩、旧装饰器）不必多写一个方法，而关心它的实现（网关与熔断装饰器）
+     * 会在自己的那一层把它接下去。
+     *
+     * @param plugin    目标脚本，不可为 {@code null}
+     * @param typeName  扩展点类型名（由 codec 给出），不可为空白
+     * @param request   请求载荷，可为 {@code null}
+     * @param token     调用级取消令牌，不可为 {@code null}
+     * @return 结果载荷；脚本没有结果载荷时为 {@code null}
+     * @throws zcd.jellyfish.api.JellyfishException 调用失败时抛出
+     */
+    default JsonNode call(ScriptPlugin plugin, String typeName, JsonNode request, CancellationToken token) {
+        return call(plugin, typeName, request);
+    }
 }

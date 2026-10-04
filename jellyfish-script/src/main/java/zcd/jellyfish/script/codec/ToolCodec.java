@@ -1,8 +1,11 @@
 package zcd.jellyfish.script.codec;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import zcd.jellyfish.api.extension.CancellationToken;
+import zcd.jellyfish.api.extension.ExtensionHandler;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
+import zcd.jellyfish.script.ScriptInvoker;
 import zcd.jellyfish.script.ScriptJson;
 
 import java.util.LinkedHashMap;
@@ -61,6 +64,24 @@ public final class ToolCodec implements ExtensionCodec<ToolCallRequest, ToolCall
     public boolean isTypeLevel() {
         // 工具名即路由键，同键唯一：内核用 handler(ToolCallRequest.class, 工具名) 查
         return false;
+    }
+
+    /**
+     * 覆盖默认实现：把 {@link ToolCallRequest#getCancellationToken()} 交给运行时。
+     * <p>
+     * <b>为什么要专门为工具覆盖</b>：取消令牌是唯一一个「只在工具调用上有」的调用期设施
+     * （见 {@code ToolCallRequest}），而默认实现只传 {@link CancellationToken#NONE}。
+     * 不让其余 codec 在签名里背一个永远为空的参数，也不让 {@code ScriptInvoker} 知道
+     * {@code ToolCallRequest} 这个具体类型——两者之间只需要一个令牌这个最小共识。
+     *
+     * @param invoker 调用通道，不可为 {@code null}
+     * @return 处理器
+     */
+    @Override
+    public ExtensionHandler<ToolCallRequest, ToolCallResult> handlerTo(ScriptInvoker invoker) {
+        return request -> decodeResult(
+                invoker.invoke(typeName(), encodeRequest(request), request.getCancellationToken()),
+                request.getRouteKey());
     }
 
     @Override

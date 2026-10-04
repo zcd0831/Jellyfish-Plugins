@@ -4,7 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.extension.CancellationToken;
 import zcd.jellyfish.script.protocol.ScriptCallException;
+import zcd.jellyfish.script.protocol.ScriptCancelledException;
 import zcd.jellyfish.script.protocol.ScriptConnectionException;
 import zcd.jellyfish.script.protocol.ScriptProtocol;
 import zcd.jellyfish.script.protocol.ScriptTimeoutException;
@@ -13,8 +15,10 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -128,6 +132,55 @@ class CircuitBreakingScriptCallerTest {
         assertThrows(JellyfishException.class, () -> caller.call(JIRA, "tool", null));
 
         assertEquals(ScriptCircuitBreaker.State.OPEN, caller.stateOf("jira"));
+    }
+
+    @Test
+    @DisplayName("取消不计入熔断：按几次 Esc 不该把一个脚本熔断掉")
+    void call_should_notCountCancellation() {
+        CircuitBreakingScriptCaller caller = caller((plugin, type, request) -> {
+            throw new ScriptCancelledException("用户取消了");
+        }, 1, 60, 3, null);
+
+        for (int i = 0; i < 3; i++) {
+            assertThrows(ScriptCancelledException.class, () -> caller.call(JIRA, "tool", null));
+        }
+
+        assertEquals(ScriptCircuitBreaker.State.CLOSED, caller.stateOf("jira"));
+    }
+
+    @Test
+    @DisplayName("令牌应原样接下去传给被装饰的调用入口")
+    void call_should_forwardToken_toDelegate() {
+        AtomicReference<CancellationToken> seen = new AtomicReference<CancellationToken>();
+        ScriptCaller delegate = new ScriptCaller() {
+            @Override
+            public JsonNode call(ScriptPlugin plugin, String typeName, JsonNode request) {
+                return ScriptJson.tree("{\"output\":\"ok\"}");
+            }
+
+            @Override
+            public JsonNode call(ScriptPlugin plugin, String typeName, JsonNode request,
+                                 CancellationToken token) {
+                seen.set(token);
+                return ScriptJson.tree("{\"output\":\"ok\"}");
+            }
+        };
+        CircuitBreakingScriptCaller caller = caller(delegate, 1, 60, 3, null);
+        CancellationToken token = new CancellationToken() {
+            @Override
+            public boolean isCancelled() {
+                return false;
+            }
+
+            @Override
+            public void onCancel(Runnable callback) {
+                // 本用例只验证传没传到，不触发取消
+            }
+        };
+
+        caller.call(JIRA, "tool", null, token);
+
+        assertSame(token, seen.get());
     }
 
     @Test

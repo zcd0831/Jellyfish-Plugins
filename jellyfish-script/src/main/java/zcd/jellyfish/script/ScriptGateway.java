@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.extension.CancellationToken;
+import zcd.jellyfish.script.protocol.ScriptCancelledException;
 import zcd.jellyfish.script.protocol.ScriptConnectionException;
 import zcd.jellyfish.script.protocol.ScriptProtocol;
 import zcd.jellyfish.script.protocol.ScriptRpc;
@@ -19,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 脚本运行时：懒启动网关进程、把扩展点调用送进去、失败时给出可归因的异常。
@@ -180,15 +183,43 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
 
     @Override
     public JsonNode call(ScriptPlugin plugin, String typeName, JsonNode request) {
+        return call(plugin, typeName, request, CancellationToken.NONE);
+    }
+
+    @Override
+    public JsonNode call(ScriptPlugin plugin, String typeName, JsonNode request, CancellationToken token) {
+        if (token.isCancelled()) {
+            // 已经取消就不该再起一次进程往返
+            throw new ScriptCancelledException("脚本调用已被取消: " + typeName);
+        }
         ScriptRpc current = ensureStarted();
         Map<String, Object> params = new LinkedHashMap<String, Object>();
         params.put(ScriptProtocol.PARAM_SCRIPT, plugin.id());
         params.put(ScriptProtocol.PARAM_TYPE, typeName);
         params.put(ScriptProtocol.PARAM_REQUEST, request);
+
+        // 取消回调可能在渲染线程上执行（TUI 的 Esc 路径），因此它只做两件非阻塞的事：
+        // 翻标志 + 起一条短命守护线程去杀 worker。杀 worker 是一次阻塞 RPC，绝不能放在回调里
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        AtomicBoolean active = new AtomicBoolean(true);
+        token.onCancel(() -> {
+            // 令牌是回合级的，而本方法只属于其中一次调用：回调晚到时不能杀掉别的调用正在用的 worker
+            if (!active.get()) {
+                return;
+            }
+            cancelled.set(true);
+            Thread killer = new Thread(() -> killWorker(plugin.id(), "调用被取消（" + typeName + "）"),
+                    "jellyfish-" + language.id() + "-cancel-" + plugin.id());
+            killer.setDaemon(true);
+            killer.start();
+        });
         try {
             return current.call(ScriptProtocol.METHOD_INVOKE, ScriptJson.treeOf(params),
                     settings.invokeTimeoutMillis());
         } catch (ScriptTimeoutException e) {
+            if (cancelled.get()) {
+                throw new ScriptCancelledException("脚本调用已被取消: " + typeName, e);
+            }
             // 超时处置链：宿主只发指令，**杀的动作由网关做**——回收与 PID 表都在有父子关系的一侧，
             // 宿主根本不需要知道 worker 的存在。这一步不能省：脚本卡住时连接看起来完全正常，
             // 只有把 worker 连同它挂死的那个线程一起丢掉，下一次调用才可能成功。
@@ -199,6 +230,15 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
                     "脚本调用超时（已等待 " + e.waitedMillis() + " ms）"
                             + (killed ? "，已隔离该脚本的 worker" : "，但隔离请求未能送达")
                             + ": " + typeName, e.waitedMillis());
+        } catch (JellyfishException e) {
+            // 杀 worker 会让在途请求以「脚本已被隔离」的失败回报，那不是脚本的错，也不该被模型
+            // 读成「脚本坏了」。按取消重新归类，并带上原始原因供日志追溯
+            if (cancelled.get()) {
+                throw new ScriptCancelledException("脚本调用已被取消: " + typeName, e);
+            }
+            throw e;
+        } finally {
+            active.set(false);
         }
     }
 

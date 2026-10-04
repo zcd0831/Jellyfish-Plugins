@@ -2,7 +2,9 @@ package zcd.jellyfish.script;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.extension.CancellationToken;
 import zcd.jellyfish.script.protocol.ScriptCallException;
+import zcd.jellyfish.script.protocol.ScriptCancelledException;
 import zcd.jellyfish.script.protocol.ScriptConnectionException;
 import zcd.jellyfish.script.protocol.ScriptProtocol;
 
@@ -80,13 +82,18 @@ public final class CircuitBreakingScriptCaller implements ScriptCaller {
 
     @Override
     public JsonNode call(ScriptPlugin plugin, String typeName, JsonNode request) {
+        return call(plugin, typeName, request, CancellationToken.NONE);
+    }
+
+    @Override
+    public JsonNode call(ScriptPlugin plugin, String typeName, JsonNode request, CancellationToken token) {
         ScriptCircuitBreaker breaker = breakerOf(plugin.id());
         if (!breaker.admit()) {
             // 拒绝而不是派发：熔断的全部意义就在于「别再往一个已知有问题的脚本上打」
             throw new ScriptCallException(ScriptProtocol.CODE_CIRCUIT_OPEN, refusalMessage(breaker));
         }
         try {
-            JsonNode result = delegate.call(plugin, typeName, request);
+            JsonNode result = delegate.call(plugin, typeName, request, token);
             breaker.recordSuccess();
             return result;
         } catch (JellyfishException e) {
@@ -134,6 +141,11 @@ public final class CircuitBreakingScriptCaller implements ScriptCaller {
      */
     private static boolean countsAsFailure(JellyfishException failure) {
         if (failure instanceof ScriptConnectionException) {
+            return false;
+        }
+        if (failure instanceof ScriptCancelledException) {
+            // 取消是用户主权，不是脚本的毛病：把它计进去，就会出现「用户按了几次 Esc，
+            // 某个脚本就被熔断冷却」这种荒谬结果
             return false;
         }
         if (failure instanceof ScriptCallException) {
