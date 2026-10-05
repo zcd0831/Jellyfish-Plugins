@@ -130,6 +130,13 @@ function normalize(manifest) {
         .map((item) => item.name).sort();
     normalized.contributions = (source.contributions || []).slice().sort();
     normalized.events = (source.events || []).slice().sort();
+    // 周期任务连间隔一起比：漏掉间隔的表现是「任务在跑、只是节奏不对」，它不报任何错
+    normalized.schedules = (source.schedules || [])
+        .map((item) => ({
+            name: item.name,
+            intervalSeconds: item.intervalSeconds === undefined ? null : item.intervalSeconds,
+        }))
+        .sort((left, right) => (left.name < right.name ? -1 : (left.name > right.name ? 1 : 0)));
     return normalized;
 }
 

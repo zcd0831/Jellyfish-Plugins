@@ -219,6 +219,47 @@ class ScriptManifestTest {
         assertTrue(manifest.events().isEmpty());
     }
 
+    @Test
+    @DisplayName("周期任务应解析出任务名与间隔，缺省间隔按声明值兜底")
+    void parse_should_readSchedules_when_declared() {
+        ScriptManifest manifest = parse("{\"entry\":\"main.py\",\"schedules\":["
+                + "{\"name\":\"refresh\",\"intervalSeconds\":60},{\"name\":\"sweep\"}]}");
+
+        assertEquals(2, manifest.schedules().size());
+        assertEquals("refresh", manifest.schedules().get(0).name());
+        assertEquals(60, manifest.schedules().get(0).intervalSeconds());
+        // 没写间隔：取缺省值，而不是 0 或报错
+        assertEquals("sweep", manifest.schedules().get(1).name());
+        assertEquals(ScriptManifest.DEFAULT_INTERVAL_SECONDS, manifest.schedules().get(1).intervalSeconds());
+        assertEquals(5, ScriptManifest.DEFAULT_INTERVAL_SECONDS);
+    }
+
+    @Test
+    @DisplayName("周期任务的间隔越界、类型不对或名字重复都必须报错")
+    void parse_should_rejectInvalidSchedules_when_anyRuleIsBroken() {
+        // 低于下限：报错而不是静默抬高——静默抬高会让作者以为写生效了
+        JellyfishException zero = assertThrows(JellyfishException.class, () -> parse(
+                "{\"entry\":\"main.py\",\"schedules\":[{\"name\":\"r\",\"intervalSeconds\":0}]}"));
+        assertTrue(zero.getMessage().contains("1"), zero.getMessage());
+        // 小数：只认整数秒
+        assertThrows(JellyfishException.class, () -> parse(
+                "{\"entry\":\"main.py\",\"schedules\":[{\"name\":\"r\",\"intervalSeconds\":1.5}]}"));
+        // 字符串：同样拒绝
+        assertThrows(JellyfishException.class, () -> parse(
+                "{\"entry\":\"main.py\",\"schedules\":[{\"name\":\"r\",\"intervalSeconds\":\"60\"}]}"));
+        // 缺名字
+        assertThrows(JellyfishException.class,
+                () -> parse("{\"entry\":\"main.py\",\"schedules\":[{\"intervalSeconds\":60}]}"));
+        // 重名
+        JellyfishException dup = assertThrows(JellyfishException.class, () -> parse(
+                "{\"entry\":\"main.py\",\"schedules\":[{\"name\":\"r\"},{\"name\":\"r\"}]}"));
+        assertTrue(dup.getMessage().contains("schedules[1]"), dup.getMessage());
+        // 未知键（写成 interval 而不是 intervalSeconds）
+        JellyfishException unknown = assertThrows(JellyfishException.class, () -> parse(
+                "{\"entry\":\"main.py\",\"schedules\":[{\"name\":\"r\",\"interval\":60}]}"));
+        assertTrue(unknown.getMessage().contains("intervalSeconds"), unknown.getMessage());
+    }
+
     /**
      * 解析清单正文。
      *

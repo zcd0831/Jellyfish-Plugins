@@ -47,6 +47,7 @@ import zcd.jellyfish.infra.plugin.PluginRuntimeConfig;
 import zcd.jellyfish.infra.plugin.RuntimeInfoHolder;
 import zcd.jellyfish.infra.session.SessionManager;
 import zcd.jellyfish.script.ScriptBridgeConfig;
+import zcd.jellyfish.script.ScriptScheduler;
 import zcd.jellyfish.script.protocol.ScriptCancelledException;
 
 import java.io.IOException;
@@ -473,6 +474,52 @@ class PythonScriptIT {
         assertTrue(result.getOutput().contains("运行时"), result.getOutput());
     }
 
+
+    @Test
+    @DisplayName("周期任务应按间隔反复触发，并在每次成功后由桥接层代发界面失效")
+    void periodic_should_fireRepeatedly_and_invalidateUi() throws IOException {
+        writeScript("beat", PERIODIC_SCRIPT, PERIODIC_MANIFEST);
+        java.util.List<zcd.jellyfish.api.event.notification.UiInvalidatedEvent> invalidated =
+                Collections.synchronizedList(new java.util.ArrayList<>());
+        events.subscribe("it-periodic", zcd.jellyfish.api.event.notification.UiInvalidatedEvent.class,
+                invalidated::add);
+
+        startRuntime();
+
+        // 两次以上才算「反复」：只跳一次无法区分「周期任务」与「启动时打了一发」
+        assertTrue(awaitEventLog("beat", "tick:1") && awaitEventLog("beat", "tick:2"),
+                "周期任务没有按间隔反复触发，实际记录: " + readEventLog("beat"));
+
+        long deadline = System.currentTimeMillis() + 10_000L;
+        while (invalidated.isEmpty() && System.currentTimeMillis() < deadline) {
+            sleepQuietly(100L);
+        }
+        // 脚本发不了这个事件（可发布事件白名单里没有它），因此它必须来自桥接层的代发。
+        // 这是「定时刷到的新数据能画上屏」的全部通路，缺了它面板永远不会自己重画
+        assertFalse(invalidated.isEmpty(), "周期任务成功后应代发一次界面失效事件");
+    }
+
+    @Test
+    @DisplayName("周期任务的间隔可被 scripts.<id>.schedules.<name>.intervalSeconds 覆写")
+    void periodic_should_honourIntervalOverride_fromScriptConfiguration() throws IOException {
+        // 清单里声明 60 秒（用例窗口内绝不可能触发），配置段覆写成 1 秒：
+        // 只有覆写真的生效，这个用例才会观察到跳动
+        writeScript("beat", PERIODIC_SCRIPT, PERIODIC_MANIFEST_SLOW);
+        Map<String, Object> schedules = new LinkedHashMap<String, Object>();
+        Map<String, Object> entry = new LinkedHashMap<String, Object>();
+        entry.put(ScriptScheduler.KEY_INTERVAL, Integer.valueOf(1));
+        schedules.put("beat", entry);
+        Map<String, Object> beatConfig = new LinkedHashMap<String, Object>();
+        beatConfig.put(ScriptScheduler.KEY_SCHEDULES, schedules);
+        Map<String, Map<String, Object>> scriptConfigs =
+                new LinkedHashMap<String, Map<String, Object>>();
+        scriptConfigs.put("beat", beatConfig);
+
+        startRuntime(5, scriptConfigs);
+
+        assertTrue(awaitEventLog("beat", "tick:1"),
+                "覆写的间隔没有生效（清单里是 60 秒，实际记录: " + readEventLog("beat") + "）");
+    }
 
     @Test
     @DisplayName("空闲的 worker 应自行退场，进程数回到只剩网关")
@@ -1684,6 +1731,65 @@ class PythonScriptIT {
     private static final String EVENT_MANIFEST = "{\"entry\":\"main.py\","
             + "\"tools\":[{\"name\":\"publish\"},{\"name\":\"publish_forbidden\"}],"
             + "\"events\":[\"ConfigWarningEvent\",\"PluginNotificationEvent\"]}";
+
+    /**
+     * 周期任务脚本：每次触发往文件里追加一行，另有一个工具读出已触发次数。
+     * <p>
+     * <b>为什么记到文件而不是返回给宿主</b>：周期任务**没有任何调用方**——它的返回值被丢弃
+     * （宿主只为它代发一次界面失效）。因此从外部唯一能观察它的地方就是它自己留下的痕迹。
+     * <p>
+     * 顺带断言了一件容易漏的事：周期任务调用发生在**没有会话**的上下文里，
+     * 所以脚本读到 ``ctx.session_id`` 必须是 ``None``。把它一起写进记录，
+     * 「宿主误把某个会话传下去」就会当场暴露。
+     */
+    private static final String PERIODIC_SCRIPT = ""
+            + "import os\n"
+            + "from jellyfish_sdk import periodic, tool\n"
+            + "\n"
+            + "LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"events.log\")\n"
+            + "COUNT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"count.txt\")\n"
+            + "\n"
+            + "\n"
+            + "def _bump():\n"
+            + "    current = 0\n"
+            + "    if os.path.exists(COUNT):\n"
+            + "        with open(COUNT) as handle:\n"
+            + "            current = int(handle.read().strip() or \"0\")\n"
+            + "    current += 1\n"
+            + "    with open(COUNT, \"w\") as handle:\n"
+            + "        handle.write(str(current))\n"
+            + "    return current\n"
+            + "\n"
+            + "\n"
+            + "@periodic(name=\"beat\", interval_seconds=1)\n"
+            + "def beat(ctx):\n"
+            + "    with open(LOG, \"a\") as handle:\n"
+            + "        handle.write(\"tick:%d:session=%s\\n\" % (_bump(), ctx.session_id))\n"
+            + "\n"
+            + "\n"
+            + "@tool(name=\"beat_count\", description=\"读出周期任务已触发的次数\")\n"
+            + "def beat_count(args, ctx):\n"
+            + "    if not os.path.exists(COUNT):\n"
+            + "        return \"0\"\n"
+            + "    with open(COUNT) as handle:\n"
+            + "        return handle.read().strip()\n";
+
+    /**
+     * 与 {@link #PERIODIC_SCRIPT} 逐字对应的清单（间隔 1 秒，用例窗口内够跳两次）。
+     */
+    private static final String PERIODIC_MANIFEST = "{\"entry\":\"main.py\","
+            + "\"tools\":[{\"name\":\"beat_count\"}],"
+            + "\"schedules\":[{\"name\":\"beat\",\"intervalSeconds\":1}]}";
+
+    /**
+     * 同上一份，但间隔声明成 60 秒——供「配置段覆写间隔」的用例使用。
+     * <p>
+     * <b>为什么要这一份</b>：覆写是否生效，只能靠「不该触发的却触发了」来证明。
+     * 声明 60 秒而配置写成 1 秒，用例窗口内出现跳动就只可能来自覆写。
+     */
+    private static final String PERIODIC_MANIFEST_SLOW = "{\"entry\":\"main.py\","
+            + "\"tools\":[{\"name\":\"beat_count\"}],"
+            + "\"schedules\":[{\"name\":\"beat\",\"intervalSeconds\":60}]}";
 
     /**
      * 夹具脚本：声明了 ``has_options=True``，但函数只收 ``ctx``——

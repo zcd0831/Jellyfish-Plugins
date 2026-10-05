@@ -9,7 +9,7 @@
 | `hello/` | 最小可用：一个只读工具 + 一个可写工具 + 一条命令（带别名与候选）+ 两种贡献（`prompt` / `status_line`）+ 订阅一个事件 |
 | `jira/` | 更接近真实插件：多个工具（只读与可写分开声明）、带别名/用法的命令、候选查询写在单独的函数里、`prompt` + `panel` 贡献、**订阅并发布**事件 |
 | `web/`（仅 Python） | **真实形态**：联网搜索与网页抓取，零第三方依赖，有自己的配置段、外部 HTTP 调用、SSRF 防护与 `ToolResult` 摘要 |
-| `stock/` + `stockpanel/`（仅 Python） | **真实形态**：A 股行情与自选股。一个脚本取数（自带 akshare 依赖、三条口径互相兜底、akshare 懒加载），另一个脚本只读缓存画侧栏面板——演示「有网络依赖的取数」与「渲染线程上的快面板」为什么必须分成两个进程 |
+| `stock/` + `stockpanel/`（仅 Python） | **真实形态**：A 股行情与自选股。一个脚本取数（自带 akshare 依赖、三条口径互相兜底、akshare 懒加载），另一个脚本只读缓存画侧栏面板——演示「有网络依赖的取数」与「渲染线程上的快面板」为什么必须分成两个进程，以及**周期任务**（每 60 秒抓一次，让面板自己更新） |
 
 `jira` 是**内存里的假工单系统**（没有任何网络调用，重启 worker 就忘光）。真实的插件会把 HTTP
 调用放在这里，而那正是脚本进程隔离的价值所在：依赖装在脚本自己的环境里，崩了也只波及它自己。
@@ -39,6 +39,7 @@
 | 缺省描述 | 取函数文档字符串第一行 | 必须显式写 `description`（JS 拿不到注释） |
 | 缺省解释器 | `python3`（配置键 `pythonPath`） | `node`（配置键 `nodePath`） |
 | 清单生成器 | `dump_manifest.py` | `dump_manifest.js` |
+| 周期任务 | `@periodic(name, interval_seconds=...)` | `periodic({name, intervalSeconds}, fn)` |
 | 模块格式 | — | CommonJS（入口与 SDK 都用 `require`，ESM 不在当前范围内） |
 
 Node 侧零第三方依赖：网关与 worker 只用 Node 内置模块，因此**不需要 `npm install`**；
@@ -235,6 +236,47 @@ def web_fetch(args, ctx):
 - 因此**不要依赖取消来做资源清理**：写到一半的文件、开到一半的连接都会随进程一起消失。
   需要收尾就用 `finally`（同进程内）或幂等的重试。
 - 取消**不计入熔断**：它是用户主权，不是脚本的毛病。
+
+## 周期任务：`@periodic` / `periodic`
+
+脚本**没有自己的主循环**（worker 只在被调用时活着，空闲还会自毁），因此「到点做一件事」这个
+发起方只能落在桥接层：清单里声明一条 `schedules`，桥接插件（`jellyfish-script` 的 `ScriptScheduler`）
+就按它的间隔以 `periodic` 类型调用脚本里同名的处理函数。
+
+```python
+# manifest.json: "schedules": [ { "name": "refresh", "intervalSeconds": 60 } ]
+@periodic(name="refresh", interval_seconds=60)
+def refresh_watch(ctx):
+    reload_cache()          # 返回值被忽略
+
+@periodic(name="sweep")     # 不写间隔 → 缺省 5 秒
+def sweep(ctx):
+    ...
+```
+
+```javascript
+// manifest: "schedules": [ { "name": "refresh", "intervalSeconds": 60 } ]
+const refresh = periodic({ name: 'refresh', intervalSeconds: 60 }, (params, ctx) => {
+    reloadCache();          // 返回值被忽略
+});
+```
+
+| | Python | Node |
+| --- | --- | --- |
+| 声明 | `@periodic(name, interval_seconds=...)` | `periodic({name, intervalSeconds}, fn)` |
+| 处理函数签名 | `def f(ctx)` | `(params, ctx)` |
+| 清单键 | `"schedules": [{"name": ..., "intervalSeconds": ...}]`（同一份形状） | 同左 |
+
+- **成功之后由桥接层代发一次界面失效事件**：脚本的可发布事件白名单里没有
+  `UiInvalidatedEvent`（只有 `PluginNotificationEvent` / `ConfigWarningEvent`），而周期任务的语义
+  就是「我后台更新了自己贡献的内容」。没有这一步，定时抓到的新数据只会写进文件，
+  屏上的面板永远不会自己重画。
+- **间隔语义是「上一次跑完 + 间隔」**，因此不会重入；`intervalSeconds` 缺省 5、下限 1，
+  可被 `scripts.<脚本 id>.schedules.<任务名>.intervalSeconds` 覆写（越界回落声明值并告警）。
+- **失败只记一条日志、任务照常继续**，但**不**发失效事件——数据没变，重画面板只是白跑。
+  因此任务体该做的容错要自己做（例如外网请求失败时别抛，或者接受它会被记一条日志）。
+- **代价**：定时调用让该脚本的 worker 不再空闲自毁（默认空闲 300 秒回收）。
+- 现成的例子见 `stock/`：每 60 秒抓一次自选股行情，让侧栏面板不需要手敲命令也能更新。
 
 ## 更多可声明的扩展点
 

@@ -49,7 +49,16 @@ public final class ScriptManifest {
 
     /** 顶层允许的键。 */
     private static final Set<String> TOP_KEYS = keys("id", "entry", "tools", "commands", "commandOptions",
-            "contributions", "events", "handlers");
+            "contributions", "events", "handlers", "schedules");
+
+    /** 周期任务条目允许的键。 */
+    private static final Set<String> SCHEDULE_KEYS = keys("name", "intervalSeconds");
+
+    /** 周期任务的缺省间隔（秒）：声明里不写 {@code intervalSeconds} 时用它。 */
+    public static final int DEFAULT_INTERVAL_SECONDS = 5;
+
+    /** 周期任务的间隔下限（秒）：与外壳的显示粒度一致，再快只是重复问同一个数字。 */
+    public static final int MIN_INTERVAL_SECONDS = 1;
 
     /** 工具允许的键。 */
     private static final Set<String> TOOL_KEYS = keys("name", "description", "parameters", "required");
@@ -98,6 +107,9 @@ public final class ScriptManifest {
     /** 想订阅的事件名。 */
     private final Set<String> events;
 
+    /** 周期任务声明。 */
+    private final List<Schedule> schedules;
+
     /**
      * 构造清单。
      *
@@ -109,10 +121,11 @@ public final class ScriptManifest {
      * @param contributions  类型级扩展点贡献声明
      * @param events         想订阅的事件名
      * @param handlers       带路由键的处理器声明
+     * @param schedules      周期任务声明
      */
     private ScriptManifest(String id, String entry, List<Tool> tools, List<Command> commands,
                            Set<String> commandOptions, Set<String> contributions, Set<String> events,
-                           List<Handler> handlers) {
+                           List<Handler> handlers, List<Schedule> schedules) {
         this.id = id;
         this.entry = entry;
         this.tools = Collections.unmodifiableList(tools);
@@ -121,6 +134,7 @@ public final class ScriptManifest {
         this.contributions = Collections.unmodifiableSet(contributions);
         this.events = Collections.unmodifiableSet(events);
         this.handlers = Collections.unmodifiableList(handlers);
+        this.schedules = Collections.unmodifiableList(schedules);
     }
 
     /**
@@ -144,7 +158,8 @@ public final class ScriptManifest {
         List<Command> commands = parseCommands(root.get("commands"));
         return new ScriptManifest(id, entry, tools, commands,
                 parseCommandOptions(root.get("commandOptions"), commands), parseContributions(root, codecs),
-                parseEvents(root.get("events")), parseHandlers(root.get("handlers"), codecs));
+                parseEvents(root.get("events")), parseHandlers(root.get("handlers"), codecs),
+                parseSchedules(root.get("schedules")));
     }
 
     /**
@@ -219,10 +234,19 @@ public final class ScriptManifest {
         return handlers;
     }
 
+    /**
+     * 获取周期任务声明。
+     *
+     * @return 不可变列表，保证非 {@code null}
+     */
+    public List<Schedule> schedules() {
+        return schedules;
+    }
+
     @Override
     public String toString() {
         return "ScriptManifest{id=" + id + ", tools=" + tools.size() + ", commands=" + commands.size()
-                + ", handlers=" + handlers.size() + '}';
+                + ", handlers=" + handlers.size() + ", schedules=" + schedules.size() + '}';
     }
 
     /**
@@ -474,6 +498,69 @@ public final class ScriptManifest {
             }
         }
         return events;
+    }
+
+    /**
+     * 解析周期任务声明。
+     * <p>
+     * <b>它是脚本侧「自己会动」的唯一声明</b>：清单里写一条，桥接插件就会按间隔调用脚本的
+     * {@code periodic} 处理器（见 {@code ScriptScheduler}）。因此校验必须严格——间隔写错不会
+     * 有运行期报错，只会让任务「不按预期地慢/快」，而那种现场极难归因。
+     * <p>
+     * <b>间隔的缺省与下限</b>：不写 {@code intervalSeconds} 时取 {@link #DEFAULT_INTERVAL_SECONDS}；
+     * 低于 {@link #MIN_INTERVAL_SECONDS} 一律拒绝而不是静默抬高——静默抬高会让作者以为写生效了。
+     * <p>
+     * <b>不做 cron</b>：只支持固定间隔。cron 会带来时区、错过触发、夏令时一整套语义，
+     * 而这一版要解决的是「后台定期刷新」，不是「定时调度」。
+     *
+     * @param node 周期任务数组节点，可为 {@code null}
+     * @return 周期任务声明列表，保证非 {@code null}
+     * @throws JellyfishException 结构或取值非法、间隔越界、名字重复时抛出
+     */
+    private static List<Schedule> parseSchedules(JsonNode node) {
+        List<Schedule> schedules = new ArrayList<Schedule>();
+        if (node == null || node.isNull()) {
+            return schedules;
+        }
+        requireArray(node, "schedules");
+        Set<String> names = new LinkedHashSet<String>();
+        for (int index = 0; index < node.size(); index++) {
+            JsonNode element = node.get(index);
+            String where = "schedules[" + index + "]";
+            requireObject(element, where);
+            rejectUnknownKeys(element, where, SCHEDULE_KEYS);
+            String name = requireText(element, "name", where);
+            int interval = intervalSeconds(element, where);
+            if (!names.add(name)) {
+                throw new JellyfishException(where + " 重复声明: " + name);
+            }
+            schedules.add(new Schedule(name, interval));
+        }
+        return schedules;
+    }
+
+    /**
+     * 取并校验周期任务的间隔秒数。
+     *
+     * @param node  周期任务节点
+     * @param where 报错位置前缀
+     * @return 间隔秒数，保证 {@code >= MIN_INTERVAL_SECONDS}
+     * @throws JellyfishException 类型不对或越界时抛出
+     */
+    private static int intervalSeconds(JsonNode node, String where) {
+        JsonNode value = node.get("intervalSeconds");
+        if (value == null || value.isNull()) {
+            return DEFAULT_INTERVAL_SECONDS;
+        }
+        if (!value.isIntegralNumber()) {
+            throw new JellyfishException(where + " 的 intervalSeconds 必须是整数秒");
+        }
+        int seconds = value.asInt();
+        if (seconds < MIN_INTERVAL_SECONDS) {
+            throw new JellyfishException(where + " 的 intervalSeconds 不能小于 " + MIN_INTERVAL_SECONDS
+                    + " 秒（实际 " + seconds + "）");
+        }
+        return seconds;
     }
 
     /**
@@ -863,6 +950,63 @@ public final class ScriptManifest {
         @Override
         public String toString() {
             return "Handler{type=" + type + ", route=" + route + '}';
+        }
+    }
+
+    /**
+     * 周期任务声明：清单里的一个 {@code schedules} 条目。
+     * <p>
+     * 它到内核侧的落点不是注册，而是<b>桥接插件自己的一个定时器</b>：到点由桥接层以
+     * {@code periodic} 类型调用脚本中同名的处理器，成功后由桥接层代发一次 UI 失效事件
+     * （脚本发布不了这个事件，见 {@code ScriptEventFactory.EMITTABLE}）。
+     * <p>
+     * 间隔可在配置段覆写：{@code plugins.configurations.<桥接插件>.scripts.<脚本 id>.schedules.<name>.intervalSeconds}，
+     * 覆写同样受 {@link #MIN_INTERVAL_SECONDS} 约束（越界回落缺省并告警，不让整只脚本起不来）。
+     * <p>
+     * 不可变，可安全跨线程传递。
+     *
+     * @author zcd
+     */
+    public static final class Schedule {
+
+        /** 任务名，同时是路由键（脚本里 {@code @periodic(name=...)} 的那个名字）。 */
+        private final String name;
+
+        /** 间隔秒数，保证 {@code >= MIN_INTERVAL_SECONDS}。 */
+        private final int intervalSeconds;
+
+        /**
+         * 构造周期任务声明。
+         *
+         * @param name            任务名
+         * @param intervalSeconds 间隔秒数
+         */
+        private Schedule(String name, int intervalSeconds) {
+            this.name = name;
+            this.intervalSeconds = intervalSeconds;
+        }
+
+        /**
+         * 获取任务名。
+         *
+         * @return 任务名
+         */
+        public String name() {
+            return name;
+        }
+
+        /**
+         * 获取间隔秒数。
+         *
+         * @return 间隔秒数
+         */
+        public int intervalSeconds() {
+            return intervalSeconds;
+        }
+
+        @Override
+        public String toString() {
+            return "Schedule{name=" + name + ", intervalSeconds=" + intervalSeconds + '}';
         }
     }
 }

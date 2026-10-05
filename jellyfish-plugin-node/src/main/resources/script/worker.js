@@ -138,6 +138,10 @@ function routeKey(typeName, payload) {
         // 路由键是标记本身（! / @）
         return payload.marker;
     }
+    if (typeName === 'periodic') {
+        // 路由键是任务名：它由宿主的定时器按清单发起，因此只能从请求里读
+        return payload.name;
+    }
     return typeName;
 }
 

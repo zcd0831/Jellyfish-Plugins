@@ -319,6 +319,9 @@ def _route_key(type_name, payload):
     if type_name == "input_directive":
         # 路由键是标记本身（! / @）
         return payload.get("marker")
+    if type_name == "periodic":
+        # 路由键是任务名：它由宿主的定时器按清单发起，因此只能从请求里读
+        return payload.get("name")
     return type_name
 
 

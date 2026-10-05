@@ -16,7 +16,7 @@
 
 from datetime import datetime
 
-from jellyfish_sdk import ScriptError, command, contributes, tool
+from jellyfish_sdk import ScriptError, command, contributes, periodic, tool
 
 import stock_render as render
 import stock_sources as sources
@@ -232,6 +232,31 @@ def _metric_value(value, unit):
     if unit == "share":
         return render.number(value)
     return _percent(value)
+
+
+# ---------------------------------------------------------------- 周期任务
+
+
+@periodic(name="refresh", interval_seconds=60)
+def refresh_watch(ctx):
+    """每 60 秒拉一次自选股行情，让侧栏面板自己跟上（不需要任何回合在跑）。
+
+    这是**面板能自动更新**的唯一途径：脚本发布不了「界面内容失效」那个事件，
+    而外壳只在回合进行中每秒补一次失效——空闲时它一次都不问。桥接插件在本次调用成功后
+    代发失效事件，面板这才重收。
+
+    几条刻意的选择：
+
+    * **不做任何判断，只取数**：抓到就写缓存（``_refresh_watch`` 负责落盘）。取数全失败时
+      让它抛出去——桥接层会记一条日志并且**不**发失效事件，因为数据没变，重画面板只是白跑一遍。
+    * **不在交易时段才跑**：判断「现在是不是交易时段」需要交易日历，而那份数据本身也要联网取，
+      为省几次请求引入一个新的失败点不划算。非交易时段跑到的是同一份收盘价，写回去等于没变。
+    * **间隔 60 秒**：盘中够用，又不至于把行情源当压力测试。它可以被配置段覆写：
+      ``plugins.configurations.jellyfish-plugin-python.scripts.stock.schedules.refresh.intervalSeconds``。
+    * **代价是 worker 不再空闲自毁**：定时调用让它始终有一只在跑的 Python 进程（缺省 300 秒空闲
+      才回收）。这是「后台刷新」的固有代价，换来的是面板不需要人手敲命令也能更新。
+    """
+    _refresh_watch(ctx)
 
 
 # ---------------------------------------------------------------- 工具

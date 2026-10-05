@@ -429,7 +429,7 @@ PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
 | `jellyfish-plugin-python` | `scripts/python/<脚本标识>/` | `python3`（`pythonPath`） |
 | `jellyfish-plugin-node` | `scripts/node/<脚本标识>/` | `node`（`nodePath`） |
 
-每个脚本目录只需一份静态 `manifest.json`（声明工具 / 命令 / 贡献 / 订阅的事件）与一个入口文件。
+每个脚本目录只需一份静态 `manifest.json`（声明工具 / 命令 / 贡献 / 订阅的事件 / 周期任务）与一个入口文件。
 因此 **启动期零进程、零文件写入**：没装解释器也不影响内核启动，工具清单依然完整；首次真正调用某个脚本
 时才拉起它的进程，空闲后自毁。脚本调用失败只影响它自己（每脚本一 worker 进程），连续失败按熔断冷却、
 冷却后自动半开恢复。
@@ -516,5 +516,35 @@ PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
 - `manifestStrict`（默认 `true`）在脚本首次拉起时逐项比对清单与实现，任何漂移都报错并熔断该脚本；`dump_manifest.py` / `dump_manifest.js` 的 `--check`（比对）与 `--write`（直接落盘）用来让两者不漂移。
 - `events.allow` **只收窄、不扩展**：可订阅事件清单硬编码在运行时里，这里写不存在的事件名不会扩大任何能力。
 - 桥接插件 jar 本身与 Java 插件一样放在 `plugins/` 扫描目录（见上方打包命令），`jellyfish-script` 是内核仓库提供的库、不产出到 `plugins/`。
+
+### 周期任务（`schedules`）
+
+脚本**没有自己的主循环**（worker 只在被调用时活着，空闲还会自毁），因此「到点做一件事」这个
+发起方只能落在桥接层：清单里声明一条 `schedules`，桥接插件就按它的间隔调用脚本里同名的处理函数。
+
+```json
+"schedules": [ { "name": "refresh", "intervalSeconds": 60 } ]
+```
+
+```python
+@periodic(name="refresh", interval_seconds=60)   # Node: periodic({name: 'refresh', intervalSeconds: 60}, fn)
+def refresh_watch(ctx):
+    reload_cache()          # 返回值被忽略
+```
+
+- **成功之后由桥接层代发一次 `UiInvalidatedEvent`**：脚本发布不了这个事件（可发布事件只有
+  `PluginNotificationEvent` / `ConfigWarningEvent`），而周期任务的语义就是「我后台更新了自己
+  贡献的内容」。没有这一步，定时抓到的新数据只会写进文件，而屏上的面板永远不会自己重画——
+  这是「脚本也能后台刷新界面」唯一的通路。
+- **间隔语义是「上一次跑完 + 间隔」**（`scheduleWithFixedDelay`），因此天然不会重入：
+  取数慢到十几秒也不会堆起第二次调用。
+- **缺省 5 秒、下限 1 秒**（下限的理由不是安全而是诚实：外壳对面板的显示粒度就是秒级）；
+  可被配置覆盖：`scripts.<脚本 id>.schedules.<任务名>.intervalSeconds`，覆盖值越界会回落声明值并
+  发一条配置告警。**只支持固定间隔，不做 cron**（时区、错过触发、夏令时是一整套语义，不在这一版的范围内）。
+- **失败只记一条日志，不会让任务停掉**：`scheduleWithFixedDelay` 的任务体抛异常会让后续触发
+  **静默停止**，因此桥接层自己吞掉了异常；失败时也**不**发失效事件——数据没变，
+  重画面板只是让所有面板白跑一遍。
+- **一个脚本一条守护线程**（进程退出不被它拖住），关闭插件时**先停定时器、再关网关**。
+- **代价**：定时调用会让该脚本的 worker 不再空闲自毁（缺省空闲 300 秒回收）。
 
 真实解释器的端到端测试在 `mvn -q -Pscript-it test`（不进 `mvn test`：单测不访问外部资源）。

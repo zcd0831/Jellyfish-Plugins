@@ -106,5 +106,11 @@
   "commandOptions": [],
   "contributions": [
     "prompt"
+  ],
+  "schedules": [
+    {
+      "name": "refresh",
+      "intervalSeconds": 60
+    }
   ]
 }

@@ -630,6 +630,13 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
             handlers.add(handler.key());
         }
         digest.put("handlers", handlers);
+        // 周期任务只下发名字：脚本侧的比对按名字做（间隔由宿主决定，且可被用户配置覆写，
+        // 因此它不是「清单与实现是否一致」这件事的一部分）
+        List<String> schedules = new ArrayList<String>();
+        for (ScriptManifest.Schedule schedule : manifest.schedules()) {
+            schedules.add(schedule.name());
+        }
+        digest.put("schedules", schedules);
         return digest;
     }
 

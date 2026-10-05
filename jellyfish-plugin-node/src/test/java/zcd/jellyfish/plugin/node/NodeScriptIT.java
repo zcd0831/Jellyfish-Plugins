@@ -413,6 +413,30 @@ class NodeScriptIT {
     }
 
     @Test
+    @DisplayName("周期任务应按间隔反复触发（Node 侧与 Python 同构）")
+    void periodic_should_fireRepeatedly() throws Exception {
+        writeScript("beat", PERIODIC_SCRIPT, PERIODIC_MANIFEST);
+        startRuntime();
+
+        // 脚本侧的证据：共享模块里计数，工具把它读出来。等它涨到 2 以上才算「反复触发」
+        // （只涨一次无法区分「周期任务」与「启动时打了一发」）
+        long deadline = System.currentTimeMillis() + 15_000L;
+        int seen = 0;
+        while (System.currentTimeMillis() < deadline && seen < 2) {
+            try {
+                seen = Integer.parseInt(String.valueOf(invokeTool("beat_count",
+                        Collections.<String, Object>emptyMap()).getOutput()).trim());
+            } catch (JellyfishException | NumberFormatException ignored) {
+                // worker 可能正在冷启动：重试即可，计数本身还在
+            }
+            if (seen < 2) {
+                Thread.sleep(500L);
+            }
+        }
+        assertTrue(seen >= 2, "Node 侧周期任务没有按间隔反复触发，实际触发 " + seen + " 次");
+    }
+
+    @Test
     @DisplayName("关闭运行时后不应残留网关与 worker 进程")
     void close_should_leaveNoProcesses() throws IOException, InterruptedException {
         writeScript("jira", TOOL_SCRIPT, FULL_MANIFEST);
@@ -833,6 +857,25 @@ class NodeScriptIT {
             + "contributes('prompt', () => 'Node 示例脚本可用。');\n"
             + "contributes('status_line', () => `收到 ${completed} 次工具结束`);\n"
             + "subscribe('ToolCallCompletedEvent')(() => { completed += 1; });\n";
+
+    /**
+     * 周期任务夹具：``@periodic`` 每次触发把模块级计数加一，工具把计数读出来。
+     * <p>
+     * 两者共享同一个 worker 进程里的模块状态，因此工具读到的数就是「真的被触发了几次」——
+     * 这是从外部观察周期任务唯一可靠的方式（它的返回值被宿主丢弃，也没有调用方）。
+     */
+    private static final String PERIODIC_SCRIPT = ""
+            + "'use strict';\n"
+            + "const { periodic, tool } = require('jellyfish_sdk');\n"
+            + "let ticks = 0;\n"
+            + "periodic({ name: 'beat', intervalSeconds: 1 }, () => { ticks += 1; });\n"
+            + "tool({ name: 'beat_count', description: '读出周期任务已触发的次数' },\n"
+            + "     () => String(ticks));\n";
+
+    /** 与 {@link #PERIODIC_SCRIPT} 逐字对应的清单。 */
+    private static final String PERIODIC_MANIFEST = "{\"entry\":\"main.js\","
+            + "\"tools\":[{\"name\":\"beat_count\"}],"
+            + "\"schedules\":[{\"name\":\"beat\",\"intervalSeconds\":1}]}";
 
     /** 夹具脚本的清单：名字集合必须与上面的声明一致，否则脚本会拒绝服务。 */
     private static final String FULL_MANIFEST = "{\"entry\":\"main.js\","

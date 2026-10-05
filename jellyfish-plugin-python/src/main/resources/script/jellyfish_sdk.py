@@ -67,6 +67,7 @@ _TOOLS = []
 _COMMANDS = []
 _COMMAND_OPTIONS = []
 _SUBSCRIPTIONS = []
+_SCHEDULES = []
 
 # 声明过的贡献类型，用于检测「同一类型声明了两个函数」。
 _CONTRIBUTION_TYPES = set()
@@ -463,6 +464,48 @@ def subscribe(*event_names):
     return decorate
 
 
+def periodic(name, interval_seconds=None):
+    """声明一个周期任务。
+
+    宿主（桥接插件）会按 ``interval_seconds`` 的节奏调用它，**到点由宿主的定时器发起**：
+    脚本自己没有主循环、进程空闲还会被回收，因此脚本无法自行计时——这是在脚本侧做定时
+    唯一的形态。被装饰的函数签名固定为 ``(ctx)``（也可以不声明参数），返回值被忽略。
+
+    **成功之后宿主会代发一次「界面内容失效」事件**：脚本发布不了那个事件
+    （见 :data:`EMITTABLE_EVENTS`），而周期任务的语义就是「我后台更新了自己贡献的内容」，
+    因此这一步由宿主代劳。没有它，定时抓到的新数据只会写进文件，而屏上那块面板不会自己重画。
+
+    ``interval_seconds`` 缺省 ``5``、**下限 1 秒**。下限存在的理由不是安全，而是诚实：
+    宿主对界面内容的显示粒度就是秒级，比它更快的刷新只是重复问同一个数字。
+    它还可以被用户的配置段覆写：``plugins.configurations.<桥接插件>.scripts.<脚本 id>.schedules.<任务名>.intervalSeconds``
+    （配了越界值会回落声明值并告警，不会让脚本起不来）。
+
+    **失败只记日志、并且不会让这个任务停掉**，但也不会发失效事件——数据没变，
+    发一次只会让所有面板白跑一遍。因此任务体应当自己做该做的容错。
+
+    :param name: 任务名，在同一个脚本内唯一（宿主按它路由）
+    :param interval_seconds: 间隔秒数，可为 ``None``（用宿主缺省）
+    """
+
+    def decorate(func):
+        if any(item["name"] == name for item in _SCHEDULES):
+            raise ScriptError("周期任务重复声明: %s" % name)
+        entry = {"name": name, "handler": func}
+        if interval_seconds is not None:
+            try:
+                seconds = int(interval_seconds)
+            except (TypeError, ValueError):
+                raise ScriptError("周期任务 %s 的间隔必须是整数秒: %r" % (name, interval_seconds))
+            if seconds < 1:
+                raise ScriptError("周期任务 %s 的间隔不能小于 1 秒: %d" % (name, seconds))
+            entry["intervalSeconds"] = seconds
+        _SCHEDULES.append(entry)
+        _HANDLERS[("periodic", name)] = func
+        return func
+
+    return decorate
+
+
 # ---------------------------------------------------------------- 清单生成
 
 
@@ -499,6 +542,7 @@ def declarations():
         "contributions": sorted(_CONTRIBUTION_TYPES),
         "events": list(_SUBSCRIPTIONS),
         "handlers": [dict(item) for item in _HANDLERS_DECL],
+        "schedules": [dict(item) for item in _SCHEDULES],
     }
 
 
@@ -533,6 +577,11 @@ def dump_manifest(script_id=None, entry="main.py"):
         manifest["events"] = list(_SUBSCRIPTIONS)
     if _HANDLERS_DECL:
         manifest["handlers"] = [dict(item) for item in _HANDLERS_DECL]
+    if _SCHEDULES:
+        # ``handler`` 是运行期才有的东西，不进清单（与 tools / commands 同一口径）
+        manifest["schedules"] = [
+            {key: value for key, value in item.items() if key != "handler"} for item in _SCHEDULES
+        ]
     return manifest
 
 
@@ -564,6 +613,9 @@ def compare_with(manifest):
     _compare_names(problems, "handlers",
                    [item["type"] + "::" + item["route"] for item in _HANDLERS_DECL],
                    list(manifest.get("handlers", [])))
+    # 周期任务按名字比：名字写错的表现是「任务静默不跑」，而清单校验是唯一会有人看的地方
+    _compare_names(problems, "schedules", [item["name"] for item in _SCHEDULES],
+                   _names(manifest.get("schedules")))
     return problems
 
 
@@ -1258,10 +1310,28 @@ def _shape_nothing_ignored(_result):
 
 _define_args("event", _args_event)
 
-#: 类型名 → (实参构造, 结果整形)。事件不是扩展点（它是协议里的通知方法），
-#: 但走同一张分发表，因此在这里单独补一条。
+
+# ---- 周期任务 ---------------------------------------------------------------
+
+
+def _args_periodic(payload):
+    return {"name": payload.get("name")}
+
+
+def _shape_periodic(_result):
+    # 周期任务的返回值没有接收方：它不进任何人的上下文，也不落盘，
+    # 因此与事件同理——返回什么都忽略，免得脚本顺手 return 一个值就报错
+    return None
+
+
+_define_args("periodic", _args_periodic)
+_define_shape("periodic", _shape_periodic)
+
+#: 类型名 → (实参构造, 结果整形)。事件与周期任务都**不是扩展点**（它们是协议里的方法：
+#: 前者由内核通知脚本，后者由宿主定时器发起），但走同一张分发表，因此在这里各补一条。
 _DISPATCH = _load_dispatch()
 _DISPATCH["event"] = (_ARGS["event"], _shape_nothing_ignored)
+_DISPATCH["periodic"] = (_ARGS["periodic"], _SHAPES["periodic"])
 
 
 # ---- 入口 -----------------------------------------------------------------
@@ -1318,6 +1388,7 @@ __all__ = [
     "command_options",
     "contributes",
     "subscribe",
+    "periodic",
     "declarations",
     "dump_manifest",
     "compare_with",

@@ -76,6 +76,9 @@ const commandOptionDecls = [];
 /** 订阅的事件名。 */
 const subscriptions = [];
 
+/** 周期任务声明。条目只放清单需要的键（处理函数进 `handlers` 表）；未给间隔时不写 `intervalSeconds`。 */
+const schedules = [];
+
 /** 声明过的贡献类型，用于检测「同一类型声明了两个函数」。 */
 const contributionTypes = new Set();
 
@@ -466,6 +469,59 @@ function subscribe(...eventNames) {
 }
 
 /**
+ * 声明一个周期任务。
+ *
+ * 宿主（桥接插件）会按 `intervalSeconds` 的节奏调用它，**到点由宿主的定时器发起**：
+ * 脚本自己没有主循环、进程空闲还会被回收，因此脚本无法自行计时——这是在脚本侧做定时
+ * 唯一的形态。处理函数签名固定为 `(params, ctx)`（也可以不声明参数），返回值被忽略。
+ *
+ * **成功之后宿主会代发一次「界面内容失效」事件**：脚本发布不了那个事件
+ * （见 {@link EMITTABLE_EVENTS}），而周期任务的语义就是「我后台更新了自己贡献的内容」，
+ * 因此这一步由宿主代劳。没有它，定时抓到的新数据只会写进文件，而屏上那块面板不会自己重画。
+ *
+ * `intervalSeconds` 缺省 `5`、**下限 1 秒**。下限存在的理由不是安全，而是诚实：
+ * 宿主对界面内容的显示粒度就是秒级，比它更快的刷新只是重复问同一个数字。
+ * 不写这个键时由宿主按缺省与用户配置决定；写了的会被写进清单，而且还能被用户的配置段覆写：
+ * `plugins.configurations.<桥接插件>.scripts.<脚本 id>.schedules.<任务名>.intervalSeconds`
+ * （配了越界值会回落声明值并告警，不会让脚本起不来）。
+ *
+ * **失败只记日志、并且不会让这个任务停掉**，但也不会发失效事件——数据没变，
+ * 发一次只会让所有面板白跑一遍。因此任务体应当自己做该做的容错。
+ *
+ * ```js
+ * const refresh = periodic({ name: 'refresh', intervalSeconds: 60 }, (params, ctx) => {
+ *     return loadData();   // 返回值被忽略：成果要写进自己贡献的内容或文件里
+ * });
+ * ```
+ *
+ * @param {{name: string, intervalSeconds: number}} spec 声明：`name` 必填且在本脚本内唯一（宿主按它路由）
+ * @param {Function} handler 处理函数，签名 `(params, ctx)`
+ * @returns {Function} 同一个处理函数
+ */
+function periodic(spec, handler) {
+    requireName(spec, 'periodic');
+    const name = spec.name;
+    if (schedules.some((item) => item.name === name)) {
+        throw new ScriptError(`周期任务重复声明: ${name}`);
+    }
+    const entry = { name: name };
+    // `null` 与 `undefined` 同义（都是「没给」），与 Python 侧那个缺省值 `None` 取值一致
+    if (spec.intervalSeconds !== undefined && spec.intervalSeconds !== null) {
+        if (!Number.isInteger(spec.intervalSeconds)) {
+            throw new ScriptError(`周期任务 ${name} 的间隔必须是整数秒: `
+                + `${JSON.stringify(spec.intervalSeconds)}`);
+        }
+        if (spec.intervalSeconds < 1) {
+            throw new ScriptError(`周期任务 ${name} 的间隔不能小于 1 秒: ${spec.intervalSeconds}`);
+        }
+        entry.intervalSeconds = spec.intervalSeconds;
+    }
+    schedules.push(entry);
+    handlers.set(`periodic\u0000${name}`, handler);
+    return handler;
+}
+
+/**
  * 声明一个带路由键的处理器（目前只有 `model_catalog` 需要）。
  *
  * 路由键由**用户配置**决定（provider 名），脚本无法从自己的声明里推出来，因此必须显式写出来。
@@ -502,6 +558,7 @@ function declarations() {
         contributions: Array.from(contributionTypes).sort(),
         events: subscriptions.slice(),
         handlers: handlerDecls.map((item) => Object.assign({}, item)),
+        schedules: schedules.map((item) => Object.assign({}, item)),
     };
 }
 
@@ -543,6 +600,17 @@ function dumpManifest(scriptId, entry) {
     if (handlerDecls.length > 0) {
         manifest.handlers = handlerDecls.map((item) => Object.assign({}, item));
     }
+    if (schedules.length > 0) {
+        // 条目的 `name` 与可选的 `intervalSeconds` 在这里逐个点名：清单结构是协议的一部分，
+        // 不能靠「声明表里恰好没多别的键」来保证
+        manifest.schedules = schedules.map((item) => {
+            const entry = { name: item.name };
+            if (item.intervalSeconds !== undefined) {
+                entry.intervalSeconds = item.intervalSeconds;
+            }
+            return entry;
+        });
+    }
     return manifest;
 }
 
@@ -577,6 +645,8 @@ function compareWith(manifest) {
     compareNames(problems, 'handlers',
         handlerDecls.map((item) => `${item.type}::${item.route}`),
         listOf(source.handlers));
+    // 周期任务按名字比：名字写错的表现是「任务静默不跑」，而清单校验是唯一会有人看的地方
+    compareNames(problems, 'schedules', schedules.map((item) => item.name), namesOf(source.schedules));
     return problems;
 }
 
@@ -1303,10 +1373,16 @@ defineArgs('input_directive', (payload) => ({
 
 defineArgs('event', (payload) => ({ event: payload }));
 
+// ---- 周期任务 -------------------------------------------------------------
+
+defineArgs('periodic', (payload) => ({ name: payload.name }));
+
 /**
  * 类型名 → (实参构造, 结果整形)。
  *
- * 事件不是扩展点（它是协议里的通知方法），但走同一张分发表，因此在这里单独补一条。
+ * 事件与周期任务都**不是扩展点**（它们是协议里的方法：前者由内核通知脚本，
+ * 后者由宿主定时器发起），因此能力档里没有它们；但两者走同一张分发表，
+ * 所以要在加载能力档之后各补一条。
  */
 const dispatch = loadDispatch();
 dispatch.set('event', {
@@ -1314,6 +1390,11 @@ dispatch.set('event', {
     // 事件处理器的返回值没有去处：事件是通知，不是请求。返回 null 让调用方
     // 不必因为脚本「顺手 return 了一个值」而报错
     shape: () => null,
+});
+dispatch.set('periodic', {
+    buildParams: ARGS.get('periodic'),
+    // 周期任务的返回值同样没有接收方：它不进任何人的上下文，也不落盘
+    shape: shapeNothing,
 });
 
 /**
@@ -1387,6 +1468,7 @@ module.exports = {
     commandOptions,
     contributes,
     subscribe,
+    periodic,
     declarations,
     dumpManifest,
     compareWith,

@@ -72,6 +72,9 @@ public abstract class ScriptBridgePlugin implements JellyfishPlugin {
     /** 脚本台账，在 {@code start()} 现造、{@code stop()} 释放。 */
     private ScriptLedger ledger = ScriptLedger.empty();
 
+    /** 周期任务宿主，在 {@code start()} 现造、{@code stop()} 释放。 */
+    private ScriptScheduler scheduler;
+
     /** 事件桥接：内核事件推给脚本、脚本发布的事件代为发布。 */
     private ScriptEventBridge events;
 
@@ -129,6 +132,9 @@ public abstract class ScriptBridgePlugin implements JellyfishPlugin {
      * <p>
      * 注册由框架按 owner 命名空间回收，这里只释放自己的引用；顺序上必须先关运行时，
      * 它负责把子进程（网关与全部 worker）请走。
+     * <p>
+     * <b>周期任务必须排在网关之前关</b>：任务体会走一次脚本调用，网关先关的话每一次触发
+     * 都变成一条「调用失败」的噪声日志，而那是预期内的关闭，不是故障。
      */
     @Override
     public final void stop() {
@@ -136,6 +142,9 @@ public abstract class ScriptBridgePlugin implements JellyfishPlugin {
             return;
         }
         LOG.info("{} 桥接插件已停止: {} {}", language.displayName(), language, ledger.summary());
+        if (scheduler != null) {
+            scheduler.close();
+        }
         if (gateway != null) {
             gateway.close();
         }
@@ -144,6 +153,7 @@ public abstract class ScriptBridgePlugin implements JellyfishPlugin {
         gateway = null;
         caller = null;
         events = null;
+        scheduler = null;
         ledger = ScriptLedger.empty();
     }
 
@@ -193,6 +203,15 @@ public abstract class ScriptBridgePlugin implements JellyfishPlugin {
     }
 
     /**
+     * 获取周期任务宿主，供测试断言生命周期与任务数。
+     *
+     * @return 周期任务宿主；未启动时为 {@code null}
+     */
+    public ScriptScheduler scheduler() {
+        return scheduler;
+    }
+
+    /**
      * 扫描脚本目录并逐脚本注册。
      * <p>
      * 运行时在这里创建、但不启动任何进程：抽取网关资源、fork worker 都留到第一次真正调用，
@@ -228,6 +247,10 @@ public abstract class ScriptBridgePlugin implements JellyfishPlugin {
         for (ScriptPlugin plugin : scan.plugins()) {
             registrations.add(registrar.register(context.subContext(plugin.id()), plugin));
         }
+        // 周期任务排在注册之后：它到点会调用脚本，而调用走的就是上面注册的同一条 caller 路径。
+        // 顺序只影响「启动那一刻谁能先看见什么」，因此这里取「先注册、后开工」——
+        // 反过来会让一次到点触发与注册竞争，而那种现场无法复现
+        scheduler = ScriptScheduler.start(context, caller, scan.plugins(), config.scriptConfigurations());
         warnUnknownScriptConfigurations(context, scan.plugins());
         return new ScriptLedger(scan.plugins(), registrations, issues, gateway, caller, events);
     }
