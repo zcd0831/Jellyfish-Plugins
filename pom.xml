@@ -35,10 +35,6 @@
         <!-- 跨语言桥接插件：脚本进程由它承载，机制层（jellyfish-script）被 shade 进它的插件包 -->
         <module>jellyfish-plugin-python</module>
         <module>jellyfish-plugin-node</module>
-        <!-- 火花线插件：把会话趋势压成块字符窄图，无第三方依赖（只读内核已有通知） -->
-        <module>jellyfish-plugin-sparkline</module>
-        <!-- 宠物插件：把会话的作息与手气养成人格化的侧栏观测面，无第三方依赖 -->
-        <module>jellyfish-plugin-pet</module>
     </modules>
 
     <properties>

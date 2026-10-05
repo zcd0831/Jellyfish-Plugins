@@ -78,13 +78,13 @@ scripts/python/
 | 侧栏内容宽度 | 18 列（侧栏起点 20 列 − 边框 2） | `ChatLayout.SIDEBAR_MIN_WIDTH` |
 | 单面板行数上限 | 8 行 | `ChatLayout.PANEL_MAX_ROWS` |
 | 终端窄于 | 80 列整块隐藏 | `ChatLayout.SIDEBAR_MIN_TERMINAL_WIDTH` |
-| 一块区域 | 同时只显示一个面板 | `UiPlacement`（`sparkline` / `pet` 也在抢右栏） |
+| 一块区域 | 同时只显示一个面板 | `UiPlacement`（别的右侧常驻面板也在抢右栏） |
 
 因此面板按「**一行一只股票、18 显示列**」设计：名称 10 列 + 空格 + 涨跌幅 7 列。宽度必须用
 Unicode 东亚宽度口径算（`east_asian_width` 的 W/F 算 2 列）——股票名称全是汉字，用 `len()`
 会让「贵州茅台」和「XD安徽凤」看起来一样宽，涨跌幅再也对齐不了。
 
-`region: RIGHT` 只是**软建议**。同区域已有 `sparkline` / `pet` 时本面板可能不显示，由用户
+`region: RIGHT` 只是**软建议**。同区域已有别的右侧常驻面板时本面板可能不显示，由用户
 `/ui` 切换；插件不能假设自己一定显示。
 
 ## 五、刷新时机（面板为什么不实时）
