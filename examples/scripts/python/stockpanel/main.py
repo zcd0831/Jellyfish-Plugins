@@ -10,7 +10,12 @@
 若共用一个 worker，回合运行中界面每秒重拉一次面板时，每一次都会排在某个取数请求后面。
 
 面板尺寸由外壳决定，插件无权控制：侧栏起点约 20 列（内容区 18 列）、单面板最多 8 行、
-终端窄于 80 列时整块隐藏。因此这里按 **18 显示列 × 8 行**设计——一行一只股票。
+终端窄于 80 列时整块隐藏。因此这里按 **24 显示列 × 8 行**设计——一行一只股票，
+三列：名称 | 现价 | 涨跌幅。
+
+涨跌用颜色说话：**涨红、跌绿、平灰**。档位名与颜色是反的（涨借 ``ERROR`` 的红色、
+跌借 ``SUCCESS`` 的绿色），原因见 :func:`_change_emphasis`——框架只给语义档位，
+颜色由外壳统一映射，插件说不了「红」。
 """
 
 import json
@@ -24,10 +29,16 @@ from jellyfish_sdk import contributes
 #: 两个脚本是独立进程、各自从自己的配置段读 ``dataDir``，缺省值不一致就会各写一份。
 DEFAULT_DATA_DIR = os.path.join(os.path.expanduser("~"), ".jellyfish", "stock")
 
-#: 一行占多少显示列：名称 10 + 空格 1 + 涨跌幅 7。
-NAME_WIDTH = 10
+#: 一行占多少显示列：名称 8 + 空格 1 + 现价 7 + 空格 1 + 涨跌幅 7 = 24。
+#:
+#: **24 是算出来的，不是挑的**：面板内容宽决定侧栏宽（外壳按「内容宽 + 边框 2」向上取整，
+#: 再夹进 ``[20, 终端宽/4]``），因此每多一列都要求终端更宽才不折行——24 列需要终端 ≥ 104 列。
+#: 窄于这个宽度时一行会折成两行，8 行上限实际只能显示 4 只股票。这是「多显示一个现价」
+#: 的代价；取 24 是「名称还放得下 4 个汉字」与「要求的终端别太宽」之间的折中。
+NAME_WIDTH = 8
+PRICE_WIDTH = 7
 CHANGE_WIDTH = 7
-ROW_WIDTH = NAME_WIDTH + 1 + CHANGE_WIDTH
+ROW_WIDTH = NAME_WIDTH + 1 + PRICE_WIDTH + 1 + CHANGE_WIDTH
 
 #: 面板最多画几行（与内核的单面板行数上限一致）。
 MAX_ROWS = 8
@@ -163,28 +174,67 @@ def _title(updated_at):
     return "自选 %s" % moment.strftime("%H:%M")
 
 
+def _price_text(value, width):
+    """把现价渲染成放得进 ``width`` 列的文本。
+
+    **价格绝不截断**——``12345.6…`` 是个错误的数字，比少一位小数更坏。因此放不下时
+    逐级降精度（两位 → 一位 → 整数），而不是交给 :func:`_fit`。A 股现价绝大多数不超过
+    四位数（``9999.99`` 正好 7 列），降到整数那一步实际不会被触发。
+
+    :param value: 原始值
+    :param width: 目标列数
+    :return: 文本；取不到时返回 ``-``
+    """
+    numeric = _num(value)
+    if numeric is None:
+        return "-"
+    for digits in (2, 1, 0):
+        text = "%.*f" % (digits, numeric)
+        # 价格只含数字、小数点与负号，全是一列宽，因此 len() 在这里与显示宽度等价
+        if len(text) <= width:
+            return text
+    # 极端大数（≥ 1000 万）：一个价格字段放不下，用科学计数法至少保住量级
+    return "%.1e" % numeric
+
+
+def _change_emphasis(change):
+    """取涨跌幅的强调档位：涨红、跌绿、平灰。
+
+    **档位名与颜色是反的**（涨用 ``ERROR``、跌用 ``SUCCESS``），这是 A 股习惯与
+    「档位是语义而不是外观」这条设计撞出来的结果：框架只给语义档位，颜色由外壳唯一的
+    映射点（``jellyfish-tui/UiRender``）决定，插件说不了「红」也说不了「绿」。
+    这里借 ``ERROR`` 的红色表达「涨」——对看盘的人来说「涨是红的」远比
+    ``ERROR`` 这个字面意思重要；平盘与取不到都用 ``DIM``（终端里的灰）。
+
+    :param change: 涨跌幅数值，可为 None（取不到）
+    :return: 档位名
+    """
+    if change is None:
+        return "DIM"
+    if change > 0:
+        return "ERROR"
+    if change < 0:
+        return "SUCCESS"
+    return "DIM"
+
+
 def _row(item):
-    """把一条缓存记录渲染成面板上的一行。
+    """把一条缓存记录渲染成面板上的一行：名称 | 现价 | 涨跌幅。
 
     :param item: ``{"code", "name", "price", "changePct"}``
     :return: 行字典
     """
     name = item.get("name") or item.get("code") or "-"
     change = _num(item.get("changePct"))
-    if change is None:
-        text = "-"
-        emphasis = "DIM"
-    else:
-        text = "%+.2f%%" % change
-        if change > 0:
-            emphasis = "ACCENT"
-        elif change < 0:
-            emphasis = "ERROR"
-        else:
-            emphasis = "DIM"
+    change_text = "-" if change is None else "%+.2f%%" % change
     return {"segments": [
         {"text": _pad(_fit(name, NAME_WIDTH), NAME_WIDTH) + " ", "emphasis": "NORMAL"},
-        {"text": _pad(text, CHANGE_WIDTH, "right"), "emphasis": emphasis},
+        # 现价跟着涨跌幅走会更抢眼，但那样一整行都在闪；这里只让涨跌幅上色，
+        # 价格保持正文色——面板的用处是「哪只在动」，不是「价格是多少」
+        {"text": _pad(_price_text(item.get("price"), PRICE_WIDTH), PRICE_WIDTH, "right") + " ",
+         "emphasis": "NORMAL"},
+        {"text": _pad(change_text, CHANGE_WIDTH, "right"),
+         "emphasis": _change_emphasis(change)},
     ]}
 
 
