@@ -462,13 +462,13 @@ PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
 `jellyfish-script/src/main/resources/script/extension-points.json`，并由单测守着：
 **内核新增扩展点而未分档，本仓库会构建失败**。
 
-**完整的脚本插件 API、`manifest.json` 字段表与两门语言的逐条对照见
+**完整的脚本插件 API、`manifest.json` 字段表、两门语言的逐条对照与各示例的用法见
 [`examples/scripts/README.md`](examples/scripts/README.md)。** 仓库顶层
 `examples/scripts/{python,node}/{hello,jira}` 是可直接拷贝运行的示例（`hello` 教学最小集、`jira` 真实形态，
 且被端到端用例直接加载，因此不会腐烂）；另有仅 Python 的 `examples/scripts/python/web/`——一个
 **零第三方依赖的联网搜索与网页抓取插件**（`web_search` / `web_fetch`，自带 SSRF 防护），
 以及 `examples/scripts/python/{stock,stockpanel}/`——**A 股行情与自选股**（`/stock` 命令、5 个取数工具、
-侧栏面板，依赖 `akshare`，不进端到端用例）。
+侧栏面板、可开关的自动刷新，依赖 `akshare`，不进端到端用例）。
 
 ### 配置
 

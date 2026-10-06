@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """侧栏面板：自选股一览。
 
-它**只读** ``stock`` 脚本写下的缓存文件，不联网、不 import akshare。这是刻意的，原因是内核的
+它**只读** ``stock`` 脚本写下的两份文件（行情缓存 ``quotes.json`` 与设置 ``settings.json``），
+不联网、不 import akshare。这是刻意的，原因是内核的
 硬约束：面板处理器在**界面渲染线程上同步执行、且没有任何超时**（``UiContributions`` 只在
 处理器抛错时记一条告警并跳过），因此一次网络请求就会冻住整个界面——连 ``Esc`` 都按不动。
 代价是面板显示的是**上次刷新的快照**，所以刷新时刻写在标题上。
@@ -11,7 +12,11 @@
 
 面板尺寸由外壳决定，插件无权控制：侧栏起点约 20 列（内容区 18 列）、单面板最多 8 行、
 终端窄于 80 列时整块隐藏。因此这里按 **24 显示列 × 8 行**设计——一行一只股票，
-三列：名称 | 现价 | 涨跌幅。
+三列：名称 | 现价 | 涨跌幅，**末行固定是自动刷新的开关状态**。
+
+那一行值得占用一个宝贵的行位：它是这块面板上唯一「解释了它自己会不会动」的字。
+面板从不主动联网，而自动刷新在后台改着它显示的内容——不写出状态的话，用户看到一份
+静止的行情时无法区分「现在不在刷新时段」「我把自动刷新关掉了」与「刷新一直在失败」。
 
 涨跌用颜色说话：**涨红、跌绿、平灰**。档位名与颜色是反的（涨借 ``ERROR`` 的红色、
 跌借 ``SUCCESS`` 的绿色），原因见 :func:`_change_emphasis`——框架只给语义档位，
@@ -40,8 +45,19 @@ PRICE_WIDTH = 7
 CHANGE_WIDTH = 7
 ROW_WIDTH = NAME_WIDTH + 1 + PRICE_WIDTH + 1 + CHANGE_WIDTH
 
-#: 面板最多画几行（与内核的单面板行数上限一致）。
+#: 面板最多画几行（与内核单面板 8 行的上限一致）。
+#:
+#: **必须自己收口**：超出行数上限时内核会把**最后一行**换成「… 还有 N 行」
+#: （``UiRender.toVisualLines``）——那会正好吃掉末行的自动刷新脚注，而这行状态恰恰是
+#: 满员时最需要看到的。因此这里留出一行给脚注，股票区只用 :data:`STOCK_ROWS` 行。
 MAX_ROWS = 8
+
+#: 股票区可用行数 = 总行数 − 脚注 1 行。
+STOCK_ROWS = MAX_ROWS - 1
+
+#: 自动刷新脚注显示的状态文案。
+AUTO_ON = "自动刷新：开"
+AUTO_OFF = "自动刷新：关"
 
 
 def _num(value):
@@ -153,6 +169,43 @@ def _load(ctx):
     return {"updatedAt": str(payload.get("updatedAt") or ""), "items": cleaned}
 
 
+def _load_settings(ctx):
+    """读运行期设置（自动刷新开关）。
+
+    **只认显式的 ``false``**：文件缺失、内容坏掉、键类型不对一律当「开」。这与
+    ``stock/stock_store.py`` 的 ``load_settings`` 是同一条判据，两处都必须这么写——
+    文件是后来才引入的，缺省成「关」的表现是「升级之后面板再也不自己更新了」，
+    一个不出声的行为变化。两个脚本是独立进程、不能互相 import，因此这条约定靠
+    各自的注释 + 同名缺省值保持一致（与 :data:`DEFAULT_DATA_DIR` 同一手法）。
+
+    :param ctx: 脚本上下文
+    :return: 自动刷新开着返回 True
+    """
+    path = os.path.join(_data_dir(ctx), "settings.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (IOError, OSError, ValueError):
+        return True
+    if not isinstance(payload, dict):
+        return True
+    auto = payload.get("autoRefresh")
+    return auto if isinstance(auto, bool) else True
+
+
+def _auto_row(enabled):
+    """把自动刷新状态渲染成面板末行。
+
+    单行、灰字（``DIM``）：它是状态说明而不是数据，色泽上不该跟涨跌幅抢。
+    长度按 :data:`ROW_WIDTH` 截断，与股票行共用同一条宽度账本。
+
+    :param enabled: 自动刷新是否开着
+    :return: 行字典
+    """
+    text = AUTO_ON if enabled else AUTO_OFF
+    return {"segments": [{"text": _fit(text, ROW_WIDTH), "emphasis": "DIM"}]}
+
+
 def _title(updated_at):
     """标题带上刷新时刻；缓存跨天时退到日期。
 
@@ -243,7 +296,8 @@ def panel(ctx):
     """自选股面板。
 
     返回 ``None`` 表示「这次没有要显示的」——自选股为空、或还没刷新过行情时就不显示，
-    而不是画一块空面板（空面板比没有面板更让人困惑）。
+    而不是画一块空面板（空面板比没有面板更让人困惑）。**这种情况下也不显示自动刷新脚注**：
+    面板整体不存在时，孤零零一行开关状态只会让人以为界面出了问题。
 
     ``region`` 只是**软建议**：一块区域同时只显示一个面板，抢同一区域的插件由用户用
     ``/ui`` 切换，因此这里不假设自己一定显示。建议右栏是因为一行一只的窄条正合右栏的
@@ -253,10 +307,13 @@ def panel(ctx):
     if cached is None:
         return None
     items = cached["items"]
-    lines = [_row(item) for item in items[:MAX_ROWS]]
-    if len(items) > MAX_ROWS:
+    lines = [_row(item) for item in items[:STOCK_ROWS]]
+    if len(items) > STOCK_ROWS:
         # 自己先收口：让「有多少只没显示」是一句明确的话，而不是外壳那句通用的截断提示
-        overflow = "…还有 %d 只" % (len(items) - MAX_ROWS + 1)
+        # （外壳的通用提示会落在最后一行，正好把脚注挤掉）
+        overflow = "…还有 %d 只" % (len(items) - STOCK_ROWS + 1)
         lines[-1] = {"segments": [{"text": _pad(_fit(overflow, ROW_WIDTH), ROW_WIDTH),
                                    "emphasis": "DIM"}]}
+    # 脚注永远在最后一行：它回答「这块面板会不会自己动」，满员时更需要看到
+    lines.append(_auto_row(_load_settings(ctx)))
     return {"title": _title(cached["updatedAt"]), "region": "RIGHT", "lines": lines}

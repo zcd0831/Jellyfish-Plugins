@@ -96,7 +96,7 @@
       "name": "stock",
       "descriptor": {
         "summary": "A 股行情与自选股",
-        "usage": "/stock [add|del|refresh|clear] [代码...]",
+        "usage": "/stock [add|del|refresh|clear] [代码...]，refresh 可带 on|off",
         "aliases": [],
         "sessionRequired": true
       },

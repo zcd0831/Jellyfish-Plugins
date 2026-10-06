@@ -11,6 +11,10 @@
 于是回合运行中界面每秒重拉一次面板时，每一次都会排在某个取数请求后面，整个界面卡死。
 因此这里只负责「把数据取回来、写进缓存」，面板去读那份缓存。
 
+**自动刷新有两道闸门**：用户开关（``/stock refresh off``）与时间窗（工作日 9:00-15:30）。
+两者都只挡周期任务，手动刷新不受约束。见 :func:`refresh_watch` 与
+``REFRESH_WINDOW_START``。
+
 **数据源与单位口径**见 ``stock_sources.py`` 的模块文档，那份结论是实测出来的，改之前先跑探针。
 """
 
@@ -22,8 +26,36 @@ import stock_render as render
 import stock_sources as sources
 import stock_store as store
 
-#: 自选股面板最多展示几行（与内核侧单面板 8 行的上限对齐，多出来的会显示成「还有 N 行」）。
-MAX_WATCH_ROWS = 8
+#: 自动刷新的时间窗（含两端）：**工作日**的 9:00-15:30。
+#:
+#: **它只挡自动刷新**（周期任务），``/stock refresh``、``/stock add``、``stock_watch(refresh)``
+#: 一律不受它约束——用户手动要数据的时候不该被时钟拦住。
+#:
+#: **它是本地时钟，不是交易日历**：判断「今天开不开市」需要交易日历，而那份数据本身也要联网取，
+#: 为省几次请求引入一个新的失败点不划算（这条取舍见 ``DESIGN.md`` 第五节）。因此节假日（如国庆）
+#: 落在窗口内时照旧每分钟刷一次，拉到的还是上一个交易日的收盘价。周末则不需要联网就能判断，
+#: 已一并排除（``_in_refresh_window`` 里那两行）。
+#:
+#: **刻意不可配**：这是个人使用的示例脚本，加一段配置解析只换来「多一个失败面 + 多一处需要同步的
+#: 文档」。要改就改这两行常量。
+REFRESH_WINDOW_START = (9, 0)
+REFRESH_WINDOW_END = (15, 30)
+
+
+def _in_refresh_window(now=None):
+    """判断某个时刻是否落在自动刷新的时间窗内。
+
+    抽成一个**纯函数**（时刻可注入）：窗口边界是这里唯一会因为「差一分钟」而出错的地方，
+    而它对周期性任务来说错了也不会报错——只会静默地少刷几次或多刷几次。可注入才能被验证。
+
+    :param now: 待判断的时刻，缺省取当前时间
+    :return: 落在窗口内（工作日且 9:00-15:30，含两端）返回 True
+    """
+    moment = now or datetime.now()
+    if moment.weekday() >= 5:
+        # 周末成交量为零，刷到的还是周五那份收盘价——那两天不必每分钟问一次行情源
+        return False
+    return REFRESH_WINDOW_START <= (moment.hour, moment.minute) <= REFRESH_WINDOW_END
 
 
 def _split_codes(raw):
@@ -221,7 +253,8 @@ def _watch_summary(ctx, title=None, note=None):
         # 诊断行紧跟在表格后面：它解释的正是「表格里为什么少了几只」，
         # 放在固定脚注之后就容易被当成又一条无关提示跳过去
         lines.append(note)
-    lines.append("用 /stock refresh 刷新行情，/stock add <代码> 加入，/stock del <代码> 移除。")
+    lines.append("用 /stock refresh 刷新行情，/stock add <代码> 加入，/stock del <代码> 移除；"
+                 "自动刷新用 /stock refresh on|off。")
     return "\n".join(lines)
 
 
@@ -245,17 +278,32 @@ def refresh_watch(ctx):
     而外壳只在回合进行中每秒补一次失效——空闲时它一次都不问。桥接插件在本次调用成功后
     代发失效事件，面板这才重收。
 
+    两道闸门，按「先看用户意图、再看时钟」排序：
+
+    1. **用户关掉了**（``/stock refresh off``）——直接返回；
+    2. **不在时间窗内**（非工作日、或 9:00-15:30 之外）——直接返回。
+
+    **跳过必须是正常 return，不能抛异常**：周期任务抛错会被 ``ScriptScheduler`` 记一条 WARN，
+    于是关掉开关之后每 60 秒刷一条日志——那不是故障，却会长得跟故障一样。
+    正常返回的代价是**桥接层仍会代发一次失效事件**、面板白读一次小 JSON（毫秒级，是划算的）。
+
     几条刻意的选择：
 
     * **不做任何判断，只取数**：抓到就写缓存（``_refresh_watch`` 负责落盘）。取数全失败时
       让它抛出去——桥接层会记一条日志并且**不**发失效事件，因为数据没变，重画面板只是白跑一遍。
-    * **不在交易时段才跑**：判断「现在是不是交易时段」需要交易日历，而那份数据本身也要联网取，
-      为省几次请求引入一个新的失败点不划算。非交易时段跑到的是同一份收盘价，写回去等于没变。
+    * **闸门只加在这里、不加在 ``_refresh_watch`` 里**：后者是「真去取一次数」的那个函数，
+      ``/stock refresh``、``/stock add``、``stock_watch`` 都调它——手动刷新不该被时钟拦住。
+    * **时间窗是本地时钟而不是交易日历**：理由与边界见 ``REFRESH_WINDOW_START`` 的注释。
     * **间隔 60 秒**：盘中够用，又不至于把行情源当压力测试。它可以被配置段覆写：
       ``plugins.configurations.jellyfish-plugin-python.scripts.stock.schedules.refresh.intervalSeconds``。
     * **代价是 worker 不再空闲自毁**：定时调用让它始终有一只在跑的 Python 进程（缺省 300 秒空闲
-      才回收）。这是「后台刷新」的固有代价，换来的是面板不需要人手敲命令也能更新。
+      才回收）。这是「后台刷新」的固有代价，换来的是面板不需要人手敲命令也能更新——
+      关掉开关之后这个代价仍在（任务照旧每分钟空转一次，只是不联网）。
     """
+    if not store.load_settings(ctx)["autoRefresh"]:
+        return
+    if not _in_refresh_window():
+        return
     _refresh_watch(ctx)
 
 
@@ -523,7 +571,8 @@ def stock_watch(args, ctx):
 # ---------------------------------------------------------------- 命令
 
 
-@command(name="stock", summary="A 股行情与自选股", usage="/stock [add|del|refresh|clear] [代码...]")
+@command(name="stock", summary="A 股行情与自选股",
+         usage="/stock [add|del|refresh|clear] [代码...]，refresh 可带 on|off")
 def stock(tokens, raw, ctx):
     """``/stock`` 看自选股，``/stock 600519`` 看快照，``/stock add/del/refresh/clear`` 维护自选。
 
@@ -533,7 +582,7 @@ def stock(tokens, raw, ctx):
     与补全清单里也不再列出它。
 
     **刻意不声明候选查询（``has_options``）**：那样按补全键会弹出选择页，
-    而这条命令的用法很窄——五个子命令，``/stock`` 与 ``/stock help`` 都已列出。
+    而这条命令的用法很窄——几个子命令，``/stock`` 与 ``/stock help`` 都已列出。
     因此它的能力只有「执行」这一路，``tokens`` 恒为真实值（不会是 ``None``）。
     """
     if not tokens:
@@ -568,13 +617,41 @@ def _stock_help():
         "  /stock 600519 000858      查实时快照",
         "  /stock add 600519         加入自选股并刷新",
         "  /stock del 600519         从自选股移除",
-        "  /stock refresh            重新拉取自选股行情",
+        "  /stock refresh            立即拉一次自选股行情",
+        "  /stock refresh on|off     开关自动刷新（工作日 9:00-15:30 每分钟一次）",
         "  /stock clear              清空自选股",
         "",
         "模型侧另有 5 个工具：stock_quote / stock_history / stock_fundamentals /",
         "stock_moneyflow / stock_watch——直接说要分析哪只股票即可。",
-        "自选股存在 ~/.jellyfish/stock，面板刷新与缓存时刻见侧栏（/ui right）。",
+        "自选股与开关存在 ~/.jellyfish/stock，面板刷新状态见侧栏（/ui right）。",
     ])
+
+
+def _toggle_auto_refresh(rest, ctx):
+    """``/stock refresh on|off``：开关自动刷新。
+
+    **刻意不在开启时顺手拉一次**：切换开关是个瞬时动作，而取数可能十几秒
+    （东财兜底口径尤其慢）。让「敲一个开关」变成一次可能十几秒的等待，比
+    「开了之后等下一次心跳」更烦人——而后者最多 60 秒，且面板标题上的时刻
+    会如实告诉用户数据是什么时候的。
+
+    :param rest: ``refresh`` 之后的参数
+    :param ctx: 脚本上下文
+    :return: 命令结果
+    """
+    word = rest[0].strip().lower()
+    if word not in ("on", "off"):
+        return {"kind": "ERROR", "output":
+                "用法：/stock refresh [on|off]（不带参数 = 立即刷新一次；要看某只股票用 /stock 代码）"}
+    enabled = word == "on"
+    store.save_settings(ctx, enabled)
+    if not enabled:
+        return {"kind": "OK", "output": "自动刷新已关闭（/stock refresh on 重新打开）。"
+                                       "手动刷新与加入自选不受影响。"}
+    if _in_refresh_window():
+        return {"kind": "OK", "output": "自动刷新已开启：当前在 9:00-15:30 内，每 60 秒更新一次。"}
+    return {"kind": "OK", "output": "自动刷新已开启：当前是周末或不在 9:00-15:30 内，"
+                                   "到时间窗后自动开始更新。"}
 
 
 def _stock_maintenance(head, rest, ctx):
@@ -586,6 +663,8 @@ def _stock_maintenance(head, rest, ctx):
         return {"kind": "OK", "output": "已清空自选股（%d 只）。" % len(codes)}
 
     if head == "refresh":
+        if rest:
+            return _toggle_auto_refresh(rest, ctx)
         try:
             items, missing = _refresh_watch(ctx)
         except ScriptError as exc:
