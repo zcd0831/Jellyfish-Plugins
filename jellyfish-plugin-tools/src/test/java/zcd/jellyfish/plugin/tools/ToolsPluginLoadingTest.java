@@ -99,8 +99,8 @@ class ToolsPluginLoadingTest {
     }
 
     @Test
-    @DisplayName("启动后五个工具都应可从注册表按名字路由")
-    void bootstrap_should_registerAllFiveTools() throws IOException {
+    @DisplayName("启动后六个工具都应可从注册表按名字路由")
+    void bootstrap_should_registerAllSixTools() throws IOException {
         installPlugin();
 
         manager = newManager();
@@ -110,9 +110,9 @@ class ToolsPluginLoadingTest {
         for (ToolDescriptor descriptor : extensions.descriptors(ToolCallRequest.class, ToolDescriptor.class)) {
             names.add(descriptor.getName());
         }
-        assertEquals(5, names.size(), names.toString());
+        assertEquals(6, names.size(), names.toString());
         assertTrue(names.containsAll(Arrays.asList(
-                "read_file", "write_file", "edit_file", "list_dir", "grep_files")), names.toString());
+                "read_file", "write_file", "edit_file", "list_dir", "grep_files", "ask_user")), names.toString());
     }
 
     @Test

@@ -2,7 +2,10 @@ package zcd.jellyfish.plugin.tools;
 
 import zcd.jellyfish.api.JellyfishException;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -130,6 +133,37 @@ final class ToolArguments {
             return false;
         }
         throw new JellyfishException("参数 " + name + " 必须是布尔值，实际是 " + value);
+    }
+
+    /**
+     * 读取必需的对象数组参数。
+     * <p>
+     * 只做「是不是一个由对象组成的数组」这层类型校验，元素本身有哪些字段、哪些必填属于具体工具的
+     * 业务规则，不在这里判断。
+     *
+     * @param name 参数名
+     * @return 元素列表，保证非 {@code null}；空数组返回空列表
+     * @throws JellyfishException 缺失、不是数组、或元素不是对象时抛出
+     */
+    List<Map<String, Object>> requireObjectList(String name) {
+        Object value = require(name);
+        if (!(value instanceof List)) {
+            throw new JellyfishException("参数 " + name + " 必须是数组，实际是 " + value);
+        }
+        List<?> raw = (List<?>) value;
+        List<Map<String, Object>> items = new ArrayList<Map<String, Object>>(raw.size());
+        for (Object element : raw) {
+            if (!(element instanceof Map)) {
+                throw new JellyfishException("参数 " + name + " 的元素必须是对象，实际是 " + element);
+            }
+            Map<?, ?> map = (Map<?, ?>) element;
+            Map<String, Object> item = new LinkedHashMap<String, Object>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                item.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+            items.add(item);
+        }
+        return items;
     }
 
     /**

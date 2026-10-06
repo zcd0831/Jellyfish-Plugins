@@ -49,7 +49,7 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
 
 | 模块 | plugin.id | 提供什么 |
 | --- | --- | --- |
-| `jellyfish-plugin-tools` | 同名 | 五个文件工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`grep_files`；以及输入框的 `@` 文件引用 |
+| `jellyfish-plugin-tools` | 同名 | 五个文件工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`grep_files`；提问工具 `ask_user`；以及输入框的 `@` 文件引用 |
 | `jellyfish-plugin-shell` | 同名 | `shell` 工具（`/bin/sh -c` 执行命令原文）+ 命令策略（白名单准入、可信表免审批、只读不打扰、灾难形状拒绝、其余审批）+ `!命令` 输入指令。**没有沙箱** |
 | `jellyfish-plugin-session-file` | 同名 | 会话持久化：一个会话一个 JSON 文件，并用 git 管理历史 |
 | `jellyfish-plugin-todo` | 同名 | 会话待办：`todo_write` / `todo_claim` / `todo_done` / `todo_release` / `todo_block` 五个工具 + 只读 `/todo` + 随本轮消息送达的待办块 + 状态栏进度 + 左栏清单面板 |
@@ -65,9 +65,9 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
 `jellyfish-script` 是**库**（Python / Node 桥接共用的机制层），不产出到 `plugins/`；它由两个桥接插件
 以 shade 的方式打进各自的 jar。
 
-## 文件工具（jellyfish-plugin-tools）
+## 工具（jellyfish-plugin-tools）
 
-五个工具，其中三个只读：
+五个文件工具，其中三个只读：
 
 | 工具 | 参数 | 说明 |
 | --- | --- | --- |
@@ -77,7 +77,23 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
 | `list_dir` | `path`、`offset`、`limit` | 只列一层，目录优先 + `/` 后缀，不过滤 `target` 之类；大目录分页 |
 | `grep_files` | `pattern`、`path`、`max_results`、`max_line_chars`、`max_bytes` | 逐行正则，返回 `文件:行号:内容`；跳过 `.git`/`target`/`node_modules` 与二进制文件 |
 
-本插件没有配置项。
+外加一个提问工具：
+
+| 工具 | 参数 | 说明 |
+| --- | --- | --- |
+| `ask_user` | `question`、`options` | 把一个问题连同 2~6 个候选项摆到用户面前，等他选一个或自己填；答案以工具结果回灌给模型 |
+
+`ask_user` 是这个插件里**唯一持有外部依赖**的工具：它经 `PluginContext.askUser()` 拿到内核的提问端口
+（其余工具都是无状态的纯函数）。几点必须知道的口径：
+
+- **它不是审批**：用户选任何一项都不会放行任何工具，只是把答案告诉模型。权限仍然只由内核的
+  `PermissionManager` 收口。
+- **拿不到答复不算失败**：没有交互界面的外壳（`-cli`）、子代理回合、等待超时，三种都返回**成功的**工具结果，
+  内容说明原因并让模型自行判断。做成失败会让模型以为环境出错、反复重试同一个提问。
+- **子代理回合里当场拒绝**：外层界面按当前会话取待答项，而子代理有独立的会话，它的提问不会出现在任何界面上。
+- **超时**来自 `jellyfish.json` 的 `ask.timeoutSeconds`（缺省 120 秒），不是本插件的配置段。
+
+本插件没有自己的配置项。
 
 - **`read_file` 单行就超过 `max_bytes` 时报错，不切短**：切短会输出一行「看起来完整、实际残缺」的内容，
   模型无从判断自己拿到的是不是全文。错误文案给出三条出路——缩小 `limit`、调大 `max_bytes`、

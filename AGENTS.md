@@ -49,7 +49,7 @@ mvn -q -Pscript-it test
 
 | 模块 | 职责 |
 | --- | --- |
-| `jellyfish-plugin-tools` | 五个文件工具 + `@` 文件引用 |
+| `jellyfish-plugin-tools` | 五个文件工具 + `ask_user` 提问工具 + `@` 文件引用 |
 | `jellyfish-plugin-shell` | `shell` 工具 + 命令策略 + `!命令` 输入指令（commons-exec 以 shade 打进插件包） |
 | `jellyfish-plugin-session-file` | 会话持久化（一会话一 JSON + git） |
 | `jellyfish-plugin-todo` | 待办工具族 + `/todo` + 回合上下文 / 状态栏 / 面板贡献 |
