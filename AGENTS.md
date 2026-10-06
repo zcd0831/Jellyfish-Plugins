@@ -59,6 +59,7 @@ mvn -q -Pscript-it test
 | `jellyfish-plugin-mcp` | MCP 客户端（Jackson 以 shade 打进插件包） |
 | `jellyfish-plugin-workflow` | 声明式 spec 编排（并发派生子代理并聚合） |
 | `jellyfish-plugin-plan` | plan 模式（类型级权限拦截 + `/plan` 命令 + 会话扩展条目） |
+| `jellyfish-plugin-resmon` | 资源监控：JVM 与磁盘占用采样，只读 `/resmon` 命令 + 右栏面板（纯只读，不做清理） |
 | `jellyfish-plugin-python` | Python 桥接（网关 + 每脚本一 worker 进程；`jellyfish-script` 以 shade 打进） |
 | `jellyfish-plugin-node` | Node 桥接（与 Python 同构，零第三方依赖） |
 | `jellyfish-script` | 脚本桥接的**机制层库**，不产出到 `plugins/`（在内核仓库也有同名模块） |

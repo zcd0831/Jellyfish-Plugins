@@ -28,6 +28,8 @@
         <module>jellyfish-plugin-skills</module>
         <!-- plan 模式插件：只读白名单 + /plan 开关（权限拦截走类型级扩展点），无第三方依赖 -->
         <module>jellyfish-plugin-plan</module>
+        <!-- 资源监控插件：JVM / 磁盘采样全走 JDK 自带的 JMX 与 java.nio，无第三方依赖 -->
+        <module>jellyfish-plugin-resmon</module>
         <!-- MCP 客户端插件：stdio 连接外部 server，工具以 mcp__<server>__<tool> 接入 -->
         <module>jellyfish-plugin-mcp</module>
         <!-- 命令行插件：自带 commons-exec（shade 进插件包），内核 classpath 上不出现它 -->

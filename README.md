@@ -59,6 +59,7 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
 | `jellyfish-plugin-mcp` | 同名 | MCP 客户端：stdio 连外部 MCP server，把它的工具以 `mcp__<server>__<tool>` 接入 |
 | `jellyfish-plugin-workflow` | 同名 | 编排：`workflow` 工具接受一份**声明式 spec**，按依赖并发派生子代理并聚合结果 |
 | `jellyfish-plugin-plan` | 同名 | plan 模式：`/plan [on\|off]` 在会话内开关，开启时只有白名单里的工具可用 |
+| `jellyfish-plugin-resmon` | 同名 | 资源监控：JVM 与磁盘占用采样，只读 `/resmon [jvm\|disk\|auto]` 命令 + 右栏常驻 8 行面板。**只报告、不清理** |
 | `jellyfish-plugin-python` | 同名 | Python 脚本插件运行时：把 `scripts/python/<id>/` 下的脚本目录变成标准插件 |
 | `jellyfish-plugin-node` | 同名 | Node 脚本插件运行时：与 Python 同构（同一套协议与进程模型），零第三方依赖 |
 
@@ -223,6 +224,80 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
   的同一个 `synchronized` 方法内完成。
 - `todo_write` 只写插件自己的待办文件、不动工作目录里的项目文件。**在 plan 模式下它并不自动可用**：
   只读与否只看你在 `readOnlyTools` 里写了什么。
+
+## 资源监控（jellyfish-plugin-resmon）
+
+回答「Jellyfish 这个进程本身有多重、磁盘上的数据有没有在失控增长」。**它只读**：不删任何文件、
+不改任何配置，唯一的运行期开关是面板刷不刷新。
+
+| 面 | 说明 |
+| --- | --- |
+| 面板（`-tui`） | 右栏常驻 8 行，标题带采样时刻；关掉自动刷新时标题补 `暂停`。没有交互界面的外壳不注册它 |
+| `/resmon` | 完整明细（JVM + 磁盘），三种外壳都能用，输出不截断 |
+| `/resmon jvm` | 堆、非堆、内存池、GC、线程、死锁、文件描述符、CPU、类加载、运行时长 |
+| `/resmon disk` | 分区余量 + 六个已知目录的体积、文件数与**路径**，末尾给出合计与每小时增长率 |
+| `/resmon auto [on\|off]` | 面板自动刷新开关（不带参数只报状态）。运行期开关，重启回到配置缺省 |
+
+面板长这样（8 行，右栏）：
+
+```
+资源 12:04:31
+堆 512M/2.0G 25%
+GC 4% 12次 1.2s
+线程 42 死锁 0
+FD 210/8192
+磁盘 78% 剩 112G
+会话 1.4G 输出 8.2M
+插件 24M 待办 12K
+网关 88M 日志 210K
+```
+
+| 字段 | 缺省 | 说明 |
+| --- | --- | --- |
+| `sampleIntervalMillis` | `2000` | JVM 采样间隔，**下界 500**：低于它会开始丢外壳贡献（每个插件来源的信箱只有几十格） |
+| `diskScanIntervalMillis` | `60000` | 磁盘递归遍历间隔，**下界 5000**：它比读 JMX 贵两个数量级，没理由跟着每 2 秒一次 |
+| `walkMaxDepth` | `6` | 目录遍历深度上限。超过深度的部分不计入——避免一次采样走遍用户全部历史 |
+| `panel` | `true` | 是否注册面板。`false` 时只保留命令 |
+| `autoRefresh` | `true` | 是否在每轮采样后推界面失效。`false` 时面板只在外壳自身的失效点更新 |
+| `alerts` | `true` | 是否推阈值告警（只推 WARN 级，只在越过阈值那一刻推一条） |
+| `alertHeapPercent` | `85` | 堆使用率告警阈值（百分比） |
+| `alertDiskPercent` | `90` | 分区使用率告警阈值 |
+| `alertFdPercent` | `85` | 文件描述符使用率告警阈值 |
+| `sessionsDir` | `~/.jellyfish/sessions` | 会话文件目录（session-file 插件的 `sessionDir` 同源） |
+| `toolOutputsDir` | `~/.jellyfish/tool-outputs` | 工具输出目录（内核 `react.toolOutput.dir` 同源） |
+| `pluginsDir` | `~/.jellyfish/plugins` | 插件 jar 目录（`config.json` 的 `plugins.roots` 同源） |
+| `todosDir` | `~/.jellyfish/todos` | 待办目录（todo 插件的 `todoDir` 同源） |
+| `gatewayDir` | `~/.jellyfish/gateway` | 脚本网关抽取目录 |
+| `logFile` | `~/.jellyfish/jellyfish-tui.log` | TUI 日志文件（`-Djellyfish.log.file` 改过它的话这里也要跟上）。统计时**连同它的滚动历史一起算** |
+
+- **六个目录的路径必须手工对齐，这是本插件唯一的已知短板**：内核没有统一的「家目录」工具类，
+  落盘位置是各模块各自约定的；插件又拿不到工作目录、也不允许自行读 `jellyfish.json`。
+  缺省值就是上面那组约定路径，**改过内核那些配置的话要在这里写一份**，否则报出来的不是真实目录。
+  `/resmon disk` 的输出末尾会主动把这一点写出来。
+- **面板只显示六个目录，不显示别处**：它在侧栏里，内容宽必须压在 20 列以内（侧栏宽度按内容宽推出，
+  写宽了窄终端上就会折行，而折行会把 8 行的预算吃光、把磁盘那几行挤掉）。要看全部明细用 `/resmon disk`。
+- **面板处理器一行 I/O 都不做**：它在渲染线程里内联执行，一次目录遍历会把整个界面冻住。
+  全部慢活在插件的后台采样线程上，处理器只把内存里那份不可变快照拼成文本。
+- **磁盘每 60 秒才扫一次，因此面板上的磁盘数字最多旧 60 秒**：标题上的时刻就是它。
+  关掉自动刷新之后，「现在没在刷」与「刷新一直在失败」就分不出来了——所以状态写在标题里。
+- **告警只在越过阈值的那一刻推一条**：采样每 2 秒一次，「越界就报」会在几分钟内刷掉上百条，
+  而外壳对同一插件来源只留最近几条——真正重要的那条会被自己刷掉。回落之后再越界会重新报，
+  而「恢复正常」不推（它只是中性信息，占一条 WARN 位置会让告警贬值）。
+- **死锁每 15 次采样才检测一次**：`findDeadlockedThreads()` 要触发一次全线程 dump，
+  与「每 2 秒一次」完全不匹配；而死锁不会自己消失，30 秒的发现延迟没有实际损失。
+- **GC 报的是两次采样之间的增量**，不是从进程启动算起的累计值：累计值只会单调变大，
+  看不出「现在是不是在频繁 GC」。老年代单独报——它意味着进程被停下来，是能感觉到的卡顿。
+- **CPU 负载拿不到时报「-」而不是 0**：`getSystemCpuLoad()` 在还没有两个采样点可比较时返回 `NaN`，
+  而 `NaN` 经 `Math.round` 会变成 `0`——那会让一台满载的机器看起来空闲。
+- **它拿不到内核内部的计数器**（事件通道队列长度、`react` 池深度、在途子代理许可）：
+  那些只有内核知道。要监控它们得改内核，本插件不去猜。
+- **日志那一项统计的是「当前日志 + 它的轮换历史」**：内核的 TUI 日志会滚动（缺省 10 MB × 5 档），
+  只数 `jellyfish-tui.log` 那一个会漏掉大部分——而一个「越用越少」的观测结果会让人以为日志已经被控制住了。
+- **不做清理**：删除文件涉及用户的真实数据，而「哪些能删」要结合会话是否还要用来判断——那是用户与模型
+  的决策。把 `/resmon` 的输出交给模型，让它给出清理建议，再自己动手。
+- **`~/.jellyfish/sessions` 是整套运行时里唯一没有自我约束的增长点**：工具输出有 50 MiB / 200 文件上限、
+  子代理归档有 100 MiB 上限、MCP 落盘进程退出即删，而会话文件连同目录里那个 git 仓库（每次落盘一次
+  提交、从不 `gc`）只会越写越多。这也是本插件存在的理由之一。
 
 ## 项目约定（jellyfish-plugin-project）
 
