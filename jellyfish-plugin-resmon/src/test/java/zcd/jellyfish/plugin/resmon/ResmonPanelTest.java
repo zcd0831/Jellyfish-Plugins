@@ -15,28 +15,40 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * {@link ResmonPanel} 的单元测试：行预算、行宽与「没数据就不显示」。
+ * {@link ResmonPanel} 的单元测试：行宽、优先级顺序与告警行。
  * <p>
- * 行宽那条断言看着琐碎，却是这个面板唯一会「静默变坏」的地方：外壳把侧栏宽度按内容宽推出并夹进
- * {@code [20, 终端宽/4]}，内容一旦变宽，窄终端上就会折行，而折行会把 8 行的预算吃光、
- * 把磁盘那几行挤成「… 还有 N 行」——没有任何报错，只是信息没了。
+ * <b>刻意不验行数上限</b>：侧栏高度是消息区全高，外壳按当前终端高度决定显出多少，
+ * 面板这边不该有自设上限——上一版把 {@code DOCK} / {@code TOP} 的 8 行规则错套到侧栏上，
+ * 于是在高终端上也只给 8 行。这里反过来钉住「内容够全」。
  * <p>
- * 这里因此自带一份显示宽度计算（中日韩字符占两列）：插件侧不该算宽度（那是外壳的事），
- * 但<b>测试</b>必须能验证自己没把内容写宽，这份计算只活在测试里。
+ * 行宽那条断言看着琐碎，却是这个面板唯一会「静默变坏」的地方：侧栏宽度按内容宽推出
+ * （夹进 {@code [20, 终端宽/4]}），内容一旦变宽，就从消息区拿走越多列——面板是锦上添花，
+ * 消息区是主体。这里自带一份显示宽度计算（中日韩占两列）来守这条线。
+ * <p>
+ * <b>分区阈值在本类里被设成 100</b>：分区占用比例取自真实磁盘（临时目录就在用户盘上），
+ * 若沿用缺省的 90，在没有告警的用例里也会冒出一条磁盘告警，于是「第一行是什么」这类断言
+ * 会随跑测机器的磁盘使用率而变。堆与死锁则完全由桩控制，用它来验告警渲染。
  *
  * @author zcd
  */
 @DisplayName("资源面板")
 class ResmonPanelTest {
 
-    /** 面板内容行的显示宽度上限：侧栏下限 20 列减两侧边框。 */
-    private static final int MAX_WIDTH = 20;
+    /** 面板内容行的显示宽度上限（含边框后落在 22 列左右，不挤压消息区）。 */
+    private static final int MAX_WIDTH = 22;
+
+    /** 本类里把分区阈值设成不会触发的值，见类注释。 */
+    private static final double DISK_THRESHOLD_NEVER = 100.0;
+
+    /** 告警关闭时面板的基线行数：读数行一条不少。 */
+    private static final int BASELINE_ROWS = 18;
 
     /** 每个用例一个独立目录。 */
     @TempDir
@@ -45,19 +57,19 @@ class ResmonPanelTest {
     /** 采样端口桩。 */
     private JvmProbe probe;
 
-    /** 插件配置。 */
-    private PluginConfig config;
+    /** 被测处理器。 */
+    private ResmonPanel panel;
 
     /** 采样器。 */
     private ResmonSampler sampler;
 
-    /** 被测处理器。 */
-    private ResmonPanel panel;
+    /** 插件配置。 */
+    private PluginConfig config;
 
     @BeforeEach
     void setUp() {
         probe = Mockito.mock(JvmProbe.class);
-        config = config(root);
+        config = config(root, true);
         sampler = new ResmonSampler(config, probe, new DirSizer(4), Mockito.mock(PluginContext.class));
         panel = new ResmonPanel(config, sampler);
     }
@@ -69,27 +81,48 @@ class ResmonPanelTest {
     }
 
     @Test
-    @DisplayName("有数据时永远是 8 行以内")
-    void handle_should_stayWithin_row_budget() throws IOException {
+    @DisplayName("完整读数都给出去，不自我截断到 8 行")
+    void handle_should_notCapRows() throws IOException {
         prepareDisk();
-        Mockito.when(probe.probe()).thenReturn(typicalStats());
+        prepareSample();
         sampler.sampleNow();
 
         PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
 
-        assertEquals(8, contribution.getLines().size());
+        assertEquals(BASELINE_ROWS, contribution.getLines().size());
+        assertTrue(contribution.getLines().size() > 8, "侧栏不受 8 行规则约束");
     }
 
     @Test
-    @DisplayName("每一行都不超过 20 个显示列")
+    @DisplayName("每一行都不超过 22 个显示列")
     void handle_should_keep_lines_narrow() throws IOException {
         prepareDisk();
-        Mockito.when(probe.probe()).thenReturn(typicalStats());
+        prepareSample();
         sampler.sampleNow();
 
-        PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
+        List<UiLine> lines = panel.handle(new PanelContributionRequest("s-1")).getLines();
 
-        for (UiLine line : contribution.getLines()) {
+        for (UiLine line : lines) {
+            int width = displayWidth(line.text());
+            assertTrue(width <= MAX_WIDTH, "行太宽（" + width + " 列）：" + line.text());
+        }
+    }
+
+    @Test
+    @DisplayName("告警行也要守住宽度：它是最长的一行")
+    void handle_should_keep_alert_lines_narrow() throws IOException {
+        prepareDisk();
+        Mockito.when(probe.probe()).thenReturn(JvmStats.builder()
+                .capturedAt(1600000000000L)
+                .heap(900L, 1000L, 1000L)
+                .deadlocked(3L)
+                .build());
+        sampler.sampleNow();
+
+        List<UiLine> lines = panel.handle(new PanelContributionRequest("s-1")).getLines();
+
+        assertEquals(2, alertCount(lines), "堆与死锁各一条");
+        for (UiLine line : lines) {
             int width = displayWidth(line.text());
             assertTrue(width <= MAX_WIDTH, "行太宽（" + width + " 列）：" + line.text());
         }
@@ -98,7 +131,7 @@ class ResmonPanelTest {
     @Test
     @DisplayName("标题带采样时刻，关掉自动刷新时标出暂停")
     void title_should_carry_clock_and_pause_state() {
-        Mockito.when(probe.probe()).thenReturn(typicalStats());
+        prepareSample();
         sampler.sampleNow();
 
         PanelContribution running = panel.handle(new PanelContributionRequest("s-1"));
@@ -111,31 +144,25 @@ class ResmonPanelTest {
     }
 
     @Test
-    @DisplayName("内容包含堆、GC、线程、FD 与六个目录的短名")
+    @DisplayName("内容包含堆、内存池、GC、线程、FD、CPU 与六个目录的短名")
     void handle_should_include_all_sections() throws IOException {
         prepareDisk();
-        Mockito.when(probe.probe()).thenReturn(typicalStats());
+        prepareSample();
         sampler.sampleNow();
 
         String text = text(panel.handle(new PanelContributionRequest("s-1")));
 
-        assertTrue(text.contains("堆 "), text);
-        assertTrue(text.contains("GC "), text);
-        assertTrue(text.contains("线程 "), text);
-        assertTrue(text.contains("FD "), text);
-        assertTrue(text.contains("磁盘 "), text);
-        assertTrue(text.contains("会话"), text);
-        assertTrue(text.contains("输出"), text);
-        assertTrue(text.contains("插件"), text);
-        assertTrue(text.contains("待办"), text);
-        assertTrue(text.contains("网关"), text);
-        assertTrue(text.contains("日志"), text);
+        for (String needle : new String[]{"堆 ", "非堆 ", "元空间 ", "类空间 ", "GC ", "老年代 ",
+                "线程 ", "死锁 ", "FD ", "CPU ", "磁盘 ", "会话 ", "输出 ", "插件 ", "待办 ",
+                "网关 ", "日志 ", "合计 "}) {
+            assertTrue(text.contains(needle), "面板缺少「" + needle + "」：" + text);
+        }
     }
 
     @Test
     @DisplayName("目录不存在时显示短杠，而不是 0B（缺数据与真的是零不是一回事）")
     void handle_should_mark_missing_dirs() {
-        Mockito.when(probe.probe()).thenReturn(typicalStats());
+        prepareSample();
         sampler.sampleNow();
 
         String text = text(panel.handle(new PanelContributionRequest("s-1")));
@@ -144,28 +171,39 @@ class ResmonPanelTest {
     }
 
     @Test
-    @DisplayName("堆与 FD 越阈值时那一行转警示档位")
-    void handle_should_warn_when_over_threshold() throws IOException {
+    @DisplayName("文件数大于 1 时标出来：单个大文件与一堆小文件该清理的对象不同")
+    void handle_should_show_file_count() throws IOException {
         prepareDisk();
+        prepareSample();
+        sampler.sampleNow();
+
+        String text = text(panel.handle(new PanelContributionRequest("s-1")));
+
+        assertTrue(text.contains("会话 1.5K 2文件"), text);
+    }
+
+    @Test
+    @DisplayName("告警排在读数之前，用警示档位")
+    void handle_should_putAlertsFirst() throws IOException {
         Mockito.when(probe.probe()).thenReturn(JvmStats.builder()
-                .capturedAt(1000L)
+                .capturedAt(1600000000000L)
                 .heap(900L, 1000L, 1000L)
-                .fileDescriptors(900L, 1000L)
                 .build());
         sampler.sampleNow();
 
         PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
+        List<UiLine> lines = contribution.getLines();
 
-        assertEquals(UiEmphasis.WARN, contribution.getLines().get(0).getSegments().get(0).getEmphasis());
-        assertEquals(UiEmphasis.WARN, contribution.getLines().get(3).getSegments().get(0).getEmphasis());
+        assertEquals("! 堆 90% 超阈值 85%", lines.get(0).text());
+        assertEquals(UiEmphasis.WARN, lines.get(0).getSegments().get(0).getEmphasis());
+        assertTrue(lines.get(1).text().startsWith("堆 900B/1000B"), lines.get(1).text());
     }
 
     @Test
-    @DisplayName("出现死锁时线程那行转错误档位")
-    void handle_should_mark_deadlock_as_error() throws IOException {
-        prepareDisk();
+    @DisplayName("死锁告警之后，读数里的死锁那行转错误档位")
+    void handle_should_mark_deadlock_as_error() {
         Mockito.when(probe.probe()).thenReturn(JvmStats.builder()
-                .capturedAt(1000L)
+                .capturedAt(1600000000000L)
                 .threads(42L, 61L, 28L)
                 .deadlocked(1L)
                 .build());
@@ -173,16 +211,68 @@ class ResmonPanelTest {
 
         PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
 
-        assertEquals(UiEmphasis.ERROR, contribution.getLines().get(2).getSegments().get(0).getEmphasis());
+        assertEquals("! 死锁 1 个线程", contribution.getLines().get(0).text());
+        assertEquals(UiEmphasis.ERROR, emphasisOfRow(contribution, "死锁 "));
+    }
+
+    @Test
+    @DisplayName("关掉告警后没有告警行，读数照旧一条不少")
+    void handle_should_hideAlerts_when_disabled() throws IOException {
+        prepareDisk();
+        PluginConfig quiet = config(root, false);
+        JvmProbe quietProbe = Mockito.mock(JvmProbe.class);
+        Mockito.when(quietProbe.probe()).thenReturn(JvmStats.builder()
+                .capturedAt(1600000000000L)
+                .heap(900L, 1000L, 1000L)
+                .build());
+        ResmonSampler quietSampler = new ResmonSampler(quiet, quietProbe, new DirSizer(4),
+                Mockito.mock(PluginContext.class));
+        quietSampler.sampleNow();
+
+        PanelContribution contribution = new ResmonPanel(quiet, quietSampler)
+                .handle(new PanelContributionRequest("s-1"));
+
+        assertEquals(0, alertCount(contribution.getLines()));
+        assertEquals(BASELINE_ROWS, contribution.getLines().size());
     }
 
     /**
-     * 造一份典型的 JVM 快照。
+     * 数出面板里的告警行条数。
      *
-     * @return 快照
+     * @param lines 面板行列表，不可为 {@code null}
+     * @return 以「! 」开头的行数
      */
-    private static JvmStats typicalStats() {
-        return JvmStats.builder()
+    private static int alertCount(List<UiLine> lines) {
+        int count = 0;
+        for (UiLine line : lines) {
+            if (line.text().startsWith("! ")) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * 取以某前缀开头的那一行第一个文本段的强调档位。
+     *
+     * @param contribution 面板贡献，不可为 {@code null}
+     * @param prefix       行前缀
+     * @return 强调档位
+     */
+    private static UiEmphasis emphasisOfRow(PanelContribution contribution, String prefix) {
+        for (UiLine line : contribution.getLines()) {
+            if (line.text().startsWith(prefix)) {
+                return line.getSegments().get(0).getEmphasis();
+            }
+        }
+        throw new AssertionError("面板里没有以「" + prefix + "」开头的行");
+    }
+
+    /**
+     * 让采样端口返回一份典型的 JVM 快照（堆 25%，远低于阈值）。
+     */
+    private void prepareSample() {
+        Mockito.when(probe.probe()).thenReturn(JvmStats.builder()
                 .capturedAt(1600000000000L)
                 .uptime(11520000L)
                 .heap(536870912L, 1073741824L, 2147483648L)
@@ -195,20 +285,19 @@ class ResmonPanelTest {
                 .fileDescriptors(210L, 8192L)
                 .cpu(12.5, 34.0)
                 .availableProcessors(8)
-                .build();
+                .build());
     }
 
     /**
-     * 在临时目录里造出六个占用项，体积都是可控的。
-     * <p>
-     * 刻意用 K 级而不是 M 级：面板上的宽度只取决于「几位数字 + 一个单位字符」，
-     * 所以 {@code 8.2K} 与 {@code 8.2M} 占的列数完全一样，而写 120MB 会让这条用例变成秒级。
+     * 在临时目录里造出六个占用项。
      *
      * @throws IOException 写入失败时抛出
      */
     private void prepareDisk() throws IOException {
         Files.createDirectories(root.resolve("sessions"));
         write(root.resolve("sessions/a.bin"), 1536);
+        // 第二个文件是 0 字节：既让「文件数」这一项出现在面板上，又不改变体积（仍是 1.5K）
+        write(root.resolve("sessions/b.bin"), 0);
         Files.createDirectories(root.resolve("tool-outputs"));
         write(root.resolve("tool-outputs/a.bin"), 8396);
         Files.createDirectories(root.resolve("plugins"));
@@ -248,10 +337,11 @@ class ResmonPanelTest {
     /**
      * 构造把六个路径都指向临时目录的配置。
      *
-     * @param directory 临时目录，不可为 {@code null}
+     * @param directory     临时目录，不可为 {@code null}
+     * @param alertsEnabled 是否标出越阈值的项
      * @return 配置
      */
-    private static PluginConfig config(Path directory) {
+    private static PluginConfig config(Path directory, boolean alertsEnabled) {
         Map<String, Object> values = new HashMap<String, Object>();
         values.put(PluginConfig.KEY_SESSIONS_DIR, directory.resolve("sessions").toString());
         values.put(PluginConfig.KEY_TOOL_OUTPUTS_DIR, directory.resolve("tool-outputs").toString());
@@ -259,6 +349,8 @@ class ResmonPanelTest {
         values.put(PluginConfig.KEY_TODOS_DIR, directory.resolve("todos").toString());
         values.put(PluginConfig.KEY_GATEWAY_DIR, directory.resolve("gateway").toString());
         values.put(PluginConfig.KEY_LOG_FILE, directory.resolve("jellyfish-tui.log").toString());
+        values.put(PluginConfig.KEY_ALERTS, alertsEnabled);
+        values.put(PluginConfig.KEY_ALERT_DISK_PERCENT, DISK_THRESHOLD_NEVER);
         return PluginConfig.from(values);
     }
 

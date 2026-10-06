@@ -181,6 +181,35 @@ class ResmonCommandTest {
         assertTrue(result.getOutput().contains("/resmon disk"), result.getOutput());
     }
 
+    @Test
+    @DisplayName("越阈值时输出开头有「告警」段，两种子视图里都在")
+    void handle_should_report_alerts() throws IOException {
+        prepareSampled();
+        Mockito.when(probe.probe()).thenReturn(JvmStats.builder()
+                .capturedAt(1600000000000L)
+                .heap(950L, 1000L, 1000L)
+                .deadlocked(2L)
+                .build());
+        sampler.sampleNow();
+
+        String full = run();
+        String jvmOnly = run("jvm");
+        String diskOnly = run("disk");
+
+        assertTrue(full.contains("告警 堆已用 95%"), full);
+        assertTrue(jvmOnly.startsWith("告警 堆已用 95%"), jvmOnly);
+        assertTrue(diskOnly.startsWith("告警 堆已用 95%"), diskOnly);
+        assertTrue(full.contains("死锁线程"), full);
+    }
+
+    @Test
+    @DisplayName("没有越阈值时不写「告警」段，而不是写一行「无告警」")
+    void handle_should_omit_alertSection_when_quiet() throws IOException {
+        prepareSampled();
+
+        assertFalse(run().contains("告警"), run());
+    }
+
     /**
      * 让采样器先采一轮 JVM 与磁盘。
      *
@@ -231,6 +260,10 @@ class ResmonCommandTest {
 
     /**
      * 构造把六个路径都指向临时目录的配置。
+     * <p>
+     * <b>分区阈值被设成 100</b>：分区占用比例取自真实磁盘（临时目录就在用户盘上），
+     * 若沿用缺省的 90，这台机器上（已用 91%）每条用例都会多出一行磁盘告警，
+     * 「没有越阈值时不写告警段」那类断言于是随机器而变。
      *
      * @param directory 临时目录，不可为 {@code null}
      * @return 配置
@@ -243,6 +276,7 @@ class ResmonCommandTest {
         values.put(PluginConfig.KEY_TODOS_DIR, directory.resolve("todos").toString());
         values.put(PluginConfig.KEY_GATEWAY_DIR, directory.resolve("gateway").toString());
         values.put(PluginConfig.KEY_LOG_FILE, directory.resolve("jellyfish-tui.log").toString());
+        values.put(PluginConfig.KEY_ALERT_DISK_PERCENT, 100);
         return PluginConfig.from(values);
     }
 

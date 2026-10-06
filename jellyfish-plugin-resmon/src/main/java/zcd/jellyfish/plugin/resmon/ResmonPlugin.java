@@ -19,11 +19,18 @@ import zcd.jellyfish.api.plugin.PluginContext;
  * <p>
  * <b>三个面，两种粒度</b>：
  * <ul>
- *     <li>{@link PanelContributionRequest} 面板：8 行概览，落在侧栏，只在有交互界面的外壳里注册；</li>
- *     <li>{@link CommandRequest} {@code /resmon}：完整明细，三种外壳都能用，输出不被截断，
- *     也正好可以被复制给模型去评估「该清理什么」；</li>
+ *     <li>{@link PanelContributionRequest} 面板：全景读数，落在侧栏，只在有交互界面的外壳里注册。
+ *     侧栏高度是消息区全高（8 行上限只作用于 {@code DOCK} / {@code TOP}），因此这里不做自我截断，
+ *     由外壳按终端高度决定显出多少；</li>
+ *     <li>{@link CommandRequest} {@code /resmon}：同一份数据的完整明细，三种外壳都能用，
+ *     输出不被截断，也正好可以被复制给模型去评估「该清理什么」；</li>
  *     <li>{@link CommandOptionRequest} 候选：让外壳能弹出可选子命令。</li>
  * </ul>
+ * <p>
+ * <b>告警只出现在面板与命令里，不走外壳通知</b>：越阈值的项是<b>当前状态</b>而不是一次事件，
+ * 因此由呈现方每次刷新时读一遍（见 {@code ResmonSampler.alerts()}）。若走 {@code present(NOTICE)}，
+ * 同一项持续越界会在每次采样时重发一条——而外壳的通知区在没有会话的首页上也会把它显示出来，
+ * 那恰恰是它最没用的时候（首页上用户还没开始干活，没有上下文判断这条告警要不要管）。
  * <p>
  * <b>为什么必须是插件</b>：内核侧刻意不引第三方指标库、也不对外开 {@code /metrics}
  * （{@code docs/constraints.md} 的「诊断输出必须比被诊断对象更稳」一节）。而进程内的资源事实

@@ -132,6 +132,9 @@ final class ResmonCommand implements ExtensionHandler<CommandRequest, CommandRes
         if (withJvm && withDisk) {
             out.append("资源快照  ").append(ResmonFormat.timestamp(latestStamp(jvm, disk))).append('\n');
         }
+        // 告警在两种视图里都出现，且放在最前：它是这份输出里唯一「需要动作」的部分，
+        // 而把它藏进某一种子视图会让「/resmon jvm」看起来一切正常
+        appendAlerts(out);
         if (withJvm) {
             appendJvm(out, jvm);
         }
@@ -139,6 +142,20 @@ final class ResmonCommand implements ExtensionHandler<CommandRequest, CommandRes
             appendDisk(out, disk);
         }
         return out.toString();
+    }
+
+    /**
+     * 追加告警段。
+     * <p>
+     * 没有告警时什么都不写，而不是写一行「无告警」：这份输出的常态是没有告警，
+     * 每个默认场景都多一行噪音，只会让人不再读这一段。
+     *
+     * @param out 输出缓冲，不可为 {@code null}
+     */
+    private void appendAlerts(StringBuilder out) {
+        for (Alert alert : sampler.alerts()) {
+            out.append("告警 ").append(alert.detailText()).append('\n');
+        }
     }
 
     /**
@@ -334,6 +351,7 @@ final class ResmonCommand implements ExtensionHandler<CommandRequest, CommandRes
                 "  /resmon auto on|off  开关面板自动刷新",
                 "  /resmon help         本说明",
                 "",
+                "越阈值的项会在输出开头以「告警」列出，并显示在 TUI 右栏面板的最前面。",
                 "本命令是只读的：它不删除任何文件，只报告占用。要清理请把这些输出交给模型评估。");
     }
 }

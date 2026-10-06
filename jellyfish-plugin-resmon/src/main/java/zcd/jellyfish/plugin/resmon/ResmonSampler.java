@@ -5,7 +5,6 @@ import org.slf4j.LoggerFactory;
 import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.ShellContribution;
 import zcd.jellyfish.api.plugin.PluginContext;
-import zcd.jellyfish.api.ui.UiLine;
 
 import java.io.IOException;
 import java.nio.file.FileStore;
@@ -72,14 +71,17 @@ final class ResmonSampler implements AutoCloseable {
     /** 插件上下文，用于往外壳推失效与告警。 */
     private final PluginContext context;
 
-    /** 阈值判定器：有状态（记住哪些告警已经在响），只被采样线程使用。 */
-    private final AlertEvaluator alerts;
+    /** 阈值判定器：无状态，算出「此刻哪些项越阈值」。 */
+    private final AlertEvaluator evaluator;
 
     /** 最近一次 JVM 快照；还没采到时为 {@code null}。 */
     private volatile JvmStats jvm;
 
     /** 最近一次磁盘报告；还没扫到时是空报告。 */
     private volatile DiskReport disk = DiskReport.empty();
+
+    /** 此刻越阈值的告警；无告警时为空列表。 */
+    private volatile List<Alert> alerts = Collections.emptyList();
 
     /** 是否主动推送界面失效。 */
     private volatile boolean autoRefresh;
@@ -109,7 +111,7 @@ final class ResmonSampler implements AutoCloseable {
         this.probe = probe;
         this.sizer = sizer;
         this.context = context;
-        this.alerts = new AlertEvaluator(config);
+        this.evaluator = new AlertEvaluator(config);
         this.autoRefresh = config.autoRefresh();
     }
 
@@ -185,6 +187,18 @@ final class ResmonSampler implements AutoCloseable {
     }
 
     /**
+     * 获取此刻越阈值的告警。
+     * <p>
+     * <b>它是一份状态快照，不是事件流</b>：面板每次刷新都重新读一遍，因此同一项持续越界只会显示一份，
+     * 回落之后再越界也自然重新出现——不需要任何「只报一次」的记账。
+     *
+     * @return 不可变列表，保证非 {@code null}；无告警时为空列表
+     */
+    List<Alert> alerts() {
+        return alerts;
+    }
+
+    /**
      * 判断是否在采样后主动推送界面失效。
      *
      * @return 推送返回 {@code true}
@@ -206,7 +220,7 @@ final class ResmonSampler implements AutoCloseable {
     }
 
     /**
-     * 采一次 JVM 并推送告警与界面失效。
+     * 采一次 JVM 并推送界面失效。
      */
     private void sampleJvm() {
         if (stopping) {
@@ -214,7 +228,7 @@ final class ResmonSampler implements AutoCloseable {
         }
         try {
             jvm = probe.probe();
-            publishAlerts();
+            refreshAlerts();
             publishInvalidated("jvm");
         } catch (RuntimeException e) {
             LOG.warn("JVM 采样失败：{}", e.getMessage());
@@ -222,7 +236,7 @@ final class ResmonSampler implements AutoCloseable {
     }
 
     /**
-     * 扫一次磁盘并推送告警与界面失效。
+     * 扫一次磁盘并推送界面失效。
      */
     private void sampleDisk() {
         if (stopping) {
@@ -230,7 +244,7 @@ final class ResmonSampler implements AutoCloseable {
         }
         try {
             disk = scanDisk();
-            publishAlerts();
+            refreshAlerts();
             publishInvalidated("disk");
         } catch (RuntimeException e) {
             LOG.warn("磁盘统计失败：{}", e.getMessage());
@@ -249,6 +263,24 @@ final class ResmonSampler implements AutoCloseable {
     void sampleNow() {
         jvm = probe.probe();
         disk = scanDisk();
+        refreshAlerts();
+    }
+
+    /**
+     * 重算此刻越阈值的告警。
+     * <p>
+     * 用当前两份快照一起判定：内存与磁盘由两个线程分别刷新，因此这里读到的可能是
+     * 「新内存 + 旧磁盘」——这对告警没有影响（两者互不相干），却省掉了一份跨线程的联合快照。
+     * <p>
+     * 关掉 {@code alerts} 配置时置空而不是不更新：用户关掉它的意图是「别再提示」，
+     * 因此已算出来的那份也要立刻消失，而不是留在面板上直到下次重启。
+     */
+    private void refreshAlerts() {
+        if (stopping || !config.alerts()) {
+            alerts = Collections.emptyList();
+            return;
+        }
+        alerts = Collections.unmodifiableList(new ArrayList<Alert>(evaluator.evaluate(jvm, disk)));
     }
 
     /**
@@ -279,28 +311,11 @@ final class ResmonSampler implements AutoCloseable {
     }
 
     /**
-     * 判定并推送阈值告警。
-     * <p>
-     * 用当前两份快照一起判定：内存与磁盘由两个线程分别刷新，因此这里读到的可能是
-     * 「新内存 + 旧磁盘」——这对告警没有影响（两者互不相干），却省掉了一份跨线程的联合快照。
-     */
-    private void publishAlerts() {
-        if (stopping || !config.alerts()) {
-            return;
-        }
-        for (Alert alert : alerts.evaluate(jvm, disk)) {
-            try {
-                context.present(ShellContribution.notice(ShellContribution.Scope.SHELL, null, alert.key(),
-                        ShellContribution.Severity.WARN, Collections.singletonList(UiLine.of(alert.text()))));
-            } catch (RuntimeException e) {
-                // 停止竞态：fail-closed 的上下文会拒绝投递，这不是故障，只是没赶上
-                LOG.debug("告警推送失败：{}", e.getMessage());
-            }
-        }
-    }
-
-    /**
      * 往外壳推一条「我的面板内容脏了」。
+     * <p>
+     * <b>这是本插件往外壳推的唯一一条东西</b>。告警不走推送：它是「当前状态」而不是一次事件，
+     * 而状态该由面板每次刷新时重新读一遍——推的话，同一条告警会在每次采样时重发一次，
+     * 而外壳的通知区会在没有会话的首页上把它显示出来，那正是它最没用的时候。
      * <p>
      * 这是面板能自己动起来的唯一机制：外壳只在缓存失效时才重新问插件要内容，
      * 而空闲时（没有回合在跑）没有任何东西会替我们失效。投递是尽力而为的，

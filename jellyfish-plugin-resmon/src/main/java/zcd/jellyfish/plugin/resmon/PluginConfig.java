@@ -139,7 +139,7 @@ final class PluginConfig {
     /** 是否在采样后主动推送界面失效。 */
     private final boolean autoRefresh;
 
-    /** 是否推送阈值告警。 */
+    /** 是否在面板与命令里标出越阈值的项。 */
     private final boolean alerts;
 
     /** 会话目录。 */
@@ -253,9 +253,12 @@ final class PluginConfig {
     }
 
     /**
-     * 判断是否推送阈值告警。
+     * 判断是否标出越阈值的项。
+     * <p>
+     * 关掉它只是「不再标出」：面板会少掉告警行、命令输出会少掉告警段，
+     * 各项读数本身照旧显示——阈值是提醒，不是数据。
      *
-     * @return 推送返回 {@code true}
+     * @return 标出返回 {@code true}
      */
     boolean alerts() {
         return alerts;
