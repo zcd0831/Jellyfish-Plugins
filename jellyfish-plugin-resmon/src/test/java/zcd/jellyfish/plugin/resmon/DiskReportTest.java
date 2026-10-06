@@ -4,17 +4,18 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Paths;
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * {@link DiskReport} 的单元测试：合计、分区比例与增长速度。
+ * {@link DiskReport} 的单元测试：合计、分区比例、增长速度与「按体积排序后的第一项」。
  * <p>
  * 增长速度是本插件唯一「需要两份数据才能算出来」的量，也最容易算错（除零、单位、采样间隔太短），
  * 因此单独把它的边界（没有上一次、间隔为零、变小了）一一列出来。
@@ -36,7 +37,7 @@ class DiskReportTest {
     }
 
     @Test
-    @DisplayName("合计由各占用项相加，不由调用方传")
+    @DisplayName("合计由各子项相加，不由调用方传")
     void of_should_sum_usages() {
         DiskReport report = DiskReport.of(1000L, usages(1024L, 2048L), -1L, -1L, -1L, -1L);
 
@@ -69,11 +70,8 @@ class DiskReportTest {
     void growthBytesPerHour_should_extrapolate() {
         // 半小时涨了 6M → 每小时 12M
         long halfHour = 1800000L;
-        List<PathUsage> before = usages(0L);
-        List<PathUsage> after = usages(6L * 1024L * 1024L);
-
-        DiskReport previous = DiskReport.of(1000L, before, -1L, -1L, -1L, -1L);
-        DiskReport current = DiskReport.of(1000L + halfHour, after, -1L, -1L,
+        DiskReport previous = DiskReport.of(1000L, usages(0L), -1L, -1L, -1L, -1L);
+        DiskReport current = DiskReport.of(1000L + halfHour, usages(6L * 1024L * 1024L), -1L, -1L,
                 previous.totalBytes(), previous.capturedAtMillis());
 
         assertEquals(12L * 1024L * 1024L, current.growthBytesPerHour());
@@ -96,40 +94,34 @@ class DiskReportTest {
     }
 
     @Test
-    @DisplayName("按键取占用项，取不到返回 null")
-    void usageOf_should_find_by_key() {
+    @DisplayName("按名字取子项，取不到返回 null")
+    void usageOf_should_find_by_name() {
         DiskReport report = DiskReport.of(1000L, usages(1024L), -1L, -1L, -1L, -1L);
 
-        assertEquals(1024L, report.usageOf(UsageKeys.SESSIONS).bytes());
+        assertEquals(1024L, report.usageOf("a0").bytes());
         assertNull(report.usageOf("nope"));
     }
 
-    /**
-     * 造一组占用结果。
-     *
-     * @param sizes 各占用项的体积
-     * @return 占用结果列表，保证非 {@code null}
-     */
-    private static List<PathUsage> usages(long... sizes) {
-        String[] keys = {UsageKeys.SESSIONS, UsageKeys.TOOL_OUTPUTS, UsageKeys.PLUGINS, UsageKeys.TODOS};
-        java.util.List<PathUsage> list = new java.util.ArrayList<PathUsage>();
-        for (int i = 0; i < sizes.length; i++) {
-            list.add(new PathUsage(keys[i % keys.length], Paths.get("/tmp/" + i), sizes[i], 1L, true));
-        }
-        return list;
-    }
-
     @Test
-    @DisplayName("占用项列表不可被外部修改")
+    @DisplayName("子项列表不可被外部修改")
     void usages_should_be_immutable() {
         DiskReport report = DiskReport.of(1000L, usages(1L, 2L), -1L, -1L, -1L, -1L);
 
-        assertEquals(Arrays.asList(1L, 2L).size(), report.usages().size());
-        try {
-            report.usages().add(new PathUsage("x", Paths.get("/tmp/x"), 0L, 0L, true));
-            throw new AssertionError("列表应当不可变");
-        } catch (UnsupportedOperationException expected) {
-            // 期望：不可变视图
+        assertThrows(UnsupportedOperationException.class,
+                () -> report.usages().add(new PathUsage("x", Paths.get("/tmp/x"), 0L, 0L, 0L, true)));
+    }
+
+    /**
+     * 造一组占用结果，名字为 {@code a0}、{@code a1}……
+     *
+     * @param sizes 各子项的体积
+     * @return 占用结果列表，保证非 {@code null}
+     */
+    private static List<PathUsage> usages(long... sizes) {
+        List<PathUsage> list = new ArrayList<PathUsage>();
+        for (int i = 0; i < sizes.length; i++) {
+            list.add(new PathUsage("a" + i, Paths.get("/tmp/a" + i), sizes[i], 1L, 0L, true));
         }
+        return list;
     }
 }

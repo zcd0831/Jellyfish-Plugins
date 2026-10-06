@@ -18,9 +18,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * {@link PluginConfig} 的单元测试：缺省值、覆盖、{@code ~} 展开与越界配置。
  * <p>
- * 缺省值这一组断言看起来最没技术含量，却是这里最要紧的：它们钉住的是「内核与官方插件约定俗成的
- * 那几个落盘路径」。一旦哪天内核换了位置而本插件没跟上，这几条会失败并直接指出该改哪个常量，
- * 而不是让面板安静地报出别人的目录。
+ * 这里只有<b>一个</b>路径配置（{@code baseDir}），而且它断言的正是那条最稳定的约定
+ * ——{@code ~/.jellyfish}。上一版逐个声明六个目录，那既要知道别的插件把数据放在哪儿、
+ * 又会在别人改配置时安静地报错；改成扫描一个根目录之后，「配置对不对」这件事只有一个答案要维护。
  *
  * @author zcd
  */
@@ -35,16 +35,11 @@ class PluginConfigTest {
     Path directory;
 
     @Test
-    @DisplayName("空配置段时全部取约定路径")
-    void from_should_apply_defaults_when_empty() {
+    @DisplayName("空配置段时根目录取约定的 ~/.jellyfish")
+    void from_should_default_baseDir() {
         PluginConfig config = PluginConfig.from(Collections.<String, Object>emptyMap());
 
-        assertEquals(Paths.get(HOME, ".jellyfish", "sessions"), config.sessionsDir());
-        assertEquals(Paths.get(HOME, ".jellyfish", "tool-outputs"), config.toolOutputsDir());
-        assertEquals(Paths.get(HOME, ".jellyfish", "plugins"), config.pluginsDir());
-        assertEquals(Paths.get(HOME, ".jellyfish", "todos"), config.todosDir());
-        assertEquals(Paths.get(HOME, ".jellyfish", "gateway"), config.gatewayDir());
-        assertEquals(Paths.get(HOME, ".jellyfish", "jellyfish-tui.log"), config.logFile());
+        assertEquals(Paths.get(HOME, ".jellyfish"), config.baseDir());
     }
 
     @Test
@@ -53,40 +48,43 @@ class PluginConfigTest {
         PluginConfig config = PluginConfig.from(null);
 
         assertEquals(PluginConfig.DEFAULT_SAMPLE_INTERVAL_MILLIS, config.sampleIntervalMillis());
+        assertEquals(PluginConfig.DEFAULT_DISK_INTERVAL_MILLIS, config.diskScanIntervalMillis());
+        assertEquals(PluginConfig.DEFAULT_DISK_ENTRIES, config.diskEntries());
         assertTrue(config.panel());
         assertTrue(config.autoRefresh());
         assertTrue(config.alerts());
     }
 
     @Test
-    @DisplayName("显式配置覆盖缺省值，相对路径规范化为绝对路径")
-    void from_should_override_paths() {
+    @DisplayName("显式配置覆盖根目录，相对路径规范化为绝对路径")
+    void from_should_override_baseDir() {
         Map<String, Object> values = new HashMap<String, Object>();
-        values.put(PluginConfig.KEY_SESSIONS_DIR, directory.toString());
+        values.put(PluginConfig.KEY_BASE_DIR, directory.toString());
 
         PluginConfig config = PluginConfig.from(values);
 
-        assertEquals(directory.toAbsolutePath().normalize(), config.sessionsDir());
-        assertEquals(Paths.get(HOME, ".jellyfish", "todos"), config.todosDir());
+        assertEquals(directory.toAbsolutePath().normalize(), config.baseDir());
     }
 
     @Test
-    @DisplayName("间隔与深度从数字与字符串两种写法都能解析")
+    @DisplayName("间隔、深度与子项数从数字与字符串两种写法都能解析")
     void from_should_parse_numbers_from_both_forms() {
         Map<String, Object> values = new HashMap<String, Object>();
         values.put(PluginConfig.KEY_SAMPLE_INTERVAL, 3000L);
         values.put(PluginConfig.KEY_DISK_INTERVAL, "120000");
         values.put(PluginConfig.KEY_WALK_MAX_DEPTH, 4);
+        values.put(PluginConfig.KEY_DISK_ENTRIES, "20");
 
         PluginConfig config = PluginConfig.from(values);
 
         assertEquals(3000L, config.sampleIntervalMillis());
         assertEquals(120000L, config.diskScanIntervalMillis());
         assertEquals(4, config.walkMaxDepth());
+        assertEquals(20, config.diskEntries());
     }
 
     @Test
-    @DisplayName("阈值改动会同时影响面板配色与告警")
+    @DisplayName("阈值改动会同时影响面板配色与告警文本")
     void from_should_override_thresholds() {
         Map<String, Object> values = new HashMap<String, Object>();
         values.put(PluginConfig.KEY_ALERT_HEAP_PERCENT, 70);
@@ -133,19 +131,28 @@ class PluginConfigTest {
     }
 
     @Test
-    @DisplayName("路径写成空白字符串当场报错，不静默回退")
-    void from_should_reject_blank_path() {
+    @DisplayName("面板子项数不给 0：关面板有 panel，不用这个开关表达")
+    void from_should_reject_zero_diskEntries() {
         Map<String, Object> values = new HashMap<String, Object>();
-        values.put(PluginConfig.KEY_SESSIONS_DIR, "   ");
+        values.put(PluginConfig.KEY_DISK_ENTRIES, 0);
 
         assertThrows(zcd.jellyfish.api.JellyfishException.class, () -> PluginConfig.from(values));
     }
 
     @Test
-    @DisplayName("路径写成数字当场报错")
-    void from_should_reject_nonString_path() {
+    @DisplayName("根目录写成空白字符串当场报错，不静默回退")
+    void from_should_reject_blank_baseDir() {
         Map<String, Object> values = new HashMap<String, Object>();
-        values.put(PluginConfig.KEY_SESSIONS_DIR, 42);
+        values.put(PluginConfig.KEY_BASE_DIR, "   ");
+
+        assertThrows(zcd.jellyfish.api.JellyfishException.class, () -> PluginConfig.from(values));
+    }
+
+    @Test
+    @DisplayName("根目录写成数字当场报错")
+    void from_should_reject_nonString_baseDir() {
+        Map<String, Object> values = new HashMap<String, Object>();
+        values.put(PluginConfig.KEY_BASE_DIR, 42);
 
         assertThrows(zcd.jellyfish.api.JellyfishException.class, () -> PluginConfig.from(values));
     }

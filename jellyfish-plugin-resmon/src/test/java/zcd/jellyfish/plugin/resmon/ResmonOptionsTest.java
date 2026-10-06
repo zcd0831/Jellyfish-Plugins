@@ -42,7 +42,7 @@ class ResmonOptionsTest {
     @BeforeEach
     void setUp() {
         Map<String, Object> values = new HashMap<String, Object>();
-        values.put(PluginConfig.KEY_SESSIONS_DIR, root.toString());
+        values.put(PluginConfig.KEY_BASE_DIR, root.toString());
         sampler = new ResmonSampler(PluginConfig.from(values), Mockito.mock(JvmProbe.class),
                 new DirSizer(2), Mockito.mock(PluginContext.class));
         options = new ResmonOptions(sampler);

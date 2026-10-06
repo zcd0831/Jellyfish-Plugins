@@ -14,41 +14,42 @@ import zcd.jellyfish.api.ui.UiLine;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * {@link ResmonPanel} 的单元测试：行宽、优先级顺序与告警行。
+ * {@link ResmonPanel} 的单元测试：行宽、顺序、子项列表与「没数据就不显示」。
  * <p>
  * <b>刻意不验行数上限</b>：侧栏高度是消息区全高，外壳按当前终端高度决定显出多少，
- * 面板这边不该有自设上限——上一版把 {@code DOCK} / {@code TOP} 的 8 行规则错套到侧栏上，
+ * 面板这边不该有自设上限——早先那版把 {@code DOCK} / {@code TOP} 的 8 行规则错套到侧栏上，
  * 于是在高终端上也只给 8 行。这里反过来钉住「内容够全」。
  * <p>
- * 行宽那条断言看着琐碎，却是这个面板唯一会「静默变坏」的地方：侧栏宽度按内容宽推出
- * （夹进 {@code [20, 终端宽/4]}），内容一旦变宽，就从消息区拿走越多列——面板是锦上添花，
- * 消息区是主体。这里自带一份显示宽度计算（中日韩占两列）来守这条线。
+ * 行宽那条断言看着琐碎，却是这个面板最容易「静默变坏」的地方：子项名是用户给的（可能是任意长度的
+ * 目录名），而侧栏宽度按内容宽推出——名字多长一分，消息区就少一分。
  * <p>
  * <b>分区阈值在本类里被设成 100</b>：分区占用比例取自真实磁盘（临时目录就在用户盘上），
- * 若沿用缺省的 90，在没有告警的用例里也会冒出一条磁盘告警，于是「第一行是什么」这类断言
- * 会随跑测机器的磁盘使用率而变。堆与死锁则完全由桩控制，用它来验告警渲染。
+ * 若沿用缺省的 90，在没有越界用例里那一行也会变黄，「哪一行是什么档位」这类断言会随跑测机器的
+ * 磁盘使用率而变。堆与死锁则完全由桩控制，用它来验「越界标黄」。
  *
  * @author zcd
  */
 @DisplayName("资源面板")
 class ResmonPanelTest {
 
-    /** 面板内容行的显示宽度上限（含边框后落在 22 列左右，不挤压消息区）。 */
+    /** 面板行的显示宽度上限（含边框后落在侧栏的宽度预算里，不挤压消息区）。 */
     private static final int MAX_WIDTH = 22;
 
     /** 本类里把分区阈值设成不会触发的值，见类注释。 */
     private static final double DISK_THRESHOLD_NEVER = 100.0;
 
-    /** 告警关闭时面板的基线行数：读数行一条不少。 */
-    private static final int BASELINE_ROWS = 18;
+    /** 告警关闭时面板里 JVM 与磁盘固定部分的基线行数（不含子项行）。 */
+    private static final int FIXED_ROWS = 12;
 
     /** 每个用例一个独立目录。 */
     @TempDir
@@ -57,19 +58,19 @@ class ResmonPanelTest {
     /** 采样端口桩。 */
     private JvmProbe probe;
 
-    /** 被测处理器。 */
-    private ResmonPanel panel;
+    /** 插件配置。 */
+    private PluginConfig config;
 
     /** 采样器。 */
     private ResmonSampler sampler;
 
-    /** 插件配置。 */
-    private PluginConfig config;
+    /** 被测处理器。 */
+    private ResmonPanel panel;
 
     @BeforeEach
     void setUp() {
         probe = Mockito.mock(JvmProbe.class);
-        config = config(root, true);
+        config = config(root, 12, true);
         sampler = new ResmonSampler(config, probe, new DirSizer(4), Mockito.mock(PluginContext.class));
         panel = new ResmonPanel(config, sampler);
     }
@@ -83,49 +84,93 @@ class ResmonPanelTest {
     @Test
     @DisplayName("完整读数都给出去，不自我截断到 8 行")
     void handle_should_notCapRows() throws IOException {
-        prepareDisk();
+        prepareChildren();
         prepareSample();
         sampler.sampleNow();
 
-        PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
+        List<UiLine> lines = panel.handle(new PanelContributionRequest("s-1")).getLines();
 
-        assertEquals(BASELINE_ROWS, contribution.getLines().size());
-        assertTrue(contribution.getLines().size() > 8, "侧栏不受 8 行规则约束");
+        assertEquals(FIXED_ROWS + 3, lines.size(), "固定 12 行 + 3 个子项 + 合计");
+        assertTrue(lines.size() > 8, "侧栏不受 8 行规则约束");
     }
 
     @Test
     @DisplayName("每一行都不超过 22 个显示列")
     void handle_should_keep_lines_narrow() throws IOException {
-        prepareDisk();
+        prepareChildren();
         prepareSample();
         sampler.sampleNow();
 
-        List<UiLine> lines = panel.handle(new PanelContributionRequest("s-1")).getLines();
-
-        for (UiLine line : lines) {
-            int width = displayWidth(line.text());
+        for (UiLine line : panel.handle(new PanelContributionRequest("s-1")).getLines()) {
+            int width = ResmonFormat.displayWidth(line.text());
             assertTrue(width <= MAX_WIDTH, "行太宽（" + width + " 列）：" + line.text());
         }
     }
 
     @Test
-    @DisplayName("告警行也要守住宽度：它是最长的一行")
-    void handle_should_keep_alert_lines_narrow() throws IOException {
-        prepareDisk();
-        Mockito.when(probe.probe()).thenReturn(JvmStats.builder()
-                .capturedAt(1600000000000L)
-                .heap(900L, 1000L, 1000L)
-                .deadlocked(3L)
-                .build());
+    @DisplayName("超长的子项名被截断，但行宽仍然守住预算")
+    void handle_should_clip_long_names() throws IOException {
+        Files.createDirectories(root.resolve("a-very-long-directory-name-that-would-blow-the-budget"));
+        prepareSample();
         sampler.sampleNow();
 
         List<UiLine> lines = panel.handle(new PanelContributionRequest("s-1")).getLines();
 
-        assertEquals(2, alertCount(lines), "堆与死锁各一条");
+        boolean sawClipped = false;
         for (UiLine line : lines) {
-            int width = displayWidth(line.text());
-            assertTrue(width <= MAX_WIDTH, "行太宽（" + width + " 列）：" + line.text());
+            assertTrue(ResmonFormat.displayWidth(line.text()) <= MAX_WIDTH, line.text());
+            if (line.text().contains("a-very-lo") && line.text().contains("\u2026")) {
+                sawClipped = true;
+            }
         }
+        assertTrue(sawClipped, "长名字应当被截断：" + text(lines));
+    }
+
+    @Test
+    @DisplayName("名字的宽度预算按后缀自适应：后缀短的名字能完整显示，不会都变成同一个前缀")
+    void handle_should_keep_short_names_intact() throws IOException {
+        Files.write(root.resolve("jellyfish-tui.log"), new byte[4096]);
+        Files.write(root.resolve("jellyfish.json"), new byte[1024]);
+        prepareSample();
+        sampler.sampleNow();
+
+        String text = text(panel.handle(new PanelContributionRequest("s-1")).getLines());
+
+        // 固定 10 列预算会把这两个都截成「jellyfish…」，于是两行看不出区别
+        assertTrue(text.contains("jellyfish-tui.log "), text);
+        assertTrue(text.contains("jellyfish.json "), text);
+    }
+
+    @Test
+    @DisplayName("轮换/备份文件不单独占一行：它们已经被算进主文件，再列一遍就是重复计算")
+    void handle_should_not_doubleCount_rotatedFiles() throws IOException {
+        Files.write(root.resolve("jellyfish-tui.log"), new byte[1024]);
+        Files.write(root.resolve("jellyfish-tui.log.1"), new byte[4096]);
+        Files.write(root.resolve("jellyfish.json"), new byte[512]);
+        Files.write(root.resolve("jellyfish.json.bak"), new byte[256]);
+        prepareSample();
+        sampler.sampleNow();
+
+        List<UiLine> lines = panel.handle(new PanelContributionRequest("s-1")).getLines();
+        String text = text(lines);
+
+        // 轮换档折叠进主文件：每一项的文件数是 2（主文件 + 一个后缀文件），而不是各占一行
+        assertTrue(text.contains("5K 2文件"), text);
+        assertTrue(text.contains("768B 2文件"), text);
+        assertFalse(text.contains("log.1"), "轮换档不该单独成行：" + text);
+        assertFalse(text.contains("json.bak"), "备份不该单独成行：" + text);
+        // 合计只算一次：1K + 4K + 512B + 256B = 5888B
+        assertTrue(text.contains("合计 5.8K"), text);
+        // 名字虽被截断，但两行必须能区分——固定 10 列预算时它们都会是「jellyfish…」
+        List<String> jellyfishRows = new ArrayList<String>();
+        for (UiLine line : lines) {
+            if (line.text().contains("jellyfish")) {
+                jellyfishRows.add(line.text());
+            }
+        }
+        assertEquals(2, jellyfishRows.size(), text);
+        assertFalse(jellyfishRows.get(0).equals(jellyfishRows.get(1)),
+                "两行截断后不该长得一样：" + jellyfishRows);
     }
 
     @Test
@@ -144,82 +189,126 @@ class ResmonPanelTest {
     }
 
     @Test
-    @DisplayName("内容包含堆、内存池、GC、线程、FD、CPU 与六个目录的短名")
+    @DisplayName("内容包含堆、内存池、GC、线程、FD、CPU、分区与子项")
     void handle_should_include_all_sections() throws IOException {
-        prepareDisk();
+        prepareChildren();
         prepareSample();
         sampler.sampleNow();
 
-        String text = text(panel.handle(new PanelContributionRequest("s-1")));
+        String text = text(panel.handle(new PanelContributionRequest("s-1")).getLines());
 
         for (String needle : new String[]{"堆 ", "非堆 ", "元空间 ", "类空间 ", "GC ", "老年代 ",
-                "线程 ", "死锁 ", "FD ", "CPU ", "磁盘 ", "会话 ", "输出 ", "插件 ", "待办 ",
-                "网关 ", "日志 ", "合计 "}) {
+                "线程 ", "死锁 ", "FD ", "CPU ", "磁盘 ", "sessions", "tool-outp", "合计 "}) {
             assertTrue(text.contains(needle), "面板缺少「" + needle + "」：" + text);
         }
     }
 
     @Test
-    @DisplayName("目录不存在时显示短杠，而不是 0B（缺数据与真的是零不是一回事）")
-    void handle_should_mark_missing_dirs() {
+    @DisplayName("子项按体积从大到小排列：最大的永远在第一行")
+    void handle_should_list_children_by_size() throws IOException {
+        Files.createDirectories(root.resolve("small"));
+        Files.write(root.resolve("small/a"), new byte[1024]);
+        Files.createDirectories(root.resolve("big"));
+        Files.write(root.resolve("big/a"), new byte[512 * 1024]);
         prepareSample();
         sampler.sampleNow();
 
-        String text = text(panel.handle(new PanelContributionRequest("s-1")));
+        List<UiLine> lines = panel.handle(new PanelContributionRequest("s-1")).getLines();
+        int bigRow = rowOfPrefix(lines, "big ");
+        int smallRow = rowOfPrefix(lines, "small ");
 
-        assertTrue(text.contains("会话 " + ResmonFormat.UNKNOWN), text);
+        assertTrue(bigRow > 0 && smallRow > 0, text(lines));
+        assertTrue(bigRow < smallRow, "体积大的应当排在前面：" + text(lines));
+    }
+
+    @Test
+    @DisplayName("子项数超过配置上限时补一行「还有 N 项」，而不是静默省略")
+    void handle_should_summarize_when_childrenExceedLimit() throws IOException {
+        PluginConfig limited = config(root, 2, true);
+        ResmonSampler limitedSampler = new ResmonSampler(limited, probe, new DirSizer(4),
+                Mockito.mock(PluginContext.class));
+        Files.createDirectories(root.resolve("one"));
+        Files.createDirectories(root.resolve("two"));
+        Files.createDirectories(root.resolve("three"));
+        prepareSample();
+        limitedSampler.sampleNow();
+
+        List<UiLine> lines = new ResmonPanel(limited, limitedSampler)
+                .handle(new PanelContributionRequest("s-1")).getLines();
+
+        assertTrue(text(lines).contains("\u2026 还有 1 项"), text(lines));
     }
 
     @Test
     @DisplayName("文件数大于 1 时标出来：单个大文件与一堆小文件该清理的对象不同")
     void handle_should_show_file_count() throws IOException {
-        prepareDisk();
+        Files.createDirectories(root.resolve("sessions"));
+        Files.write(root.resolve("sessions/a.json"), new byte[1024]);
+        Files.write(root.resolve("sessions/b.json"), new byte[512]);
         prepareSample();
         sampler.sampleNow();
 
-        String text = text(panel.handle(new PanelContributionRequest("s-1")));
+        String text = text(panel.handle(new PanelContributionRequest("s-1")).getLines());
 
-        assertTrue(text.contains("会话 1.5K 2文件"), text);
+        assertTrue(text.contains("sessions 1.5K 2文件"), text);
     }
 
     @Test
-    @DisplayName("告警排在读数之前，用警示档位")
-    void handle_should_putAlertsFirst() throws IOException {
+    @DisplayName("子项不存在时显示短杠，而不是 0B（缺数据与真的是零不是一回事）")
+    void handle_should_mark_missing_children() throws IOException {
+        // 一个 dangling symlink：它出现在目录列表里，但没有可统计的目标
+        Path link = root.resolve("dangling");
+        try {
+            Files.createSymbolicLink(link, root.resolve("missing-target"));
+        } catch (UnsupportedOperationException | IOException e) {
+            return;
+        }
+        prepareSample();
+        sampler.sampleNow();
+
+        String text = text(panel.handle(new PanelContributionRequest("s-1")).getLines());
+
+        assertTrue(text.contains("dangling " + ResmonFormat.UNKNOWN), text);
+    }
+
+    @Test
+    @DisplayName("堆越阈值时那一行转警示档位")
+    void handle_should_warn_when_heapOverThreshold() {
         Mockito.when(probe.probe()).thenReturn(JvmStats.builder()
                 .capturedAt(1600000000000L)
                 .heap(900L, 1000L, 1000L)
                 .build());
         sampler.sampleNow();
 
-        PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
-        List<UiLine> lines = contribution.getLines();
+        List<UiLine> lines = panel.handle(new PanelContributionRequest("s-1")).getLines();
 
-        assertEquals("! 堆 90% 超阈值 85%", lines.get(0).text());
         assertEquals(UiEmphasis.WARN, lines.get(0).getSegments().get(0).getEmphasis());
-        assertTrue(lines.get(1).text().startsWith("堆 900B/1000B"), lines.get(1).text());
+        assertTrue(lines.get(0).text().startsWith("堆 "), lines.get(0).text());
     }
 
     @Test
-    @DisplayName("死锁告警之后，读数里的死锁那行转错误档位")
-    void handle_should_mark_deadlock_as_error() {
+    @DisplayName("没有告警行：越阈值只标黄那一项，不再多说一遍")
+    void handle_should_notAddAlertLines() {
         Mockito.when(probe.probe()).thenReturn(JvmStats.builder()
                 .capturedAt(1600000000000L)
-                .threads(42L, 61L, 28L)
-                .deadlocked(1L)
+                .heap(900L, 1000L, 1000L)
+                .deadlocked(2L)
                 .build());
         sampler.sampleNow();
 
-        PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
+        List<UiLine> lines = panel.handle(new PanelContributionRequest("s-1")).getLines();
 
-        assertEquals("! 死锁 1 个线程", contribution.getLines().get(0).text());
-        assertEquals(UiEmphasis.ERROR, emphasisOfRow(contribution, "死锁 "));
+        for (UiLine line : lines) {
+            assertFalse(line.text().startsWith("! "), "不该有告警行：" + line.text());
+            assertFalse(line.text().contains("超阈值"), "阈值不该单独占一行：" + line.text());
+        }
+        assertEquals(UiEmphasis.ERROR, emphasisOfRow(lines, "死锁 "));
     }
 
     @Test
-    @DisplayName("关掉告警后没有告警行，读数照旧一条不少")
-    void handle_should_hideAlerts_when_disabled() throws IOException {
-        prepareDisk();
-        PluginConfig quiet = config(root, false);
+    @DisplayName("关掉阈值标出后没有警示档位，读数照旧")
+    void handle_should_hideEmphasis_when_alertsDisabled() {
+        PluginConfig quiet = config(root, 12, false);
         JvmProbe quietProbe = Mockito.mock(JvmProbe.class);
         Mockito.when(quietProbe.probe()).thenReturn(JvmStats.builder()
                 .capturedAt(1600000000000L)
@@ -229,43 +318,40 @@ class ResmonPanelTest {
                 Mockito.mock(PluginContext.class));
         quietSampler.sampleNow();
 
-        PanelContribution contribution = new ResmonPanel(quiet, quietSampler)
-                .handle(new PanelContributionRequest("s-1"));
+        List<UiLine> lines = new ResmonPanel(quiet, quietSampler)
+                .handle(new PanelContributionRequest("s-1")).getLines();
 
-        assertEquals(0, alertCount(contribution.getLines()));
-        assertEquals(BASELINE_ROWS, contribution.getLines().size());
+        assertEquals(UiEmphasis.NORMAL, lines.get(0).getSegments().get(0).getEmphasis());
+        assertTrue(lines.get(0).text().startsWith("堆 "), lines.get(0).text());
     }
 
     /**
-     * 数出面板里的告警行条数。
+     * 找到以某前缀开头的行号。
      *
-     * @param lines 面板行列表，不可为 {@code null}
-     * @return 以「! 」开头的行数
+     * @param lines  行列表，不可为 {@code null}
+     * @param prefix 行前缀
+     * @return 行号；找不到返回 -1
      */
-    private static int alertCount(List<UiLine> lines) {
-        int count = 0;
-        for (UiLine line : lines) {
-            if (line.text().startsWith("! ")) {
-                count++;
+    private static int rowOfPrefix(List<UiLine> lines, String prefix) {
+        for (int i = 0; i < lines.size(); i++) {
+            if (lines.get(i).text().startsWith(prefix)) {
+                return i;
             }
         }
-        return count;
+        return -1;
     }
 
     /**
      * 取以某前缀开头的那一行第一个文本段的强调档位。
      *
-     * @param contribution 面板贡献，不可为 {@code null}
-     * @param prefix       行前缀
+     * @param lines  行列表，不可为 {@code null}
+     * @param prefix 行前缀
      * @return 强调档位
      */
-    private static UiEmphasis emphasisOfRow(PanelContribution contribution, String prefix) {
-        for (UiLine line : contribution.getLines()) {
-            if (line.text().startsWith(prefix)) {
-                return line.getSegments().get(0).getEmphasis();
-            }
-        }
-        throw new AssertionError("面板里没有以「" + prefix + "」开头的行");
+    private static UiEmphasis emphasisOfRow(List<UiLine> lines, String prefix) {
+        int row = rowOfPrefix(lines, prefix);
+        assertTrue(row >= 0, "面板里没有以「" + prefix + "」开头的行");
+        return lines.get(row).getSegments().get(0).getEmphasis();
     }
 
     /**
@@ -289,107 +375,46 @@ class ResmonPanelTest {
     }
 
     /**
-     * 在临时目录里造出六个占用项。
+     * 在根目录下造三个子项。
      *
      * @throws IOException 写入失败时抛出
      */
-    private void prepareDisk() throws IOException {
+    private void prepareChildren() throws IOException {
         Files.createDirectories(root.resolve("sessions"));
-        write(root.resolve("sessions/a.bin"), 1536);
-        // 第二个文件是 0 字节：既让「文件数」这一项出现在面板上，又不改变体积（仍是 1.5K）
-        write(root.resolve("sessions/b.bin"), 0);
+        Files.write(root.resolve("sessions/a.json"), new byte[1536]);
         Files.createDirectories(root.resolve("tool-outputs"));
-        write(root.resolve("tool-outputs/a.bin"), 8396);
-        Files.createDirectories(root.resolve("plugins"));
-        write(root.resolve("plugins/a.bin"), 24576);
-        Files.createDirectories(root.resolve("todos"));
-        write(root.resolve("todos/a.bin"), 12288);
-        Files.createDirectories(root.resolve("gateway"));
-        write(root.resolve("gateway/a.bin"), 90112);
-        write(root.resolve("jellyfish-tui.log"), 210 * 1024);
+        Files.write(root.resolve("tool-outputs/a.bin"), new byte[24576]);
+        Files.write(root.resolve("jellyfish-tui.log"), new byte[8192]);
     }
 
     /**
-     * 写一个指定字节数的文件。
+     * 把行列表拼成一段文本。
      *
-     * @param path  目标路径，不可为 {@code null}
-     * @param bytes 字节数
-     * @throws IOException 写入失败时抛出
-     */
-    private static void write(Path path, int bytes) throws IOException {
-        Files.write(path, new byte[bytes]);
-    }
-
-    /**
-     * 把面板内容拼成一段文本。
-     *
-     * @param contribution 面板贡献，不可为 {@code null}
+     * @param lines 行列表，不可为 {@code null}
      * @return 各行的纯文本，用换行连接
      */
-    private static String text(PanelContribution contribution) {
+    private static String text(List<UiLine> lines) {
         StringBuilder out = new StringBuilder();
-        for (UiLine line : contribution.getLines()) {
+        for (UiLine line : lines) {
             out.append(line.text()).append('\n');
         }
         return out.toString();
     }
 
     /**
-     * 构造把六个路径都指向临时目录的配置。
+     * 构造以临时目录为根目录的配置。
      *
-     * @param directory     临时目录，不可为 {@code null}
+     * @param directory     根目录，不可为 {@code null}
+     * @param diskEntries   面板上列出的子项数上限
      * @param alertsEnabled 是否标出越阈值的项
      * @return 配置
      */
-    private static PluginConfig config(Path directory, boolean alertsEnabled) {
+    private static PluginConfig config(Path directory, int diskEntries, boolean alertsEnabled) {
         Map<String, Object> values = new HashMap<String, Object>();
-        values.put(PluginConfig.KEY_SESSIONS_DIR, directory.resolve("sessions").toString());
-        values.put(PluginConfig.KEY_TOOL_OUTPUTS_DIR, directory.resolve("tool-outputs").toString());
-        values.put(PluginConfig.KEY_PLUGINS_DIR, directory.resolve("plugins").toString());
-        values.put(PluginConfig.KEY_TODOS_DIR, directory.resolve("todos").toString());
-        values.put(PluginConfig.KEY_GATEWAY_DIR, directory.resolve("gateway").toString());
-        values.put(PluginConfig.KEY_LOG_FILE, directory.resolve("jellyfish-tui.log").toString());
+        values.put(PluginConfig.KEY_BASE_DIR, directory.toString());
+        values.put(PluginConfig.KEY_DISK_ENTRIES, diskEntries);
         values.put(PluginConfig.KEY_ALERTS, alertsEnabled);
         values.put(PluginConfig.KEY_ALERT_DISK_PERCENT, DISK_THRESHOLD_NEVER);
         return PluginConfig.from(values);
-    }
-
-    /**
-     * 计算一行文本的终端显示宽度：中日韩等全角字符占两列。
-     *
-     * @param text 文本，不可为 {@code null}
-     * @return 显示列数
-     */
-    private static int displayWidth(String text) {
-        int width = 0;
-        for (int i = 0; i < text.length(); i++) {
-            width += isWide(text.charAt(i)) ? 2 : 1;
-        }
-        return width;
-    }
-
-    /**
-     * 判断一个字符在终端里是否占两列。
-     *
-     * @param character 字符
-     * @return 占两列返回 {@code true}
-     */
-    private static boolean isWide(char character) {
-        return character >= 0x1100 && (character <= 0x115F
-                || character == 0x2329 || character == 0x232A
-                || (character >= 0x2E80 && character <= 0xA4CF && character != 0x303F)
-                || (character >= 0xAC00 && character <= 0xD7A3)
-                || (character >= 0xF900 && character <= 0xFAFF)
-                || (character >= 0xFE30 && character <= 0xFE6F)
-                || (character >= 0xFF00 && character <= 0xFF60)
-                || (character >= 0xFFE0 && character <= 0xFFE6));
-    }
-
-    @Test
-    @DisplayName("显示宽度计算自身可被验证：全角按两列、半角按一列")
-    void displayWidth_should_count_wide_characters_twice() {
-        assertEquals(4, displayWidth("会话"));
-        assertEquals(4, displayWidth("1.4G"));
-        assertEquals(9, displayWidth("会话 1.4G"));
     }
 }

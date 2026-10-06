@@ -1,22 +1,19 @@
 package zcd.jellyfish.plugin.resmon;
 
 import java.text.SimpleDateFormat;
-import java.util.Collections;
 import java.util.Date;
-import java.util.LinkedHashMap;
 import java.util.Locale;
-import java.util.Map;
 
 /**
- * 资源数字的呈现辅助：字节数、百分比、时长、时刻与占用项标签的格式化。
+ * 资源数字与名称的呈现辅助：字节数、百分比、时长、时刻、名称截断。
  * <p>
- * <b>为什么单独立一个类而不是让各处自己拼字符串</b>：面板、状态栏式的速览与 {@code /resmon} 的
- * 明细必须用同一套口径——两处各写一次「保留几位小数」，用户就会在同一个数字上看到
- * {@code 1.4G} 与 {@code 1536M} 两种答案，而它们看起来都像真的。这里因此只放纯函数，
- * 不含任何状态与 I/O，也因此最容易被单测钉死边界。
+ * <b>为什么单独立一个类而不是让各处自己拼字符串</b>：面板与 {@code /resmon} 的明细必须用同一套
+ * 口径——两处各写一次「保留几位小数」，用户就会在同一个数字上看到 {@code 1.4G} 与 {@code 1536M}
+ * 两种答案，而它们看起来都像真的。这里因此只放纯函数，不含任何状态与 I/O，
+ * 也因此最容易被单测钉死边界。
  * <p>
- * <b>宽度目标</b>：面板会落在侧栏里，而侧栏宽度按内容宽度算（外壳的规则是「内容宽 + 边框」
- * 夹进 {@code [20, 终端宽/4]}），因此这里的输出刻意压缩在 4 个字符以内
+ * <b>宽度目标</b>：面板落在侧栏里，而侧栏宽度按内容宽度算（外壳的规则是「内容宽 + 边框」
+ * 夹进 {@code [20, 终端宽/4]}），因此这里的输出刻意压缩在 5 个字符以内
  * （{@code 1.4G} / {@code 210K} / {@code 12%}），为的是面板不必靠外壳折行。
  * <p>
  * 无状态，可安全跨线程使用。
@@ -28,6 +25,9 @@ final class ResmonFormat {
     /** 数值不可用时的占位：刻意用一个 ASCII 字符，全角符号的显示宽度在终端之间不一致。 */
     static final String UNKNOWN = "-";
 
+    /** 名称被截断时补的省略号。 */
+    private static final String ELLIPSIS = "\u2026";
+
     /** 一档单位对应的字节数。 */
     private static final long KILO = 1024L;
 
@@ -36,12 +36,6 @@ final class ResmonFormat {
 
     /** 每秒的毫秒数。 */
     private static final long MILLIS_PER_SECOND = 1000L;
-
-    /** 面板上用的短标签：两个汉字，宽度可控是首要考虑。 */
-    private static final Map<String, String> SHORT_LABELS = shortLabels();
-
-    /** 命令明细里用的标签：不受行宽限制，因此可以写全。 */
-    private static final Map<String, String> LABELS = labels();
 
     /** 私有构造器：工具类不可实例化。 */
     private ResmonFormat() {
@@ -77,8 +71,7 @@ final class ResmonFormat {
      * 格式化百分比（入参已是 0..100 的数值）。
      * <p>
      * {@code NaN} 与负数一样按「不可用」处理：{@code Math.round(NaN)} 会安静地返回 0，
-     * 于是「这项数据还没有」会被显示成 {@code 0%}——那是最坏的一种错，
-     * 因为它看起来完全正常。
+     * 于是「这项数据还没有」会被显示成 {@code 0%}——那是最坏的一种错，因为它看起来完全正常。
      *
      * @param value 百分比，负数或 NaN 表示不可用
      * @return 显示文本（如 {@code 25%}），保证非 {@code null}
@@ -140,25 +133,74 @@ final class ResmonFormat {
     }
 
     /**
-     * 取占用项的完整标签（命令明细用）。
+     * 按显示宽度截断文本，超长时以省略号收尾。
+     * <p>
+     * <b>为什么插件要做宽度计算</b>：{@code baseDir} 下的一级子项名是用户给的（可能是任意长度的
+     * 目录名，也可能含中日韩字符），而面板落在侧栏里、侧栏宽度又由内容宽度反推——名字多长一分，
+     * 消息区就少一分。契约禁止插件用宽度做<b>对齐</b>（那是外壳的事），但把内容<b>限制在预算内</b>
+     * 是插件自己的责任，否则一个长目录名就能把面板撑宽。
+     * <p>
+     * 按显示宽度而不是字符数算，否则全中文目录名会被算短一半。
      *
-     * @param key 占用项键名
-     * @return 标签；未知键原样返回，便于新目录在补标签前也看得见
+     * @param text     文本，可为 {@code null}
+     * @param maxWidth 允许的最大显示宽度，小于 1 时按 1 处理
+     * @return 截断后的文本，保证非 {@code null}
      */
-    static String label(String key) {
-        String label = LABELS.get(key);
-        return label == null ? key : label;
+    static String clip(String text, int maxWidth) {
+        if (text == null) {
+            return "";
+        }
+        int limit = Math.max(1, maxWidth);
+        if (displayWidth(text) <= limit) {
+            return text;
+        }
+        StringBuilder clipped = new StringBuilder();
+        int width = 0;
+        int budget = limit - 1;
+        for (int i = 0; i < text.length(); i++) {
+            char character = text.charAt(i);
+            int charWidth = isWide(character) ? 2 : 1;
+            if (width + charWidth > budget) {
+                break;
+            }
+            clipped.append(character);
+            width += charWidth;
+        }
+        return clipped.append(ELLIPSIS).toString();
     }
 
     /**
-     * 取占用项的短标签（面板用）。
+     * 计算文本的终端显示宽度：中日韩等全角字符占两列。
      *
-     * @param key 占用项键名
-     * @return 两个汉字的短标签；未知键回退到完整标签
+     * @param text 文本，可为 {@code null}
+     * @return 显示列数
      */
-    static String shortLabel(String key) {
-        String label = SHORT_LABELS.get(key);
-        return label == null ? label(key) : label;
+    static int displayWidth(String text) {
+        if (text == null) {
+            return 0;
+        }
+        int width = 0;
+        for (int i = 0; i < text.length(); i++) {
+            width += isWide(text.charAt(i)) ? 2 : 1;
+        }
+        return width;
+    }
+
+    /**
+     * 判断一个字符在终端里是否占两列。
+     *
+     * @param character 字符
+     * @return 占两列返回 {@code true}
+     */
+    private static boolean isWide(char character) {
+        return character >= 0x1100 && (character <= 0x115F
+                || character == 0x2329 || character == 0x232A
+                || (character >= 0x2E80 && character <= 0xA4CF && character != 0x303F)
+                || (character >= 0xAC00 && character <= 0xD7A3)
+                || (character >= 0xF900 && character <= 0xFAFF)
+                || (character >= 0xFE30 && character <= 0xFE6F)
+                || (character >= 0xFF00 && character <= 0xFF60)
+                || (character >= 0xFFE0 && character <= 0xFFE6));
     }
 
     /**
@@ -173,37 +215,5 @@ final class ResmonFormat {
             return text.endsWith(".0") ? text.substring(0, text.length() - 2) : text;
         }
         return String.valueOf(Math.round(value));
-    }
-
-    /**
-     * 构造面板用的短标签映射。
-     *
-     * @return 不可变映射
-     */
-    private static Map<String, String> shortLabels() {
-        Map<String, String> labels = new LinkedHashMap<String, String>();
-        labels.put(UsageKeys.SESSIONS, "会话");
-        labels.put(UsageKeys.TOOL_OUTPUTS, "输出");
-        labels.put(UsageKeys.PLUGINS, "插件");
-        labels.put(UsageKeys.TODOS, "待办");
-        labels.put(UsageKeys.GATEWAY, "网关");
-        labels.put(UsageKeys.LOG, "日志");
-        return Collections.unmodifiableMap(labels);
-    }
-
-    /**
-     * 构造命令明细用的完整标签映射。
-     *
-     * @return 不可变映射
-     */
-    private static Map<String, String> labels() {
-        Map<String, String> labels = new LinkedHashMap<String, String>();
-        labels.put(UsageKeys.SESSIONS, "会话文件");
-        labels.put(UsageKeys.TOOL_OUTPUTS, "工具输出");
-        labels.put(UsageKeys.PLUGINS, "插件 jar");
-        labels.put(UsageKeys.TODOS, "待办");
-        labels.put(UsageKeys.GATEWAY, "脚本网关");
-        labels.put(UsageKeys.LOG, "TUI 日志");
-        return Collections.unmodifiableMap(labels);
     }
 }

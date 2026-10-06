@@ -10,14 +10,13 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link AlertEvaluator} 的单元测试：判据、阈值边界与「不可用不等于零」。
  * <p>
- * 判定器现在是无状态的——它回答「此刻有哪些项越界」，而不是「哪几项刚刚越界」。
- * 因此这里验的是集合内容，不再有「第二次不报」这类断言：持续越界只显示一份，是
+ * 判定器是无状态的——它回答「此刻有哪些项越界」，而不是「哪几项刚刚越界」。因此这里验的是
+ * 这份清单的内容与顺序，没有「第二次不报」这类断言：持续越界只显示一份，是
  * 「同一时刻只渲染一份状态」这件事的自然结果，不需要状态机来保证。
  *
  * @author zcd
@@ -46,10 +45,10 @@ class AlertEvaluatorTest {
     @Test
     @DisplayName("阈值是「大于等于」：刚好等于就该报")
     void evaluate_should_fire_at_exactlyThreshold() {
-        List<Alert> alerts = evaluator.evaluate(heap(85.0), DiskReport.empty());
+        List<String> alerts = evaluator.evaluate(heap(85.0), DiskReport.empty());
 
         assertEquals(1, alerts.size());
-        assertEquals(AlertEvaluator.KEY_HEAP, alerts.get(0).key());
+        assertTrue(alerts.get(0).contains("85%"), alerts.get(0));
     }
 
     @Test
@@ -74,10 +73,10 @@ class AlertEvaluatorTest {
     void evaluate_should_fire_on_fileDescriptors() {
         JvmStats stats = JvmStats.builder().fileDescriptors(800L, 1000L).build();
 
-        List<Alert> alerts = evaluator.evaluate(stats, DiskReport.empty());
+        List<String> alerts = evaluator.evaluate(stats, DiskReport.empty());
 
         assertEquals(1, alerts.size());
-        assertEquals(AlertEvaluator.KEY_FD, alerts.get(0).key());
+        assertTrue(alerts.get(0).contains("文件描述符"), alerts.get(0));
     }
 
     @Test
@@ -85,11 +84,10 @@ class AlertEvaluatorTest {
     void evaluate_should_fire_on_deadlock() {
         JvmStats stats = JvmStats.builder().deadlocked(2L).build();
 
-        List<Alert> alerts = evaluator.evaluate(stats, DiskReport.empty());
+        List<String> alerts = evaluator.evaluate(stats, DiskReport.empty());
 
         assertEquals(1, alerts.size());
-        assertEquals(AlertEvaluator.KEY_DEADLOCK, alerts.get(0).key());
-        assertTrue(alerts.get(0).panelText().contains("2"));
+        assertTrue(alerts.get(0).contains("2 个死锁线程"), alerts.get(0));
     }
 
     @Test
@@ -97,11 +95,10 @@ class AlertEvaluatorTest {
     void evaluate_should_fire_on_partition() {
         DiskReport disk = DiskReport.of(1000L, Collections.<PathUsage>emptyList(), 100L, 5L, -1L, -1L);
 
-        List<Alert> alerts = evaluator.evaluate(null, disk);
+        List<String> alerts = evaluator.evaluate(null, disk);
 
         assertEquals(1, alerts.size());
-        assertEquals(AlertEvaluator.KEY_DISK, alerts.get(0).key());
-        assertTrue(alerts.get(0).detailText().contains("95%"));
+        assertTrue(alerts.get(0).contains("95%"), alerts.get(0));
     }
 
     @Test
@@ -114,13 +111,13 @@ class AlertEvaluatorTest {
                 .build();
         DiskReport disk = DiskReport.of(1000L, Collections.<PathUsage>emptyList(), 100L, 5L, -1L, -1L);
 
-        List<Alert> alerts = evaluator.evaluate(stats, disk);
+        List<String> alerts = evaluator.evaluate(stats, disk);
 
         assertEquals(4, alerts.size());
-        assertEquals(AlertEvaluator.KEY_HEAP, alerts.get(0).key());
-        assertEquals(AlertEvaluator.KEY_DEADLOCK, alerts.get(1).key());
-        assertEquals(AlertEvaluator.KEY_FD, alerts.get(2).key());
-        assertEquals(AlertEvaluator.KEY_DISK, alerts.get(3).key());
+        assertTrue(alerts.get(0).startsWith("堆已用"), alerts.get(0));
+        assertTrue(alerts.get(1).contains("死锁"), alerts.get(1));
+        assertTrue(alerts.get(2).contains("文件描述符"), alerts.get(2));
+        assertTrue(alerts.get(3).contains("磁盘分区"), alerts.get(3));
     }
 
     @Test
@@ -138,16 +135,14 @@ class AlertEvaluatorTest {
     }
 
     @Test
-    @DisplayName("面板短文本能塞进一行，明细文本带上读数与阈值")
-    void evaluate_should_provide_both_texts() {
-        Alert alert = evaluator.evaluate(heap(92.0), DiskReport.empty()).get(0);
+    @DisplayName("每条都是单行，且带上读数与阈值（这份文本会直接印在 /resmon 里）")
+    void evaluate_should_produce_singleLine_readableText() {
+        List<String> alerts = evaluator.evaluate(heap(92.0), DiskReport.empty());
 
-        // 短文本要短：面板一行只有二十来列
-        assertTrue(alert.panelText().length() <= 22, alert.panelText());
-        assertTrue(alert.panelText().contains("92%"), alert.panelText());
-        assertTrue(alert.detailText().contains("92%"), alert.detailText());
-        assertTrue(alert.detailText().contains("85%"), alert.detailText());
-        assertFalse(alert.detailText().contains("\n"), "告警文本必须单行");
+        String alert = alerts.get(0);
+        assertTrue(alert.contains("92%"), alert);
+        assertTrue(alert.contains("85%"), alert);
+        assertTrue(alert.indexOf('\n') < 0, "告警文本必须单行");
     }
 
     /**

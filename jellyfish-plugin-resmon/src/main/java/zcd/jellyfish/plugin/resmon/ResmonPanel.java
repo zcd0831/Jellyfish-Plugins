@@ -14,6 +14,10 @@ import java.util.List;
 /**
  * 面板贡献处理器：把最近一次采样拼成一块常驻面板。
  * <p>
+ * <b>没有告警行</b>：越阈值的项直接把它自己那一行转成警示档位就够用了，再额外加一行
+ * {@code ! 磁盘 92% 超阈值 90%} 只是把同一个事实说两遍，而侧栏的每一行都来自别处。
+ * 阈值仍然有用——它决定哪一行变黄（以及 {@code /resmon} 的告警段里写什么）。
+ * <p>
  * <b>行数不设自设上限</b>：侧栏（{@code LEFT} / {@code RIGHT}）的高度就是消息区全高
  * （{@code ChatShell} 传的 {@code maxRows} 是 {@code layout.getMessageRows()}），
  * 而 8 行上限只作用于 {@code DOCK} / {@code TOP} 那两个纵向区域（{@code ChatLayout.panelRows}）。
@@ -22,11 +26,13 @@ import java.util.List;
  * 白白浪费——而这块面板的用处正是「一屏之内看全」。
  * <p>
  * <b>顺序即优先级</b>：外壳是从前往后截的，因此越靠前的行越不能丢。顺序是
- * 告警（如果有）→ 堆 → 非堆与内存池 → GC → 线程 → 文件描述符 → CPU → 分区余量 → 六个目录 → 合计。
+ * 堆 → 内存池 → GC → 线程 → FD → CPU → 分区余量 → 磁盘占用（按体积从大到小）→ 合计。
+ * 磁盘那一段在最后：它是「可以慢慢看」的信息，而 JVM 那几行是「此刻正在发生」的信息。
  * <p>
- * <b>宽度仍然要压窄</b>：侧栏宽度由内容宽度推出（「内容宽 + 边框」夹进 {@code [20, 终端宽/4]}），
- * 内容越宽，消息区被拿走的列就越多——面板是锦上添花，消息区是主体。因此这些行都压在
- * 22 个显示列以内（中日韩字符按两列算）。
+ * <b>宽度压在 {@value #MAX_WIDTH} 个显示列以内</b>：侧栏宽度由内容宽度推出
+ * （「内容宽 + 边框」夹进 {@code [20, 终端宽/4]}），内容越宽，消息区被拿走的列就越多——
+ * 面板是锦上添花，消息区是主体。子项名由用户决定长度，因此这里按显示宽度截断它；
+ * 完整名字在 {@code /resmon disk} 里。
  * <p>
  * <b>它自己一行 I/O 都不做</b>：内容全部取自 {@link ResmonSampler} 已经算好的内存快照。
  * 这不是风格问题——本处理器在 TUI 的渲染线程里被内联调用，一次目录遍历会把整个界面冻住，
@@ -44,8 +50,8 @@ final class ResmonPanel implements ExtensionHandler<PanelContributionRequest, Pa
     /** 面板标题前缀。 */
     private static final String TITLE_PREFIX = "资源 ";
 
-    /** 告警行的前缀。用 ASCII 感叹号而不是 ⚠ 之类的符号：后者的显示宽度在不同终端里不是一个确定值。 */
-    private static final String ALERT_PREFIX = "! ";
+    /** 一行的显示宽度上限：含边框后仍落在侧栏的宽度预算里，不挤压消息区。 */
+    static final int MAX_WIDTH = 22;
 
     /**
      * GC 占比的强调阈值（百分比）。
@@ -56,7 +62,7 @@ final class ResmonPanel implements ExtensionHandler<PanelContributionRequest, Pa
      */
     private static final double GC_WARN_PERCENT = 10.0;
 
-    /** 插件配置（取告警阈值，让面板的配色与告警口径一致）。 */
+    /** 插件配置（取阈值，让面板的配色与 {@code /resmon} 的告警段同口径）。 */
     private final PluginConfig config;
 
     /** 采样器。 */
@@ -79,14 +85,12 @@ final class ResmonPanel implements ExtensionHandler<PanelContributionRequest, Pa
         if (jvm == null) {
             return PanelContribution.empty();
         }
-        DiskReport disk = sampler.disk();
-        List<UiLine> lines = new ArrayList<UiLine>(20);
-        addAlertLines(lines);
+        List<UiLine> lines = new ArrayList<UiLine>(24);
         addHeapLines(lines, jvm);
         addGcLines(lines, jvm);
         addThreadLines(lines, jvm);
         addCpuLines(lines, jvm);
-        addDiskLines(lines, disk);
+        addDiskLines(lines, sampler.disk());
         return PanelContribution.of(title(jvm), lines, UiRegion.RIGHT);
     }
 
@@ -103,17 +107,6 @@ final class ResmonPanel implements ExtensionHandler<PanelContributionRequest, Pa
     private String title(JvmStats jvm) {
         String suffix = sampler.autoRefresh() ? "" : " 暂停";
         return TITLE_PREFIX + ResmonFormat.clock(jvm.capturedAtMillis()) + suffix;
-    }
-
-    /**
-     * 追加告警行（放在最前面，因为它是唯一需要立刻动作的信息）。
-     *
-     * @param lines 行收集列表，不可为 {@code null}
-     */
-    private void addAlertLines(List<UiLine> lines) {
-        for (Alert alert : sampler.alerts()) {
-            lines.add(line(ALERT_PREFIX + alert.panelText(), UiEmphasis.WARN));
-        }
     }
 
     /**
@@ -152,7 +145,7 @@ final class ResmonPanel implements ExtensionHandler<PanelContributionRequest, Pa
      * @param lines 行收集列表，不可为 {@code null}
      * @param jvm   快照，不可为 {@code null}
      */
-    private static void addGcLines(List<UiLine> lines, JvmStats jvm) {
+    private void addGcLines(List<UiLine> lines, JvmStats jvm) {
         if (jvm.gcElapsedMillis() <= 0L) {
             // 首次采样没有可比的上一次，占比无意义；次数仍然是真读数
             lines.add(line("GC " + ResmonFormat.UNKNOWN + " " + jvm.gcCount() + "次", UiEmphasis.NORMAL));
@@ -203,7 +196,11 @@ final class ResmonPanel implements ExtensionHandler<PanelContributionRequest, Pa
     }
 
     /**
-     * 追加分区余量与六个目录、合计。
+     * 追加分区余量与各一级子项的占用、合计。
+     * <p>
+     * 子项按体积从大到小列（采样器已排好），最多 {@link PluginConfig#diskEntries()} 条；
+     * 超出时补一行「… 还有 N 项」，而不是静默省略——省略会让人以为机器上就这么多东西。
+     * 文件数在体积之后：体积回答「占了多少」，「37文件」回答「是零碎还是一坨」。
      *
      * @param lines 行收集列表，不可为 {@code null}
      * @param disk  磁盘报告，不可为 {@code null}
@@ -218,28 +215,38 @@ final class ResmonPanel implements ExtensionHandler<PanelContributionRequest, Pa
                 ? "磁盘 " + ResmonFormat.UNKNOWN
                 : "磁盘 " + ResmonFormat.percent(percent) + " 剩 " + ResmonFormat.bytes(disk.partitionUsableBytes());
         lines.add(line(partition, emphase(percent, config.alertDiskPercent())));
-        for (PathUsage usage : disk.usages()) {
-            lines.add(line(usageText(usage), UiEmphasis.NORMAL));
+        List<PathUsage> usages = disk.usages();
+        int shown = Math.min(usages.size(), config.diskEntries());
+        for (int i = 0; i < shown; i++) {
+            lines.add(line(usageText(usages.get(i)), UiEmphasis.NORMAL));
+        }
+        if (usages.size() > shown) {
+            lines.add(line("\u2026 还有 " + (usages.size() - shown) + " 项", UiEmphasis.DIM));
         }
         lines.add(line("合计 " + ResmonFormat.bytes(disk.totalBytes()) + growthText(disk), UiEmphasis.DIM));
     }
 
     /**
-     * 拼一个占用项：短名 + 体积 + 文件数。
+     * 拼一个子项：名字 + 体积 + 文件数。
      * <p>
-     * 文件数不是装饰：「74M / 744 个文件」与「74M / 3 个文件」是两种完全不同的状态，
-     * 后者说明是单个会话文件很大（可能是某次超长对话），前者说明攒了很多会话——
-     * 该清理的对象完全不一样。
+     * <b>名字的宽度预算按这一行的实际后缀算，而不是一个固定值</b>：后缀（体积 + 文件数）短的时候
+     * 名字就能多留几个字符，于是 {@code jellyfish-tui.log} 这种刚好在临界的名字能完整显示，
+     * 而不是被截成和其他 {@code jellyfish-…} 开头的项看不出区别的 {@code jellyfish…}。
+     * 名字本身按显示宽度截断，因为全中文目录名按字符数截会让这一行实际宽度翻倍。
      *
      * @param usage 占用结果，不可为 {@code null}
-     * @return 文本
+     * @return 文本，保证显示宽度不超过 {@link #MAX_WIDTH}
      */
     private static String usageText(PathUsage usage) {
+        String suffix;
         if (!usage.present()) {
-            return ResmonFormat.shortLabel(usage.key()) + " " + ResmonFormat.UNKNOWN;
+            suffix = " " + ResmonFormat.UNKNOWN;
+        } else {
+            suffix = " " + ResmonFormat.bytes(usage.bytes())
+                    + (usage.files() > 1L ? " " + usage.files() + "文件" : "");
         }
-        String files = usage.files() > 1L ? " " + usage.files() + "文件" : "";
-        return ResmonFormat.shortLabel(usage.key()) + " " + ResmonFormat.bytes(usage.bytes()) + files;
+        int nameBudget = Math.max(1, MAX_WIDTH - ResmonFormat.displayWidth(suffix));
+        return ResmonFormat.clip(usage.name(), nameBudget) + suffix;
     }
 
     /**
@@ -264,10 +271,11 @@ final class ResmonPanel implements ExtensionHandler<PanelContributionRequest, Pa
      *
      * @param percent   实测百分比，负数表示不可用
      * @param threshold 阈值
-     * @return 越界为 {@link UiEmphasis#WARN}，否则 {@link UiEmphasis#NORMAL}
+     * @return 越界且开启标出时为 {@link UiEmphasis#WARN}，否则 {@link UiEmphasis#NORMAL}
      */
-    private static UiEmphasis emphase(double percent, double threshold) {
-        return percent >= 0.0 && percent >= threshold ? UiEmphasis.WARN : UiEmphasis.NORMAL;
+    private UiEmphasis emphase(double percent, double threshold) {
+        return config.alerts() && percent >= 0.0 && percent >= threshold
+                ? UiEmphasis.WARN : UiEmphasis.NORMAL;
     }
 
     /**

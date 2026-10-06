@@ -183,19 +183,14 @@ class ResmonPluginTest {
     }
 
     /**
-     * 构造把六个路径都指向临时目录的配置段。
+     * 构造以临时目录为根目录的配置段。
      *
      * @param panelEnabled 面板开关
      * @return 配置段，保证非 {@code null}
      */
     private Map<String, Object> configuration(boolean panelEnabled) {
         Map<String, Object> values = new HashMap<String, Object>();
-        values.put(PluginConfig.KEY_SESSIONS_DIR, directory.resolve("sessions").toString());
-        values.put(PluginConfig.KEY_TOOL_OUTPUTS_DIR, directory.resolve("tool-outputs").toString());
-        values.put(PluginConfig.KEY_PLUGINS_DIR, directory.resolve("plugins").toString());
-        values.put(PluginConfig.KEY_TODOS_DIR, directory.resolve("todos").toString());
-        values.put(PluginConfig.KEY_GATEWAY_DIR, directory.resolve("gateway").toString());
-        values.put(PluginConfig.KEY_LOG_FILE, directory.resolve("jellyfish-tui.log").toString());
+        values.put(PluginConfig.KEY_BASE_DIR, directory.toString());
         values.put(PluginConfig.KEY_PANEL, panelEnabled);
         return values;
     }

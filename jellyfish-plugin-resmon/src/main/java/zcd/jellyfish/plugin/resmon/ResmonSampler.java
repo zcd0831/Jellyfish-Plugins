@@ -7,12 +7,14 @@ import zcd.jellyfish.api.extension.ShellContribution;
 import zcd.jellyfish.api.plugin.PluginContext;
 
 import java.io.IOException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -28,9 +30,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 因此这里的分工是硬性的：本类负责全部 I/O 与计算，处理器只把内存里那份不可变快照拼成几行文本。
  * <p>
  * <b>为什么是两个节奏而不是一个</b>：读 JMX 是微秒级的纯内存操作，值得 2 秒一次；
- * 递归遍历 {@code ~/.jellyfish/sessions} 这种目录可能上百毫秒，60 秒一次都嫌频繁。
+ * 递归遍历一个装了几百个会话文件的目录可能上百毫秒，60 秒一次都嫌频繁。
  * 用一个节奏只能二选一——要么磁盘拖慢 JVM 的刷新，要么 JVM 跟着磁盘一起变慢。
  * 两个 {@code scheduleWithFixedDelay} 之间也互不阻塞（线程池给两个线程）。
+ * <p>
+ * <b>磁盘这一侧扫的是「{@code baseDir} 的一级子项」而不是一份写死的目录清单</b>：
+ * 写死清单意味着本插件要知道每个别的插件把数据放在哪儿，而它既拿不到工作目录、也不允许自行读
+ * {@code jellyfish.json}，无从核对。改成扫描之后，新装的插件、新出现的目录都会被自动看见，
+ * 而配置里只剩一个根目录——那是最稳定的一个约定。
  * <p>
  * <b>三条与生命周期有关的纪律，每一条都对应一次真实的故障形态</b>：
  * <ul>
@@ -68,7 +75,7 @@ final class ResmonSampler implements AutoCloseable {
     /** 目录统计器。 */
     private final DirSizer sizer;
 
-    /** 插件上下文，用于往外壳推失效与告警。 */
+    /** 插件上下文，用于往外壳推失效。 */
     private final PluginContext context;
 
     /** 阈值判定器：无状态，算出「此刻哪些项越阈值」。 */
@@ -80,8 +87,8 @@ final class ResmonSampler implements AutoCloseable {
     /** 最近一次磁盘报告；还没扫到时是空报告。 */
     private volatile DiskReport disk = DiskReport.empty();
 
-    /** 此刻越阈值的告警；无告警时为空列表。 */
-    private volatile List<Alert> alerts = Collections.emptyList();
+    /** 此刻越阈值的告警文本；无告警时为空列表。 */
+    private volatile List<String> alerts = Collections.emptyList();
 
     /** 是否主动推送界面失效。 */
     private volatile boolean autoRefresh;
@@ -141,8 +148,8 @@ final class ResmonSampler implements AutoCloseable {
                 sampleDisk();
             }
         }, 0L, config.diskScanIntervalMillis(), TimeUnit.MILLISECONDS);
-        LOG.info("资源监控已启动: jvmInterval={}ms, diskInterval={}ms, autoRefresh={}",
-                config.sampleIntervalMillis(), config.diskScanIntervalMillis(), autoRefresh);
+        LOG.info("资源监控已启动: baseDir={}, jvmInterval={}ms, diskInterval={}ms, autoRefresh={}",
+                config.baseDir(), config.sampleIntervalMillis(), config.diskScanIntervalMillis(), autoRefresh);
     }
 
     /**
@@ -187,14 +194,14 @@ final class ResmonSampler implements AutoCloseable {
     }
 
     /**
-     * 获取此刻越阈值的告警。
+     * 获取此刻越阈值的告警文本。
      * <p>
      * <b>它是一份状态快照，不是事件流</b>：面板每次刷新都重新读一遍，因此同一项持续越界只会显示一份，
      * 回落之后再越界也自然重新出现——不需要任何「只报一次」的记账。
      *
      * @return 不可变列表，保证非 {@code null}；无告警时为空列表
      */
-    List<Alert> alerts() {
+    List<String> alerts() {
         return alerts;
     }
 
@@ -272,7 +279,7 @@ final class ResmonSampler implements AutoCloseable {
      * 用当前两份快照一起判定：内存与磁盘由两个线程分别刷新，因此这里读到的可能是
      * 「新内存 + 旧磁盘」——这对告警没有影响（两者互不相干），却省掉了一份跨线程的联合快照。
      * <p>
-     * 关掉 {@code alerts} 配置时置空而不是不更新：用户关掉它的意图是「别再提示」，
+     * 关掉 {@code alerts} 配置时置空而不是不更新：用户关掉它的意图是「别再标出」，
      * 因此已算出来的那份也要立刻消失，而不是留在面板上直到下次重启。
      */
     private void refreshAlerts() {
@@ -280,24 +287,45 @@ final class ResmonSampler implements AutoCloseable {
             alerts = Collections.emptyList();
             return;
         }
-        alerts = Collections.unmodifiableList(new ArrayList<Alert>(evaluator.evaluate(jvm, disk)));
+        alerts = Collections.unmodifiableList(new ArrayList<String>(evaluator.evaluate(jvm, disk)));
     }
 
     /**
      * 实际扫描一轮磁盘。
+     * <p>
+     * 结果按体积从大到小排序，同体积按名字——「谁的占地方」是这块面板存在的理由，
+     * 让最大的那条永远在第一行比按文件系统的返回顺序稳定得多。
+     * <p>
+     * <b>轮换/备份文件不单独成项</b>：{@code jellyfish-tui.log.1} 与
+     * {@code jellyfish.json.bak-before-stock} 这类文件会被 {@link DirSizer#child} 算进它们的主文件里
+     * （那是让滚动日志不被漏报的同一个机制），因此这里必须把它们从列表里剔掉——否则同一批字节
+     * 会被算两遍，而「合计」也就不再可信。判据是「是不是某个同级子项的点号后缀」，
+     * 不猜具体后缀长什么样，因此换成别的命名约定也照样成立。
      *
      * @return 报告，保证非 {@code null}
      */
     private DiskReport scanDisk() {
         long now = System.currentTimeMillis();
         List<PathUsage> usages = new ArrayList<PathUsage>();
-        usages.add(sizer.directory(UsageKeys.SESSIONS, config.sessionsDir()));
-        usages.add(sizer.directory(UsageKeys.TOOL_OUTPUTS, config.toolOutputsDir()));
-        usages.add(sizer.directory(UsageKeys.PLUGINS, config.pluginsDir()));
-        usages.add(sizer.directory(UsageKeys.TODOS, config.todosDir()));
-        usages.add(sizer.directory(UsageKeys.GATEWAY, config.gatewayDir()));
-        // 日志是滚动的：要连 .1 … .N 一起算，否则报出来的数比实际少一个数量级
-        usages.add(sizer.withSiblings(UsageKeys.LOG, config.logFile()));
+        Path base = config.baseDir();
+        if (Files.isDirectory(base)) {
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(base)) {
+                List<Path> children = new ArrayList<Path>();
+                for (Path child : stream) {
+                    children.add(child);
+                }
+                for (Path child : children) {
+                    String name = child.getFileName().toString();
+                    if (isSiblingOfAnother(children, name)) {
+                        continue;
+                    }
+                    usages.add(sizer.child(name, child));
+                }
+            } catch (IOException | RuntimeException e) {
+                LOG.warn("列不出 {} 的一级子项：{}", base, e.getMessage());
+            }
+        }
+        Collections.sort(usages, bySizeDescending());
         long total = 0L;
         for (PathUsage usage : usages) {
             total += usage.bytes();
@@ -311,11 +339,43 @@ final class ResmonSampler implements AutoCloseable {
     }
 
     /**
+     * 判断一个名字是不是「另一个同级子项的点号后缀」。
+     *
+     * @param children 同级的全部子项路径，不可为 {@code null}
+     * @param name     待判断的名字，不可为 {@code null}
+     * @return 是某个同级子项的后缀时返回 {@code true}
+     */
+    private static boolean isSiblingOfAnother(List<Path> children, String name) {
+        for (Path other : children) {
+            String base = other.getFileName().toString();
+            if (!base.equals(name) && name.startsWith(base + ".")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 构造「体积从大到小、同体积按名字」的比较器。
+     *
+     * @return 比较器，保证非 {@code null}
+     */
+    private static Comparator<PathUsage> bySizeDescending() {
+        return new Comparator<PathUsage>() {
+            @Override
+            public int compare(PathUsage left, PathUsage right) {
+                int bySize = Long.compare(right.bytes(), left.bytes());
+                return bySize != 0 ? bySize : left.name().compareTo(right.name());
+            }
+        };
+    }
+
+    /**
      * 往外壳推一条「我的面板内容脏了」。
      * <p>
      * <b>这是本插件往外壳推的唯一一条东西</b>。告警不走推送：它是「当前状态」而不是一次事件，
-     * 而状态该由面板每次刷新时重新读一遍——推的话，同一条告警会在每次采样时重发一次，
-     * 而外壳的通知区会在没有会话的首页上把它显示出来，那正是它最没用的时候。
+     * 而状态该由面板每次刷新时重新读一遍——推的话，同一项会在每次采样时重发一条，
+     * 而外壳的通知区在没有会话的首页上也会把它显示出来，那正是它最没用的时候。
      * <p>
      * 这是面板能自己动起来的唯一机制：外壳只在缓存失效时才重新问插件要内容，
      * 而空闲时（没有回合在跑）没有任何东西会替我们失效。投递是尽力而为的，
@@ -336,15 +396,15 @@ final class ResmonSampler implements AutoCloseable {
     }
 
     /**
-     * 读取被统计目录所在分区的容量。
+     * 读取统计根目录所在分区的容量。
      * <p>
-     * 优先看会话目录所在的分区（那是本插件最可能撑满的地方），它不存在时退到用户主目录；
-     * 两者都取不到就报「不可用」——分区容量在整个界面上只占一格，不值得为它引入失败路径。
+     * 根目录不存在时退到用户主目录；两者都取不到就报「不可用」——分区容量在整个界面上只占一格，
+     * 不值得为它引入失败路径。
      *
      * @return 容量；不可用时两个字段都是负数
      */
     private PartitionSpace partitionSpace() {
-        FileStore store = fileStoreOf(config.sessionsDir());
+        FileStore store = fileStoreOf(config.baseDir());
         if (store == null) {
             String home = System.getProperty("user.home");
             store = home == null ? null : fileStoreOf(Paths.get(home));

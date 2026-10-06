@@ -184,14 +184,14 @@ final class DiskReport {
     }
 
     /**
-     * 取某个占用项的统计结果。
+     * 取某个一级子项的统计结果。
      *
-     * @param key 占用项键名
+     * @param name 子项名
      * @return 统计结果；该项不存在时返回 {@code null}
      */
-    PathUsage usageOf(String key) {
+    PathUsage usageOf(String name) {
         for (PathUsage usage : usages) {
-            if (usage.key().equals(key)) {
+            if (usage.name().equals(name)) {
                 return usage;
             }
         }

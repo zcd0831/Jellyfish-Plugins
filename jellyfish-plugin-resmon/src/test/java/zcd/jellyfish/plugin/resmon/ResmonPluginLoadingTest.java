@@ -160,18 +160,13 @@ class ResmonPluginLoadingTest {
     }
 
     /**
-     * 构造把六个统计路径都指向临时目录的插件配置段。
+     * 构造以临时目录为根目录的插件配置段。
      *
      * @return 配置段，保证非 {@code null}
      */
     private Map<String, Object> configuration() {
         Map<String, Object> values = new HashMap<String, Object>();
-        values.put(PluginConfig.KEY_SESSIONS_DIR, dataRoot.resolve("sessions").toString());
-        values.put(PluginConfig.KEY_TOOL_OUTPUTS_DIR, dataRoot.resolve("tool-outputs").toString());
-        values.put(PluginConfig.KEY_PLUGINS_DIR, dataRoot.resolve("plugins").toString());
-        values.put(PluginConfig.KEY_TODOS_DIR, dataRoot.resolve("todos").toString());
-        values.put(PluginConfig.KEY_GATEWAY_DIR, dataRoot.resolve("gateway").toString());
-        values.put(PluginConfig.KEY_LOG_FILE, dataRoot.resolve("jellyfish-tui.log").toString());
+        values.put(PluginConfig.KEY_BASE_DIR, dataRoot.toString());
         return values;
     }
 }

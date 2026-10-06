@@ -11,18 +11,23 @@ import java.util.Map;
  * 本插件的配置解析：把 {@code jellyfish.json} 里的
  * {@code plugins.configurations.jellyfish-plugin-resmon} 段解析成值对象。
  * <p>
- * <b>为什么路径要在这里再声明一份</b>：这是本插件唯一无法自己求真的信息。Jellyfish 没有统一的
- * 「家目录」工具类，落盘位置是各模块各自硬编码 {@code ~/.jellyfish/...} 的约定；插件又拿不到会话与
- * 工作目录，约定里也明确禁止插件自行读 {@code jellyfish.json}。因此缺省值取「内核与官方插件都在用的
- * 那几个约定路径」，用户若改过 {@code react.toolOutput.dir}、session-file 的 {@code sessionDir}
- * 或 {@code plugins.roots}，就在这里写一份对齐——这是本插件唯一的已知代价，
- * javadoc 与 README 都要写清，不能让用户以为自己看见的是权威数字。
+ * <b>只有一个路径配置，而且它是最稳定的那一个</b>：本插件不逐个声明「会话目录在哪、待办目录在哪」，
+ * 而是只声明一个根目录 {@code baseDir}（缺省 {@code ~/.jellyfish}），其余全部由扫描它的
+ * 一级子项得出。理由有两条：
+ * <ul>
+ *     <li><b>不逐个猜别人的落盘位置</b>：那些目录是其它插件按各自配置写的（session-file 的
+ *     {@code sessionDir}、todo 的 {@code todoDir}、脚本桥接的网关目录……）。逐个声明意味着
+ *     一旦谁改了配置，本插件就会安静地报出错误的目录——而它自己拿不到工作目录，也不允许
+ *     自行读 {@code jellyfish.json}，无法自证；</li>
+ *     <li><b>新增的东西自动被看见</b>：新装一个插件、用户手工在下面建了个目录、脚本桥接换了
+ *     抽取布局——都不需要改配置，下次扫描就报出来。</li>
+ * </ul>
+ * 代价是：若用户把某个插件的数据挪到 {@code ~/.jellyfish} 之外（例如
+ * {@code react.toolOutput.dir} 指到别的盘），那一份就不会出现在这里。这属于「本插件监控的是
+ * {@code ~/.jellyfish} 的占用」这条边界的自然结果，而不是配置没对齐。
  * <p>
- * 日志那一项还多一层：内核的 TUI 日志路径由系统属性 {@code jellyfish.log.file} 决定
- * （见 {@code log4j2-tui.xml}），那个属性<b>不会</b>出现在配置段里，因此改过它的用户只能靠
- * {@link #KEY_LOG_FILE} 手工对齐。
- * <p>
- * <b>越界的配置当场报错，而不是静默兜底</b>：采样间隔填成 {@code 1} 会让每秒推几十次界面失效 * （外壳每个插件来源的信箱只有几十格，满了丢最新），这属于配置错误，应当在插件启动时就以
+ * <b>越界的配置当场报错，而不是静默兜底</b>：采样间隔填成 {@code 1} 会让每秒推几十次界面失效
+ * （外壳每个插件来源的信箱只有几十格，满了丢最新），这属于配置错误，应当在插件启动时就以
  * 一条明确的错误暴露，而不是让用户去猜「面板为什么不动了」。
  * <p>
  * 项目级覆盖全局级、字符串值里的 {@code ${ENV}} 替换都由内核完成，这里拿到的就是最终值；
@@ -34,6 +39,9 @@ import java.util.Map;
  */
 final class PluginConfig {
 
+    /** 统计根目录键。 */
+    static final String KEY_BASE_DIR = "baseDir";
+
     /** JVM 采样间隔键。 */
     static final String KEY_SAMPLE_INTERVAL = "sampleIntervalMillis";
 
@@ -43,59 +51,29 @@ final class PluginConfig {
     /** 目录遍历深度上限键。 */
     static final String KEY_WALK_MAX_DEPTH = "walkMaxDepth";
 
+    /** 面板上最多列出几个一级子项键。 */
+    static final String KEY_DISK_ENTRIES = "diskEntries";
+
     /** 面板开关键。 */
     static final String KEY_PANEL = "panel";
 
     /** 自动刷新开关键。 */
     static final String KEY_AUTO_REFRESH = "autoRefresh";
 
-    /** 告警开关键。 */
+    /** 阈值标出开关键。 */
     static final String KEY_ALERTS = "alerts";
 
-    /** 会话目录键。 */
-    static final String KEY_SESSIONS_DIR = "sessionsDir";
-
-    /** 工具输出目录键。 */
-    static final String KEY_TOOL_OUTPUTS_DIR = "toolOutputsDir";
-
-    /** 插件目录键。 */
-    static final String KEY_PLUGINS_DIR = "pluginsDir";
-
-    /** 待办目录键。 */
-    static final String KEY_TODOS_DIR = "todosDir";
-
-    /** 脚本网关目录键。 */
-    static final String KEY_GATEWAY_DIR = "gatewayDir";
-
-    /** 日志文件键。 */
-    static final String KEY_LOG_FILE = "logFile";
-
-    /** 堆使用率告警阈值键。 */
+    /** 堆使用率阈值键。 */
     static final String KEY_ALERT_HEAP_PERCENT = "alertHeapPercent";
 
-    /** 分区使用率告警阈值键。 */
+    /** 分区使用率阈值键。 */
     static final String KEY_ALERT_DISK_PERCENT = "alertDiskPercent";
 
-    /** 文件描述符使用率告警阈值键。 */
+    /** 文件描述符使用率阈值键。 */
     static final String KEY_ALERT_FD_PERCENT = "alertFdPercent";
 
-    /** 会话目录缺省值：session-file 插件的 {@code sessionDir} 与之同源。 */
-    static final String DEFAULT_SESSIONS_DIR = "~/.jellyfish/sessions";
-
-    /** 工具输出目录缺省值：内核 {@code rt.toolOutput.dir} 与之同源。 */
-    static final String DEFAULT_TOOL_OUTPUTS_DIR = "~/.jellyfish/tool-outputs";
-
-    /** 插件目录缺省值：{@code config.json} 的 {@code plugins.roots} 与之同源。 */
-    static final String DEFAULT_PLUGINS_DIR = "~/.jellyfish/plugins";
-
-    /** 待办目录缺省值：todo 插件的 {@code todoDir} 与之同源。 */
-    static final String DEFAULT_TODOS_DIR = "~/.jellyfish/todos";
-
-    /** 脚本网关目录缺省值：{@code jellyfish-script} 的抽取目录。 */
-    static final String DEFAULT_GATEWAY_DIR = "~/.jellyfish/gateway";
-
-    /** 日志文件缺省值：内核 TUI 模式的 log4j2 落点。 */
-    static final String DEFAULT_LOG_FILE = "~/.jellyfish/jellyfish-tui.log";
+    /** 统计根目录缺省值：内核与官方插件约定俗成的全局数据目录。 */
+    static final String DEFAULT_BASE_DIR = "~/.jellyfish";
 
     /** JVM 采样间隔缺省值（毫秒）。 */
     static final long DEFAULT_SAMPLE_INTERVAL_MILLIS = 2000L;
@@ -106,23 +84,32 @@ final class PluginConfig {
     /** 目录遍历深度缺省值。 */
     static final int DEFAULT_WALK_MAX_DEPTH = DirSizer.DEFAULT_MAX_DEPTH;
 
+    /** 面板上列出的子项数缺省值：超过它的按体积从大到小截断，命令明细不受限。 */
+    static final int DEFAULT_DISK_ENTRIES = 12;
+
+    /** 子项数下界：0 意味着这块面板什么都不显示，那不该靠配置来表达（关面板有 panel）。 */
+    static final int MIN_DISK_ENTRIES = 1;
+
     /** 采样间隔下界（毫秒）：低于它会开始丢外壳贡献。 */
     static final long MIN_SAMPLE_INTERVAL_MILLIS = 500L;
 
     /** 磁盘扫描间隔下界（毫秒）。 */
     static final long MIN_DISK_INTERVAL_MILLIS = 5000L;
 
-    /** 堆使用率告警阈值缺省值（百分比）。 */
+    /** 堆使用率阈值缺省值（百分比）。 */
     static final double DEFAULT_ALERT_HEAP_PERCENT = 85.0;
 
-    /** 分区使用率告警阈值缺省值（百分比）。 */
+    /** 分区使用率阈值缺省值（百分比）。 */
     static final double DEFAULT_ALERT_DISK_PERCENT = 90.0;
 
-    /** 文件描述符使用率告警阈值缺省值（百分比）。 */
+    /** 文件描述符使用率阈值缺省值（百分比）。 */
     static final double DEFAULT_ALERT_FD_PERCENT = 85.0;
 
     /** 百分之一百。 */
     private static final double FULL_PERCENT = 100.0;
+
+    /** 统计根目录。 */
+    private final Path baseDir;
 
     /** JVM 采样间隔。 */
     private final long sampleIntervalMillis;
@@ -133,32 +120,17 @@ final class PluginConfig {
     /** 目录遍历深度上限。 */
     private final int walkMaxDepth;
 
+    /** 面板上列出的子项数上限。 */
+    private final int diskEntries;
+
     /** 是否注册面板。 */
     private final boolean panel;
 
     /** 是否在采样后主动推送界面失效。 */
     private final boolean autoRefresh;
 
-    /** 是否在面板与命令里标出越阈值的项。 */
+    /** 是否标出越阈值的项。 */
     private final boolean alerts;
-
-    /** 会话目录。 */
-    private final Path sessionsDir;
-
-    /** 工具输出目录。 */
-    private final Path toolOutputsDir;
-
-    /** 插件目录。 */
-    private final Path pluginsDir;
-
-    /** 待办目录。 */
-    private final Path todosDir;
-
-    /** 脚本网关目录。 */
-    private final Path gatewayDir;
-
-    /** 日志文件。 */
-    private final Path logFile;
 
     /** 堆使用率告警阈值。 */
     private final double alertHeapPercent;
@@ -172,24 +144,21 @@ final class PluginConfig {
     /**
      * 构造配置。
      *
-     * @param values            已解析的配置段，不可为 {@code null}
+     * @param values 已解析的配置段，不可为 {@code null}
      */
     private PluginConfig(Map<String, Object> values) {
+        this.baseDir = pathValue(values, KEY_BASE_DIR, DEFAULT_BASE_DIR);
         this.sampleIntervalMillis = longValue(values, KEY_SAMPLE_INTERVAL,
                 DEFAULT_SAMPLE_INTERVAL_MILLIS, MIN_SAMPLE_INTERVAL_MILLIS);
         this.diskScanIntervalMillis = longValue(values, KEY_DISK_INTERVAL,
                 DEFAULT_DISK_INTERVAL_MILLIS, MIN_DISK_INTERVAL_MILLIS);
         this.walkMaxDepth = (int) longValue(values, KEY_WALK_MAX_DEPTH,
                 DEFAULT_WALK_MAX_DEPTH, DirSizer.MIN_MAX_DEPTH);
+        this.diskEntries = (int) longValue(values, KEY_DISK_ENTRIES,
+                DEFAULT_DISK_ENTRIES, MIN_DISK_ENTRIES);
         this.panel = booleanValue(values, KEY_PANEL, true);
         this.autoRefresh = booleanValue(values, KEY_AUTO_REFRESH, true);
         this.alerts = booleanValue(values, KEY_ALERTS, true);
-        this.sessionsDir = pathValue(values, KEY_SESSIONS_DIR, DEFAULT_SESSIONS_DIR);
-        this.toolOutputsDir = pathValue(values, KEY_TOOL_OUTPUTS_DIR, DEFAULT_TOOL_OUTPUTS_DIR);
-        this.pluginsDir = pathValue(values, KEY_PLUGINS_DIR, DEFAULT_PLUGINS_DIR);
-        this.todosDir = pathValue(values, KEY_TODOS_DIR, DEFAULT_TODOS_DIR);
-        this.gatewayDir = pathValue(values, KEY_GATEWAY_DIR, DEFAULT_GATEWAY_DIR);
-        this.logFile = pathValue(values, KEY_LOG_FILE, DEFAULT_LOG_FILE);
         this.alertHeapPercent = percentValue(values, KEY_ALERT_HEAP_PERCENT, DEFAULT_ALERT_HEAP_PERCENT);
         this.alertDiskPercent = percentValue(values, KEY_ALERT_DISK_PERCENT, DEFAULT_ALERT_DISK_PERCENT);
         this.alertFdPercent = percentValue(values, KEY_ALERT_FD_PERCENT, DEFAULT_ALERT_FD_PERCENT);
@@ -205,6 +174,15 @@ final class PluginConfig {
     static PluginConfig from(Map<String, Object> configuration) {
         return new PluginConfig(configuration == null
                 ? Collections.<String, Object>emptyMap() : configuration);
+    }
+
+    /**
+     * 获取统计根目录。
+     *
+     * @return 目录路径
+     */
+    Path baseDir() {
+        return baseDir;
     }
 
     /**
@@ -235,6 +213,15 @@ final class PluginConfig {
     }
 
     /**
+     * 获取面板上列出的子项数上限。
+     *
+     * @return 子项数
+     */
+    int diskEntries() {
+        return diskEntries;
+    }
+
+    /**
      * 判断是否注册面板。
      *
      * @return 注册返回 {@code true}
@@ -255,67 +242,13 @@ final class PluginConfig {
     /**
      * 判断是否标出越阈值的项。
      * <p>
-     * 关掉它只是「不再标出」：面板会少掉告警行、命令输出会少掉告警段，
+     * 关掉它只是「不再标出」：面板里那些行不再转警示档位、命令输出里不再有告警段，
      * 各项读数本身照旧显示——阈值是提醒，不是数据。
      *
      * @return 标出返回 {@code true}
      */
     boolean alerts() {
         return alerts;
-    }
-
-    /**
-     * 获取会话目录。
-     *
-     * @return 目录路径
-     */
-    Path sessionsDir() {
-        return sessionsDir;
-    }
-
-    /**
-     * 获取工具输出目录。
-     *
-     * @return 目录路径
-     */
-    Path toolOutputsDir() {
-        return toolOutputsDir;
-    }
-
-    /**
-     * 获取插件目录。
-     *
-     * @return 目录路径
-     */
-    Path pluginsDir() {
-        return pluginsDir;
-    }
-
-    /**
-     * 获取待办目录。
-     *
-     * @return 目录路径
-     */
-    Path todosDir() {
-        return todosDir;
-    }
-
-    /**
-     * 获取脚本网关目录。
-     *
-     * @return 目录路径
-     */
-    Path gatewayDir() {
-        return gatewayDir;
-    }
-
-    /**
-     * 获取日志文件。
-     *
-     * @return 文件路径
-     */
-    Path logFile() {
-        return logFile;
     }
 
     /**

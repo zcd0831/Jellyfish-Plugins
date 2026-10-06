@@ -38,10 +38,16 @@ import zcd.jellyfish.api.plugin.PluginContext;
  * 就能拿到全部数据，连一个第三方依赖都不必加。反过来，这也意味着它拿不到内核内部的计数器
  * （事件通道队列长度、react 池深度、在途子代理许可）——那些只有内核知道，本插件不去猜。
  * <p>
- * <b>唯一的已知短板</b>：磁盘统计的目录路径只能由本插件配置段给出（插件拿不到工作目录，
- * 也不允许自行读 {@code jellyfish.json}）。缺省值取的正是内核与官方插件都在用的约定路径；
- * 用户若改过那些配置，需要在 {@code plugins.configurations.jellyfish-plugin-resmon} 里对齐。
- * 这一点在 {@code /resmon disk} 的输出末尾也会主动写出来，不让用户把错的数字当权威。
+ * <b>磁盘这一侧不需要逐个猜别人的落盘位置</b>：只声明一个根目录（缺省 {@code ~/.jellyfish}），
+ * 其余全部由扫描它的一级子项得出。逐个声明意味着本插件要知道每个别的插件把数据放在哪儿
+ * ——而它既拿不到工作目录、也不允许自行读 {@code jellyfish.json}，无从核对；改成扫描之后，
+ * 新装的插件、新出现的目录都被自动看见，而配置里只剩一个最稳定的约定。
+ * 代价是挪到 {@code baseDir} 之外的数据看不到（例如把 {@code react.toolOutput.dir} 指到别的盘），
+ * 这属于「本插件监控的是这个根目录的占用」这条边界的自然结果。
+ * <p>
+ * <b>体积与文件数的口径不同</b>：体积含版本库内部（{@code .git} 等），文件数不含。
+ * 少算 git 历史会让总量与分区已用空间对不上；而把 git 的对象文件算进文件数，
+ * 会话目录会报出「769 个文件」而用户只聊过 37 次天。差异由 {@code PathUsage} 说明。
  * <p>
  * <b>生命周期遵循既有纪律</b>：采样线程在 {@code start()} 里现造（PF4J 长期缓存插件实例，
  * 字段缓存会跨 {@code /reload} 残留），在 {@code stop()} 里先置停止标记再关线程池并等待它结束
@@ -76,9 +82,8 @@ public final class ResmonPlugin implements JellyfishPlugin {
             sampler = null;
             throw e;
         }
-        LOG.info("资源监控插件已启动: panel={}, sessionsDir={}, toolOutputsDir={}",
-                config.panel() && context.runtimeInfo().hasUI(),
-                config.sessionsDir(), config.toolOutputsDir());
+        LOG.info("资源监控插件已启动: panel={}, baseDir={}",
+                config.panel() && context.runtimeInfo().hasUI(), config.baseDir());
     }
 
     @Override

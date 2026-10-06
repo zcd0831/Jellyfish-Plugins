@@ -43,7 +43,7 @@ final class ResmonOptions implements ExtensionHandler<CommandOptionRequest, Comm
         choices.add(new CommandChoice(ResmonCommand.ARG_JVM, "jvm",
                 "JVM 明细：堆、非堆、内存池、GC、线程、文件描述符、CPU", false));
         choices.add(new CommandChoice(ResmonCommand.ARG_DISK, "disk",
-                "磁盘明细：六个已知目录的体积、文件数与路径", false));
+                "磁盘明细：baseDir（缺省 ~/.jellyfish）下一级子项的占用与路径", false));
         choices.add(new CommandChoice(ResmonCommand.VALUE_AUTO_ON, "auto on",
                 "开启面板自动刷新（每轮采样后立刻重绘）", auto));
         choices.add(new CommandChoice(ResmonCommand.VALUE_AUTO_OFF, "auto off",

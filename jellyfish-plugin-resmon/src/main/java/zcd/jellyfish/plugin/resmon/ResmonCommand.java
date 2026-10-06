@@ -153,8 +153,8 @@ final class ResmonCommand implements ExtensionHandler<CommandRequest, CommandRes
      * @param out 输出缓冲，不可为 {@code null}
      */
     private void appendAlerts(StringBuilder out) {
-        for (Alert alert : sampler.alerts()) {
-            out.append("告警 ").append(alert.detailText()).append('\n');
+        for (String alert : sampler.alerts()) {
+            out.append("告警 ").append(alert).append('\n');
         }
     }
 
@@ -273,11 +273,14 @@ final class ResmonCommand implements ExtensionHandler<CommandRequest, CommandRes
 
     /**
      * 追加磁盘明细。
+     * <p>
+     * 每条给出名字、体积、文件数与完整路径：路径是这份输出存在的理由之一——面板上只有被截断的名字，
+     * 而用户要照着一份清单去清理时，需要的正是能粘贴的绝对路径。
      *
      * @param out  输出缓冲，不可为 {@code null}
      * @param disk 磁盘报告，不可为 {@code null}
      */
-    private static void appendDisk(StringBuilder out, DiskReport disk) {
+    private void appendDisk(StringBuilder out, DiskReport disk) {
         if (!disk.scanned()) {
             out.append("磁盘：尚未完成首次扫描，请稍后再试（首次扫描在插件启动后立即开始）。").append('\n');
             return;
@@ -286,18 +289,22 @@ final class ResmonCommand implements ExtensionHandler<CommandRequest, CommandRes
         out.append(INDENT).append("分区 ").append(ResmonFormat.bytes(disk.partitionTotalBytes()))
                 .append(" 已用 ").append(ResmonFormat.percent(disk.partitionUsedPercent()))
                 .append("，剩 ").append(ResmonFormat.bytes(disk.partitionUsableBytes())).append('\n');
+        out.append(INDENT).append(config.baseDir()).append(" 合计 ")                .append(ResmonFormat.bytes(disk.totalBytes())).append(growthText(disk))
+                .append("，共 ").append(disk.usages().size()).append(" 个一级子项").append('\n');
         for (PathUsage usage : disk.usages()) {
-            out.append(INDENT).append(ResmonFormat.label(usage.key())).append(' ').append(text(usage))
+            out.append(INDENT).append(usage.name()).append(' ').append(text(usage))
                     .append("  ").append(usage.path()).append('\n');
         }
-        out.append(INDENT).append("合计 ").append(ResmonFormat.bytes(disk.totalBytes()))
-                .append(growthText(disk)).append('\n');
-        out.append('\n').append("以上目录路径取自本插件的配置段（plugins.configurations.jellyfish-plugin-resmon）。")
-                .append("若你改过内核的落盘位置，请在配置里同步，否则这里统计的不是真实目录。").append('\n');
+        out.append('\n').append("以上是本插件配置的 baseDir（缺省 ~/.jellyfish）下的全部一级子项，按体积从大到小。")
+                .append("体积含版本库内部（.git 等），文件数不计——所以「会话目录 769 个文件」这种情况不会出现。")
+                .append('\n');
     }
 
     /**
-     * 拼一个占用项的读数。
+     * 拼一个子项的读数。
+     * <p>
+     * 版本库内部单独标出来：它是「这个目录为什么比看上去大」的唯一解释。会话目录里 git 历史
+     * 往往比会话文件本身还大，不写出来，用户会以为那几十兆全是自己的对话。
      *
      * @param usage 占用结果，不可为 {@code null}
      * @return 文本
@@ -306,10 +313,14 @@ final class ResmonCommand implements ExtensionHandler<CommandRequest, CommandRes
         if (!usage.present()) {
             return ResmonFormat.UNKNOWN + "（不存在）";
         }
-        if (usage.files() == 1L) {
-            return ResmonFormat.bytes(usage.bytes());
+        StringBuilder text = new StringBuilder(ResmonFormat.bytes(usage.bytes()));
+        if (usage.files() > 1L) {
+            text.append("，").append(usage.files()).append(" 个文件");
         }
-        return ResmonFormat.bytes(usage.bytes()) + "，" + usage.files() + " 个文件";
+        if (usage.vcsBytes() > 0L) {
+            text.append("（其中版本库 ").append(ResmonFormat.bytes(usage.vcsBytes())).append("）");
+        }
+        return text.toString();
     }
 
     /**

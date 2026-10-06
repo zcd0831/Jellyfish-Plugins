@@ -13,6 +13,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>
  * 这些函数是整个插件里唯一会被反复显示给用户看的东西，且它们的输出直接决定面板会不会折行，
  * 因此值得逐个边界验：进位的那一格（1023B / 1K）、小数的取舍、以及「不可用」必须与「零」长得不一样。
+ * <p>
+ * 截断那一组按<b>显示宽度</b>而不是字符数验——全中文目录名按字符数截会让这一行的实际宽度翻倍，
+ * 而那正是面板宽度预算被突破的方式。
  *
  * @author zcd
  */
@@ -78,19 +81,50 @@ class ResmonFormatTest {
     }
 
     @Test
-    @DisplayName("占用项在面板上用两个汉字的短名，在明细里用全名")
-    void labels_should_differ_between_panel_and_detail() {
-        assertEquals("会话", ResmonFormat.shortLabel(UsageKeys.SESSIONS));
-        assertEquals("会话文件", ResmonFormat.label(UsageKeys.SESSIONS));
-        assertEquals("输出", ResmonFormat.shortLabel(UsageKeys.TOOL_OUTPUTS));
-        assertEquals("工具输出", ResmonFormat.label(UsageKeys.TOOL_OUTPUTS));
+    @DisplayName("够短的名字原样返回")
+    void clip_should_keep_short_text() {
+        assertEquals("sessions", ResmonFormat.clip("sessions", 10));
+        assertEquals("sessions", ResmonFormat.clip("sessions", 8));
     }
 
     @Test
-    @DisplayName("未知键原样返回：新目录在补标签之前也看得见")
-    void label_should_fall_back_to_key_when_unknown() {
-        assertEquals("unknown", ResmonFormat.label("unknown"));
-        assertEquals("unknown", ResmonFormat.shortLabel("unknown"));
+    @DisplayName("超长的名字按显示宽度截断并以省略号收尾")
+    void clip_should_truncate_long_text() {
+        assertEquals("tool-outp\u2026", ResmonFormat.clip("tool-outputs", 10));
+        assertEquals("jellyfis\u2026", ResmonFormat.clip("jellyfish-tui.log", 9));
+    }
+
+    @Test
+    @DisplayName("全角字符按两列算：中文目录名不会被截得比预算宽")
+    void clip_should_count_wide_characters_twice() {
+        // 「会话目录」= 8 列，预算 6 只放得下两个字（4 列）+ 省略号
+        String clipped = ResmonFormat.clip("会话目录名", 6);
+
+        assertEquals("会话\u2026", clipped);
+        assertTrue(ResmonFormat.displayWidth(clipped) <= 6);
+    }
+
+    @Test
+    @DisplayName("截断结果永远不超过预算宽度")
+    void clip_should_never_exceed_budget() {
+        String[] names = {"sessions", "tool-outputs", "jellyfish-tui.log", "会话目录", "混合 name 混排",
+                "a", "非常长的一个中文目录名字用来测试截断"};
+
+        for (String name : names) {
+            for (int budget = 1; budget <= 12; budget++) {
+                String clipped = ResmonFormat.clip(name, budget);
+                assertTrue(ResmonFormat.displayWidth(clipped) <= budget,
+                        "预算 " + budget + " 却得到「" + clipped + "」");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("null 与空串按空文本处理")
+    void clip_should_tolerate_null() {
+        assertEquals("", ResmonFormat.clip(null, 5));
+        assertEquals("", ResmonFormat.clip("", 5));
+        assertEquals(0, ResmonFormat.displayWidth(null));
     }
 
     @Test
