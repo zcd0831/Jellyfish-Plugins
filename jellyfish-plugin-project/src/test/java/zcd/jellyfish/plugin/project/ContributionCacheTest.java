@@ -9,6 +9,7 @@ import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link ContributionCache} 的单元测试：按会话只算一次、会话结束可丢弃、条数有界。
@@ -70,6 +71,29 @@ class ContributionCacheTest {
 
         assertEquals(2, loads.get());
         assertEquals(0, cache.size());
+    }
+
+    @Test
+    @DisplayName("空贡献不缓存：文件刚被创建时下一轮必须看得见（/init 的前提）")
+    void get_should_notCache_when_contributionIsEmpty() {
+        ContributionCache cache = new ContributionCache();
+        AtomicInteger loads = new AtomicInteger();
+
+        // 第一轮：工作目录里还没有约定文件
+        PromptContribution absent = cache.get("s-1", () -> {
+            loads.incrementAndGet();
+            return PromptContribution.empty();
+        });
+        // 第二轮：文件被创建出来了（例如 /init 刚跑完），必须重新探一次
+        PromptContribution present = cache.get("s-1", () -> {
+            loads.incrementAndGet();
+            return PromptContribution.of("这次有了");
+        });
+
+        assertTrue(absent.isEmpty());
+        assertEquals("这次有了", present.getText());
+        assertEquals(2, loads.get());
+        assertEquals(1, cache.size());
     }
 
     @Test

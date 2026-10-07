@@ -7,6 +7,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- `jellyfish-plugin-project` 新增 `/init [--force]` 命令：让模型读一遍仓库后写出 `AGENTS.md`。
+  命令自己不写盘，只把一份指令交给内核（「命令接力」，见内核 `README.md` 的同名小节），
+  由模型走工具写入——因此写入照旧过权限与审批链。工作目录里已有非空 `AGENTS.md` 时默认拒绝，
+  带 `--force` 才接力，并在指令里要求「先读现有文件、增量更新而不是重写」。
+
+### Changed
+
+- Maven 坐标由 `zcd` 改为 `io.github.zcd0831`，版本号统一到 0.1.1（含各插件描述符里的 `plugin.version`）；
+  插件依赖的内核契约改为 `io.github.zcd0831:jellyfish-api`，与内核 0.1.1 配套。
+- 官方插件仍不发布到 Maven Central（它们是 PF4J 插件包，按 `cpPlugins.sh` 装到内核的插件目录）。
+- `jellyfish-plugin-project`：**「没有约定文件」不再进会话缓存**。原来一个会话只读一次盘，
+  于是会话中途新建的 `AGENTS.md` 在本会话里永远看不见——那正好抵消了 `/init` 的意义。
+  现在空贡献每轮重探一次（只多一次 `stat`，不读内容）；**已经读到过的内容仍按会话缓存一次**，
+  「会话中途修改 `AGENTS.md` 要开新会话才生效」这条不变。
+
 ## [0.1.0] - 2026-10-07
 
 ### Added

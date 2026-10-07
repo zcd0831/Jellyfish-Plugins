@@ -53,7 +53,7 @@ mvn -q -Pscript-it test
 | `jellyfish-plugin-shell` | `shell` 工具 + 命令策略 + `!命令` 输入指令（commons-exec 以 shade 打进插件包） |
 | `jellyfish-plugin-session-file` | 会话持久化（一会话一 JSON + git） |
 | `jellyfish-plugin-todo` | 待办工具族 + `/todo` + 回合上下文 / 状态栏 / 面板贡献 |
-| `jellyfish-plugin-project` | 探测工作目录下的 `AGENTS.md` 并按大小决定内联还是给路径 |
+| `jellyfish-plugin-project` | 探测工作目录下的 `AGENTS.md` 并按大小决定内联还是给路径；`/init` 让模型读仓库后写出它 |
 | `jellyfish-plugin-compact` | 压缩策略（摘要指令 `summary-prompt.md` + 两个数量参数） |
 | `jellyfish-plugin-skills` | 按目录发现 `SKILL.md`，正文由 `skill` 工具按需加载 |
 | `jellyfish-plugin-mcp` | MCP 客户端（Jackson 以 shade 打进插件包） |

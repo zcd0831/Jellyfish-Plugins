@@ -19,6 +19,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>
  * 两条互为反面、必须同时钉住的用例：<b>小文件必须带上正文</b>（否则内联毫无意义）、
  * <b>大文件绝不能带正文</b>（否则「大文件只给路径」这条口径失守）。
+ * <p>
+ * 缓存那一组同样是两条互为反面的用例：<b>已经读到的内容在同一会话里不改口</b>（省掉重复读盘）、
+ * <b>而「什么都没读到」必须每轮重探</b>（否则 {@code /init} 刚写出的文件在本会话里永远看不见）。
  *
  * @author zcd
  */
@@ -80,14 +83,15 @@ class ProjectPromptContributionTest {
     }
 
     @Test
-    @DisplayName("一个会话只读一次盘：会话中途新建约定文件，同一会话仍返回空贡献")
-    void handle_should_notDetectNewFile_inSameSession() throws IOException {
+    @DisplayName("会话中途新建约定文件应立刻生效：/init 刚写出的文件，下一轮模型就要看得见")
+    void handle_should_detectNewFile_inSameSession() throws IOException {
         ProjectPromptContribution contribution = contribution(1024);
         assertTrue(contribution.handle(new PromptContributionRequest("s-1")).isEmpty());
 
         writeConventionFile(SENTINEL_BODY);
 
-        assertTrue(contribution.handle(new PromptContributionRequest("s-1")).isEmpty());
+        assertTrue(contribution.handle(new PromptContributionRequest("s-1")).getText()
+                .contains(SENTINEL_BODY));
     }
 
     @Test

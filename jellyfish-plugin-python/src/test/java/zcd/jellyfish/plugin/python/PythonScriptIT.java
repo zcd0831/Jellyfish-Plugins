@@ -1252,9 +1252,35 @@ class PythonScriptIT {
         // 递归拷贝：示例以后可能拆成多个文件，测试不该因此失效
         try (java.util.stream.Stream<Path> stream = Files.walk(source)) {
             for (Path path : stream.filter(Files::isRegularFile).toArray(Path[]::new)) {
-                Files.copy(path, target.resolve(source.relativize(path).toString()));
+                Path relative = source.relativize(path);
+                // 跳过 Python 的字节码缓存：它是「就地跑示例」的用例（如 dump_manifest 那一组）留下的产物，
+                // 拷进沙箱毫无用处，反而会因为拷贝期间被重新生成而随机失败
+                if (isBytecodeCache(relative)) {
+                    continue;
+                }
+                Path destination = target.resolve(relative.toString());
+                // 中间目录必须显式建出来：Files.copy 不会替我们创建父目录，
+                // 示例将来多一层子目录（例如 resources/）时就会以 NoSuchFileException 炸掉
+                Files.createDirectories(destination.getParent());
+                Files.copy(path, destination);
             }
         }
+    }
+
+    /**
+     * 判断相对路径是否落在 Python 的字节码缓存里。
+     *
+     * @param relative 相对示例根目录的路径
+     * @return 路径中出现 {@code __pycache__} 或以 {@code .pyc} 结尾时返回 {@code true}
+     */
+    private static boolean isBytecodeCache(Path relative) {
+        for (Path segment : relative) {
+            String name = segment.toString();
+            if ("__pycache__".equals(name) || name.endsWith(".pyc")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

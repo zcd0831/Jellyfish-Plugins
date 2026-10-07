@@ -14,6 +14,9 @@ import java.util.function.Supplier;
  * 押在帧率上是我们已经不想要的代价。业界同源的做法也是这样：Codex 每次运行构建一次指令链，
  * Claude Code 在对话开始时加载 {@code CLAUDE.md}，中途改动都要等到下一次会话。
  * <p>
+ * <b>缓存的是「读到的内容」，不包括「什么都没读到」</b>：没有约定文件时不缓存（见 {@link #get}），
+ * 因此<code>/init</code> 刚写出的文件在下一轮就能被模型看到——那正是这个命令的意义所在。
+ * <p>
  * <b>代价是「会话中途修改 {@code AGENTS.md} 不生效」</b>：这是本设计有意接受的行为，
  * 与上面两家一致。要让它生效，开一个新会话即可。
  * <p>
@@ -42,6 +45,11 @@ final class ContributionCache {
      * <p>
      * <b>会话标识为空时不缓存</b>：没有键就无从归属，硬塞进一个哨兵键会让「谁读的盘」这件事失真；
      * 这种情形下退回「每轮现算」，代价与缓存引入之前一样，不会更坏。
+     * <p>
+     * <b>空贡献也不缓存</b>：它没有可省的磁盘 I/O（探测「文件在不在」只是一次 {@code stat}，
+     * 不读内容），而缓存它会让「文件刚被创建」这件事在本会话里永远看不见——那正是
+     * {@code /init} 想达成的效果：模型刚写下 {@code AGENTS.md}，紧接着的下一轮就该看到它。
+     * 代价是「没有约定文件的目录」每轮多一次 {@code stat}，可以忽略。
      *
      * @param sessionId 会话标识，可为 {@code null}
      * @param loader    首次访问时的计算逻辑，不可为 {@code null}
@@ -58,7 +66,9 @@ final class ContributionCache {
         // 计算放在锁外：内联模式要读盘，把磁盘 I/O 押在互斥锁上会让别的会话白等
         // （并发下可能重复读一次，代价远小于让所有请求排在一把锁上）
         PromptContribution computed = loader.get();
-        store(sessionId, computed);
+        if (!computed.isEmpty()) {
+            store(sessionId, computed);
+        }
         return computed;
     }
 

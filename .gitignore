@@ -33,6 +33,11 @@ replay_pid*
 # Maven build output
 target/
 
+# Python 字节码缓存：示例脚本会被端到端用例（-Pscript-it）就地执行，
+# Python 会把 .pyc 写在示例目录里，那是构建产物而不是源码
+__pycache__/
+*.py[cod]
+
 # 插件安装目录：PF4J 从工作目录下的 plugins/ 加载插件 jar，
 # 它是本地装配产物（由 mvn package 后手工复制得到），不入版本库
 /plugins/

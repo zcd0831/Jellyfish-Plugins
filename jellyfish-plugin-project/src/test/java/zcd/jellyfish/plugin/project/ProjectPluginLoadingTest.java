@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mockito;
 import org.pf4j.PluginState;
+import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.PromptContributionRequest;
 import zcd.jellyfish.infra.action.ActionQueue;
 import zcd.jellyfish.infra.metrics.MetricsRegistry;
@@ -111,6 +112,20 @@ class ProjectPluginLoadingTest {
         manager = null;
 
         assertTrue(extensions.bindings(PromptContributionRequest.class, null).isEmpty());
+    }
+
+    @Test
+    @DisplayName("插件卸载后 /init 命令应按 owner 被回收")
+    void close_should_unregisterInitCommand() throws IOException {
+        installPlugin();
+
+        manager = newManager();
+        manager.bootstrap();
+        assertEquals(1, extensions.bindings(CommandRequest.class, InitCommand.COMMAND_NAME).size());
+        manager.close();
+        manager = null;
+
+        assertTrue(extensions.bindings(CommandRequest.class, InitCommand.COMMAND_NAME).isEmpty());
     }
 
     /**

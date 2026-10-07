@@ -22,7 +22,9 @@ import zcd.jellyfish.api.extension.PromptContributionRequest;
  * 足够小的上限、以及 {@code maxInlineBytes: 0} 这个「彻底关掉内联」的开关。
  * <p>
  * <b>每个会话只算一次</b>：结果按 {@code sessionId} 缓存在 {@link ContributionCache} 里，
- * 会话中途修改 {@code AGENTS.md} 不生效，新会话才重读。理由见缓存类注释。
+ * 会话中途修改 {@code AGENTS.md} 不生效，新会话才重读。
+ * <b>唯一的例外是「什么都没读到」不缓存</b>——探测不到文件时的空贡献每轮重探一次
+ * （只多一次 {@code stat}），否则 {@code /init} 刚写出的约定在本会话里就永远看不见了。
  * <p>
  * 线程安全：依赖 {@link ConventionFiles}（无状态）与 {@link ContributionCache}（同步），
  * 自身不持有可变状态。

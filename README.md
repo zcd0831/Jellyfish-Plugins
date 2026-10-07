@@ -53,7 +53,7 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
 | `jellyfish-plugin-shell` | 同名 | `shell` 工具（`/bin/sh -c` 执行命令原文）+ 命令策略（白名单准入、可信表免审批、只读不打扰、灾难形状拒绝、其余审批）+ `!命令` 输入指令。**没有沙箱** |
 | `jellyfish-plugin-session-file` | 同名 | 会话持久化：一个会话一个 JSON 文件，并用 git 管理历史 |
 | `jellyfish-plugin-todo` | 同名 | 会话待办：`todo_write` / `todo_claim` / `todo_done` / `todo_release` / `todo_block` 五个工具 + 只读 `/todo` + 随本轮消息送达的待办块 + 状态栏进度 + 左栏清单面板 |
-| `jellyfish-plugin-project` | 同名 | 项目约定：探测工作目录下的 `AGENTS.md`，**小文件内联原文、大文件只给路径**（阈值可配） |
+| `jellyfish-plugin-project` | 同名 | 项目约定：探测工作目录下的 `AGENTS.md`，**小文件内联原文、大文件只给路径**（阈值可配）；`/init [--force]` 让模型读仓库后写出它 |
 | `jellyfish-plugin-compact` | 同名 | 会话压缩策略：摘要指令 + 保留条数 / 摘要上限（**不装它就没有压缩**） |
 | `jellyfish-plugin-skills` | 同名 | skills：按目录发现 `SKILL.md`，元信息常驻 system prompt、正文由模型用 `skill` 工具按需加载 |
 | `jellyfish-plugin-mcp` | 同名 | MCP 客户端：stdio 连外部 MCP server，把它的工具以 `mcp__<server>__<tool>` 接入 |
@@ -355,8 +355,30 @@ stock 362B 3文件
 - **只查进程工作目录**，不向上查找父目录、也不查用户主目录：**因此请从仓库根目录启动**。
   约定文件名固定为 `AGENTS.md`，这两项不可配。
 - **空文件不算命中**；文件不存在时插件完全不注入。
-- **每个会话只读一次盘**：第一次组装请求时读取并缓存，代价是**会话中途修改 `AGENTS.md` 不生效**——
+- **已经读到过的内容按会话缓存一次**：代价是**会话中途修改 `AGENTS.md` 不生效**——
   开一个新会话即可。缓存省的是磁盘 I/O，**不省 token**。
+- **唯一的例外是「什么都没有」不进缓存**：探测不到约定文件时每轮重探一次（只多一次 `stat`，
+  不读内容），因此 `/init`（或手工）刚写出的 `AGENTS.md` **在同一会话的下一轮就能被模型看到**。
+
+### `/init`：让模型写出这份 `AGENTS.md`
+
+```
+/init            读一遍仓库，写出 AGENTS.md（已有非空文件时拒绝，不改动它）
+/init --force    在已有文件的基础上增量更新（先读、只改与现状不符的部分）
+```
+
+`AGENTS.md` 的内容得先看过仓库才知道，所以这件事交给模型做，插件只负责开场：
+
+1. `/init` 先探测工作目录。**已有非空 `AGENTS.md` 且没带 `--force` 时当场拒绝**，把「要不要动用户手写的文件」
+   这个决定权留给用户；带 `--force` 才继续，并在指令后面追加「先读现有文件、增量更新而不是重写」的约束。
+2. 命令**自己不写盘**，而是返回一份指令，内核把这段文本**当成你这一次敲下的输入**接着跑一轮回合
+   （内核里叫「命令接力」，见内核 `README.md`）。因此屏幕上你看到的是一次普通对话，模型的回答照旧出现在消息区。
+3. 模型据此去读仓库、**用它的写入工具**写出 `AGENTS.md`。写入照旧经过权限与审批——
+   插件没有、也不该有直接落盘绕开权限的入口。
+4. 下一轮起，这份文件就进了 system prompt（小文件内联原文，大文件只给路径）。
+
+指令模板在插件 jar 里（`init-prompt.md` 与 `init-prompt-force.md`），**改措辞要重新打包**，
+与压缩插件的 `summary-prompt.md` 同一范式。
 
 ## 会话压缩（jellyfish-plugin-compact）
 
@@ -698,9 +720,9 @@ jellyfish.tags=example
 
 ```xml
 <parent>
-    <groupId>zcd</groupId>
+    <groupId>io.github.zcd0831</groupId>
     <artifactId>jellyfish-plugins</artifactId>
-    <version>0.1.0</version>
+    <version>0.1.1</version>
 </parent>
 
 <artifactId>my-plugin</artifactId>
@@ -708,7 +730,7 @@ jellyfish.tags=example
 <dependencies>
     <!-- 内核契约必须 provided：PF4J 的插件类加载器是子优先的，自带 api 会遮蔽父加载器里的同名类 -->
     <dependency>
-        <groupId>zcd</groupId>
+        <groupId>io.github.zcd0831</groupId>
         <artifactId>jellyfish-api</artifactId>
         <version>${project.version}</version>
         <scope>provided</scope>
@@ -903,8 +925,9 @@ mvn -q -Pscript-it test
 `${...}`，并保证它总是已设。
 
 **改完 `SKILL.md` 要重启吗？**
-不用，目录缓存按文件修改时间失效。但**会话中途修改 `AGENTS.md` 不生效**（project 插件每个会话只读一次盘），
-开个新会话即可。
+不用，目录缓存按文件修改时间失效。但**会话中途修改一个已经存在的 `AGENTS.md` 不生效**
+（project 插件对「已经读到的内容」每个会话只缓存一次），开个新会话即可。
+反过来，**新出现的 `AGENTS.md` 立刻生效**：`/init` 写完之后，同一会话的下一轮模型就能看到它。
 
 ## License
 
