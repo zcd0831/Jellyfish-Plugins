@@ -6,9 +6,9 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>zcd</groupId>
+        <groupId>io.github.zcd0831</groupId>
         <artifactId>jellyfish-plugins</artifactId>
-        <version>0.1.0</version>
+        <version>0.1.1</version>
     </parent>
 
     <artifactId>jellyfish-plugin-session-file</artifactId>
@@ -18,7 +18,7 @@
     <dependencies>
         <!-- 内核契约：必须 provided（见 tools 插件的说明）。 -->
         <dependency>
-            <groupId>zcd</groupId>
+            <groupId>io.github.zcd0831</groupId>
             <artifactId>jellyfish-api</artifactId>
             <version>${project.version}</version>
             <scope>provided</scope>
@@ -64,7 +64,7 @@
 
         <!-- 仅测试期使用：加载链路的端到端验证需要真实的 PF4J 管理器与注册表。 -->
         <dependency>
-            <groupId>zcd</groupId>
+            <groupId>io.github.zcd0831</groupId>
             <artifactId>jellyfish-infra</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>

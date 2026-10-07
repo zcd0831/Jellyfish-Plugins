@@ -6,9 +6,9 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>zcd</groupId>
+        <groupId>io.github.zcd0831</groupId>
         <artifactId>jellyfish-plugins</artifactId>
-        <version>0.1.0</version>
+        <version>0.1.1</version>
     </parent>
 
     <artifactId>jellyfish-script</artifactId>
@@ -20,7 +20,7 @@
              PluginClasspathGuard 禁止插件包内出现 zcd/jellyfish/api —— 自带会让
              JellyfishPlugin / PluginContext 在子优先类加载器下出现两份互不相识的类型。 -->
         <dependency>
-            <groupId>zcd</groupId>
+            <groupId>io.github.zcd0831</groupId>
             <artifactId>jellyfish-api</artifactId>
             <version>${project.version}</version>
             <scope>provided</scope>
@@ -80,7 +80,7 @@
              而不是在测试里另造一套假注册表（那样测的就不是内核看到的东西了）。
              注意本模块对内核契约本身仍是 provided，不带入运行期 classpath。 -->
         <dependency>
-            <groupId>zcd</groupId>
+            <groupId>io.github.zcd0831</groupId>
             <artifactId>jellyfish-infra</artifactId>
             <version>${project.version}</version>
             <scope>test</scope>
