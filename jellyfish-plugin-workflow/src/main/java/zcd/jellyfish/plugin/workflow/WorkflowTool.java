@@ -115,7 +115,9 @@ final class WorkflowTool implements ExtensionHandler<ToolCallRequest, ToolCallRe
 
         return new ToolDescriptor(NAME,
                 "按一份声明式 spec 编排多个子代理：没有依赖关系的步骤会并行执行，"
-                        + "后一步可以拿到前几步的结论，最后按声明的方式聚合。"
+                        + "有 needs 的步骤可以拿到它直接依赖的那几步给出的结论"
+                        + "（结论过长时会截断，材料里会给出完整记录所在的归档路径），"
+                        + "最后按声明的方式聚合。"
                         + "适合「几件事可以同时做、再把结果合起来」的任务（并行调研几个方向、"
                         + "多角度审查同一份改动）；只派一个子代理做一件事时用 task 即可。"
                         + "spec 里不能写循环、条件表达式或运行期才决定的步骤——需要那样就重新提交一份 spec。",

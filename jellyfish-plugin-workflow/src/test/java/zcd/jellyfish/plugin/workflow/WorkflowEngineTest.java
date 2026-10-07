@@ -2,9 +2,11 @@ package zcd.jellyfish.plugin.workflow;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.CancellationToken;
 import zcd.jellyfish.api.extension.ToolOutputSink;
 import zcd.jellyfish.api.subagent.DelegationHandle;
+import zcd.jellyfish.api.subagent.DelegationQuota;
 import zcd.jellyfish.api.subagent.DelegationRequest;
 import zcd.jellyfish.api.subagent.DelegationResult;
 import zcd.jellyfish.api.subagent.SubAgentPort;
@@ -19,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -259,6 +262,160 @@ class WorkflowEngineTest {
         assertTrue(text.contains("a 完成"), text);
     }
 
+    @Test
+    @DisplayName("下游步骤的任务里带着它依赖的那几步给出的结论")
+    void run_shouldInjectDependencyConclusionsIntoDownstreamPrompt() {
+        RecordingPort port = new RecordingPort();
+        port.answer("a", DelegationResult.completed("run-a", "A 的结论", 1, 1L));
+        port.answer("b", DelegationResult.completed("run-b", "B 的结论", 1, 1L));
+        WorkflowSpec spec = spec(steps(
+                step("a", "scout", "a", null, null),
+                step("b", "scout", "b", null, null),
+                step("c", "planner", "c", Arrays.asList("a", "b"), null)));
+
+        new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
+
+        // 子代理之间彼此隔离，上游结论只能由引擎转交——不转交，下游手里就什么都没有
+        String prompt = port.requestFor("c").getPrompt();
+        assertTrue(prompt.contains("## a（scout）"), prompt);
+        assertTrue(prompt.contains("A 的结论"), prompt);
+        assertTrue(prompt.contains("B 的结论"), prompt);
+        // 原任务原样保留在材料之后
+        assertTrue(prompt.endsWith(WorkflowEngine.TASK_LEAD + "c"), prompt);
+    }
+
+    @Test
+    @DisplayName("没有依赖的步骤拿到的就是原样的任务，不被加料")
+    void run_shouldNotDecoratePromptWithoutNeeds() {
+        RecordingPort port = new RecordingPort();
+
+        new WorkflowEngine(port, tracker()).run(spec(steps(step("a", "scout", "a", null, null))), "s-1",
+                CancellationToken.NONE, null);
+
+        assertEquals("a", port.requestFor("a").getPrompt());
+    }
+
+    @Test
+    @DisplayName("依赖结论过长时只给头部，并在块首标注被截了多少字与完整记录的位置")
+    void run_shouldTruncateLongDependencyConclusion() {
+        RecordingPort port = new RecordingPort();
+        port.answer("a", DelegationResult.completed("run-a", repeat("x", 30_000), 1, 1L)
+                .withArchivePath("/tmp/runs/run-a.json"));
+        WorkflowSpec spec = spec(steps(
+                step("a", "scout", "a", null, null),
+                step("c", "planner", "c", Arrays.asList("a"), null)));
+
+        new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
+
+        String prompt = port.requestFor("c").getPrompt();
+        // 标注必须落在块首：埋在两千字之后的提示，模型根本读不到
+        int header = prompt.indexOf("## a（scout）");
+        assertTrue(prompt.substring(header).startsWith("## a（scout）｜结论 30000 字，此处只给前 20000 字"),
+                prompt.substring(header, header + 80));
+        // 截断不是纯丢失：完整记录的路径一起给出去，下游可以按需自取
+        assertTrue(prompt.contains("完整记录见 /tmp/runs/run-a.json"), prompt);
+        assertTrue(prompt.contains("…（以上已截断）"), prompt);
+        assertTrue(prompt.length() < 25_000, String.valueOf(prompt.length()));
+    }
+
+    @Test
+    @DisplayName("未截断时不附归档路径，免得诱导下游去读并不需要的文件")
+    void run_shouldNotAttachArchivePathWhenNotTruncated() {
+        RecordingPort port = new RecordingPort();
+        port.answer("a", DelegationResult.completed("run-a", "短结论", 1, 1L)
+                .withArchivePath("/tmp/runs/run-a.json"));
+        WorkflowSpec spec = spec(steps(
+                step("a", "scout", "a", null, null),
+                step("c", "planner", "c", Arrays.asList("a"), null)));
+
+        new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
+
+        assertFalse(port.requestFor("c").getPrompt().contains("/tmp/runs/run-a.json"),
+                port.requestFor("c").getPrompt());
+    }
+
+    @Test
+    @DisplayName("依赖失败时如实写原因，不让下游以为那一步给出了结论")
+    void run_shouldSpellOutFailedDependency() {
+        RecordingPort port = new RecordingPort();
+        port.answer("a", DelegationResult.failed("run-a", "模型不可用"));
+        WorkflowSpec spec = spec(steps(
+                step("a", "scout", "a", null, null),
+                step("c", "planner", "c", Arrays.asList("a"), null)));
+
+        new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
+
+        assertTrue(port.requestFor("c").getPrompt()
+                .contains("## a（scout）｜没有给出文本（模型不可用）"), port.requestFor("c").getPrompt());
+    }
+
+    @Test
+    @DisplayName("依赖被跳过时写明未执行的原因")
+    void run_shouldSpellOutSkippedDependency() {
+        RecordingPort port = new RecordingPort();
+        port.answer("a", DelegationResult.failed("run-a", "模型不可用"));
+        WorkflowSpec spec = spec(steps(
+                step("a", "scout", "a", null, null),
+                step("b", "scout", "b", Arrays.asList("a"), "on_success"),
+                step("c", "planner", "c", Arrays.asList("b"), null)));
+
+        new WorkflowEngine(port, tracker()).run(spec, "s-1", CancellationToken.NONE, null);
+
+        assertTrue(port.requestFor("c").getPrompt()
+                .contains("## b（scout）｜未执行：前置步骤未成功：a"), port.requestFor("c").getPrompt());
+    }
+
+    @Test
+    @DisplayName("额度不够时在派生任何子代理之前整份拒绝，并给出实际数字")
+    void run_shouldRejectBeforeSpawningWhenQuotaTooSmall() {
+        RecordingPort port = new RecordingPort();
+        port.quota(DelegationQuota.of(2));
+        WorkflowSpec spec = spec(steps(
+                step("a", "scout", "a", null, null),
+                step("b", "scout", "b", null, null),
+                step("c", "scout", "c", null, null)));
+
+        JellyfishException error = assertThrows(JellyfishException.class, () -> new WorkflowEngine(port, tracker())
+                .run(spec, "s-1", CancellationToken.NONE, null));
+
+        // 派到一半才发现额度用尽的话，钱已经花了，而且失败长得像「某几个步骤坏了」
+        assertTrue(error.getMessage().contains("最多要派 3 个子代理"), error.getMessage());
+        assertTrue(error.getMessage().contains("只剩 2 个名额"), error.getMessage());
+        assertTrue(error.getMessage().contains("subAgent.maxSpawnsPerTurn"), error.getMessage());
+        assertTrue(port.getTrace().isEmpty(), port.getTrace().toString());
+    }
+
+    @Test
+    @DisplayName("汇总那一次也算额度：三步 spec 若要汇总就需要四个名额")
+    void run_shouldCountSynthesizeAgainstQuota() {
+        RecordingPort port = new RecordingPort();
+        port.quota(DelegationQuota.of(3));
+        WorkflowSpec spec = new WorkflowSpec("t", steps(
+                step("a", "scout", "a", null, null),
+                step("b", "scout", "b", null, null),
+                step("c", "scout", "c", null, null)), AggregateMode.SUMMARIZE, "planner");
+
+        JellyfishException error = assertThrows(JellyfishException.class, () -> new WorkflowEngine(port, tracker())
+                .run(spec, "s-1", CancellationToken.NONE, null));
+
+        assertTrue(error.getMessage().contains("最多要派 4 个子代理"), error.getMessage());
+        assertTrue(port.getTrace().isEmpty(), port.getTrace().toString());
+    }
+
+    @Test
+    @DisplayName("一个也派不了时直接用内核对原因的说法，不另编一句")
+    void run_shouldRelyOnKernelReasonWhenBlocked() {
+        RecordingPort port = new RecordingPort();
+        port.quota(DelegationQuota.blocked("子代理委派已被禁用（jellyfish.json 的 subAgent.enabled）"));
+        WorkflowSpec spec = spec(steps(step("a", "scout", "a", null, null)));
+
+        JellyfishException error = assertThrows(JellyfishException.class, () -> new WorkflowEngine(port, tracker())
+                .run(spec, "s-1", CancellationToken.NONE, null));
+
+        assertTrue(error.getMessage().contains("已被禁用"), error.getMessage());
+        assertTrue(port.getTrace().isEmpty(), port.getTrace().toString());
+    }
+
     /**
      * 构造一个不带回调的台账：本测试只关心调度顺序，不观察面板状态。
      *
@@ -291,7 +448,8 @@ class WorkflowEngineTest {
     }
 
     /**
-     * 构造一个步骤。测试里把「步骤 id」与「任务原文」取成同一个值，假端口因此可以用 prompt 找回步骤。
+     * 构造一个步骤。测试里把「步骤 id」与「任务原文」取成同一个值，假端口因此能从下发的 prompt
+     * 里找回该步（有依赖时引擎会在前面拼上材料，见 {@code RecordingPort.idOf}）。
      *
      * @param id    步骤标识
      * @param agent 子代理类型
@@ -303,6 +461,21 @@ class WorkflowEngineTest {
     private static WorkflowStep step(String id, String agent, String prompt, List<String> needs, String when) {
         return new WorkflowStep(id, agent, prompt, needs,
                 StepCondition.fromWire(when, "when"));
+    }
+
+    /**
+     * 重复一个单元串若干次（JDK 8 没有 {@code String.repeat}）。
+     *
+     * @param unit  单元串
+     * @param times 次数
+     * @return 拼接结果
+     */
+    private static String repeat(String unit, int times) {
+        StringBuilder text = new StringBuilder(unit.length() * times);
+        for (int i = 0; i < times; i++) {
+            text.append(unit);
+        }
+        return text.toString();
     }
 
     /** 记录调度轨迹的假端口：{@code spawn} 与 {@code await} 各记一条。 */
@@ -317,6 +490,9 @@ class WorkflowEngineTest {
         /** 按 prompt（即步骤 id）给出的应答。 */
         private final Map<String, DelegationResult> answers = new LinkedHashMap<String, DelegationResult>();
 
+        /** 本端口报告的派生额度；用例可换成「没额度」来验预检。 */
+        private DelegationQuota quota = DelegationQuota.of(64);
+
         /**
          * 指定某个步骤的结果。
          *
@@ -325,6 +501,15 @@ class WorkflowEngineTest {
          */
         void answer(String prompt, DelegationResult result) {
             answers.put(prompt, result);
+        }
+
+        /**
+         * 换掉本端口报告的派生额度。
+         *
+         * @param value 额度
+         */
+        void quota(DelegationQuota value) {
+            this.quota = value;
         }
 
         /**
@@ -345,11 +530,50 @@ class WorkflowEngineTest {
             return requests;
         }
 
+        /**
+         * 找某个步骤收到的那份请求。
+         *
+         * @param id 步骤标识
+         * @return 请求；没派过时返回 {@code null}
+         */
+        DelegationRequest requestFor(String id) {
+            for (DelegationRequest request : requests) {
+                if (idOf(request).equals(id)) {
+                    return request;
+                }
+            }
+            return null;
+        }
+
         @Override
         public DelegationHandle spawn(DelegationRequest request) {
             requests.add(request);
-            trace.add("spawn:" + request.getPrompt());
+            trace.add("spawn:" + idOf(request));
             return new RecordingHandle(this, request);
+        }
+
+        @Override
+        public DelegationQuota quota() {
+            // 额度充裕：本测试关心调度，额度拒绝另有专门用例（把 quota 换掉即可）
+            return quota;
+        }
+
+        /**
+         * 从下发的任务原文里取回步骤标识。
+         * <p>
+         * 引擎会把依赖结论拼在任务原文之前（见 {@code WorkflowEngine.promptFor}），因此下游步骤的
+         * prompt 不再等于 {@link #step} 里给的那个值——而本测试用「prompt = 步骤 id」的约定找回
+         * 结果，所以要先剥掉注入的材料。汇总那一次没有注入，返回整段 prompt（它匹配不到任何
+         * answer key），落到按 agent 兜底。
+         *
+         * @param request 委派请求
+         * @return 步骤标识
+         */
+        private static String idOf(DelegationRequest request) {
+            String prompt = request.getPrompt() == null ? "" : request.getPrompt();
+            int marker = prompt.lastIndexOf(WorkflowEngine.TASK_LEAD);
+            return marker < 0 ? prompt.trim()
+                    : prompt.substring(marker + WorkflowEngine.TASK_LEAD.length()).trim();
         }
     }
 
@@ -380,12 +604,13 @@ class WorkflowEngineTest {
 
         @Override
         public DelegationResult await() {
-            port.trace.add("await:" + request.getPrompt());
-            // prompt 优先（测试里它就是步骤 id），其次按 agent（汇总那一步没有稳定的 prompt）
-            DelegationResult result = port.answers.containsKey(request.getPrompt())
-                    ? port.answers.get(request.getPrompt()) : port.answers.get(request.getAgentId());
+            String id = RecordingPort.idOf(request);
+            port.trace.add("await:" + id);
+            // 步骤 id 优先，其次按 agent（汇总那一步没有稳定的 prompt）
+            DelegationResult result = port.answers.containsKey(id)
+                    ? port.answers.get(id) : port.answers.get(request.getAgentId());
             return result != null ? result
-                    : DelegationResult.completed("run", "正文-" + request.getPrompt(), 1, 5L);
+                    : DelegationResult.completed("run", "正文-" + id, 1, 5L);
         }
 
         @Override

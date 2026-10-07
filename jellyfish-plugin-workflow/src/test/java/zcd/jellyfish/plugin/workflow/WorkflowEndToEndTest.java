@@ -12,6 +12,7 @@ import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
 import zcd.jellyfish.api.extension.ToolMetadata;
 import zcd.jellyfish.api.subagent.DelegationHandle;
+import zcd.jellyfish.api.subagent.DelegationQuota;
 import zcd.jellyfish.api.subagent.DelegationRequest;
 import zcd.jellyfish.api.subagent.DelegationResult;
 import zcd.jellyfish.api.subagent.SubAgentPort;
@@ -119,6 +120,11 @@ class WorkflowEndToEndTest {
 
         // Then：三个步骤都派生了，顺序是「两个并行 → 依赖它们的那个」
         assertEquals(Arrays.asList("probe-a", "probe-b", "plan"), port.stepPrompts());
+        // And：依赖它们的那一步，任务里真的带着前两步给出的结论（子代理之间彼此隔离，只能由引擎转交）
+        String planPrompt = port.requestFor("plan").getPrompt();
+        assertTrue(planPrompt.contains("A 的结论"), planPrompt);
+        assertTrue(planPrompt.contains("B 的结论"), planPrompt);
+        assertTrue(planPrompt.endsWith(WorkflowEngine.TASK_LEAD + "plan"), planPrompt);
         // And：汇总那一步用 planner 又派了一次，且材料里带着前几步的结论
         assertEquals("planner", port.synthesisRequest().getAgentId());
         assertTrue(port.synthesisRequest().getPrompt().contains("A 的结论"),
@@ -252,14 +258,14 @@ class WorkflowEndToEndTest {
         }
 
         /**
-         * 取步骤派生的顺序（不含汇总那一次；本测试里 prompt 就是步骤 id）。
+         * 取步骤派生的顺序（不含汇总那一次）。
          *
          * @return 标识列表
          */
         List<String> stepPrompts() {
             List<String> ids = new ArrayList<String>();
             for (int i = 0; i < requests.size() - 1; i++) {
-                ids.add(requests.get(i).getPrompt());
+                ids.add(idOf(requests.get(i)));
             }
             return ids;
         }
@@ -274,6 +280,21 @@ class WorkflowEndToEndTest {
         }
 
         /**
+         * 找某个步骤收到的那份请求。
+         *
+         * @param id 步骤标识
+         * @return 请求；没派过时返回 {@code null}
+         */
+        DelegationRequest requestFor(String id) {
+            for (DelegationRequest request : requests) {
+                if (idOf(request).equals(id)) {
+                    return request;
+                }
+            }
+            return null;
+        }
+
+        /**
          * 判断有没有派生过。
          *
          * @return 派生过返回 {@code true}
@@ -285,10 +306,35 @@ class WorkflowEndToEndTest {
         @Override
         public DelegationHandle spawn(DelegationRequest request) {
             requests.add(request);
-            DelegationResult result = answers.containsKey(request.getPrompt())
-                    ? answers.get(request.getPrompt()) : answers.get(request.getAgentId());
+            String id = idOf(request);
+            DelegationResult result = answers.containsKey(id)
+                    ? answers.get(id) : answers.get(request.getAgentId());
             return DelegationHandle.settled(result != null ? result
                     : DelegationResult.completed("run", "正文", 1, 1L));
+        }
+
+        @Override
+        public DelegationQuota quota() {
+            // 额度充裕：本测试要验的是链路通不通，额度拒绝另有插件自己的引擎测试覆盖
+            return DelegationQuota.of(64);
+        }
+
+        /**
+         * 从下发的任务原文里取回步骤标识。
+         * <p>
+         * 引擎会把依赖结论拼在任务原文之前（见 {@code WorkflowEngine.promptFor}），因此带 {@code needs}
+         * 的步骤其 prompt 不再等于 spec 里写的那个值——而本测试用「prompt = 步骤 id」的约定找回结果，
+         * 所以要先剥掉注入的材料。汇总那一次没有注入，返回整段 prompt（匹配不到任何 answer key），
+         * 落到按 agent 兜底。
+         *
+         * @param request 委派请求
+         * @return 步骤标识
+         */
+        private static String idOf(DelegationRequest request) {
+            String prompt = request.getPrompt() == null ? "" : request.getPrompt();
+            int marker = prompt.lastIndexOf(WorkflowEngine.TASK_LEAD);
+            return marker < 0 ? prompt.trim()
+                    : prompt.substring(marker + WorkflowEngine.TASK_LEAD.length()).trim();
         }
     }
 }

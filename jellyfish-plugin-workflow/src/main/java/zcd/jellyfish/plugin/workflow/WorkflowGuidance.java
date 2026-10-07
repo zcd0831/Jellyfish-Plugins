@@ -32,9 +32,12 @@ final class WorkflowGuidance implements ExtensionHandler<PromptContributionReque
             + "{\"id\":\"plan\",\"agent\":\"planner\",\"prompt\":\"结合 A 与 B 的结论给出方案\","
             + "\"needs\":[\"probe-a\",\"probe-b\"]}],"
             + "\"aggregate\":{\"mode\":\"summarize\",\"agent\":\"scout\"}}}\n"
-            + "要点：没有 needs 的步骤立刻开始，因此它们并行执行；needs 让下一步等前几步结束。"
+            + "要点：没有 needs 的步骤立刻开始，因此它们并行执行；带 needs 的步骤会等到这几步结束，"
+            + "并在自己的任务里收到它们给出的结论（结论过长会截断，并给出完整记录所在的归档路径）。"
             + "需要「失败以后再补救」时，把补救步骤的 when 写成 on_failure 并声明 needs。"
             + "spec 里没有循环、变量与表达式，也不做重试——要改主意就重新提交一份 spec。"
+            + "一次编排派出的子代理数受本回合额度限制（subAgent.maxSpawnsPerTurn，缺省 12），"
+            + "装不下会在派生任何子代理之前整份拒绝。"
             + "只派一个子代理做一件事时用 task，不必写 spec。";
 
     @Override

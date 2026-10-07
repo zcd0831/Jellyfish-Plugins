@@ -8,6 +8,7 @@ import zcd.jellyfish.api.extension.ToolCallResult;
 import zcd.jellyfish.api.extension.ToolDescriptor;
 import zcd.jellyfish.api.extension.ToolMetadata;
 import zcd.jellyfish.api.subagent.DelegationHandle;
+import zcd.jellyfish.api.subagent.DelegationQuota;
 import zcd.jellyfish.api.subagent.DelegationRequest;
 import zcd.jellyfish.api.subagent.DelegationResult;
 import zcd.jellyfish.api.subagent.SubAgentPort;
@@ -126,6 +127,12 @@ class WorkflowToolTest {
             @Override
             public DelegationHandle spawn(DelegationRequest request) {
                 return DelegationHandle.settled(result);
+            }
+
+            @Override
+            public DelegationQuota quota() {
+                // 额度充裕：本测试只关心结果怎么渲染
+                return DelegationQuota.of(64);
             }
         };
     }
