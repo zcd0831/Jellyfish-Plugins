@@ -56,7 +56,7 @@ final class WorkflowTracker {
         String workflowId = UUID.randomUUID().toString();
         List<Step> steps = new ArrayList<Step>();
         for (WorkflowStep step : spec.getSteps()) {
-            steps.add(new Step(step.getId(), step.getAgent(), StepState.PENDING));
+            steps.add(new Step(step.getId(), step.getName(), step.getAgent(), StepState.PENDING));
         }
         entries.put(workflowId, new Entry(sessionId, spec.displayName(), steps));
         notifyChanged();
@@ -201,7 +201,7 @@ final class WorkflowTracker {
         private WorkflowProgress snapshot() {
             List<WorkflowProgress.Step> copy = new ArrayList<WorkflowProgress.Step>(steps.size());
             for (Step step : steps) {
-                copy.add(new WorkflowProgress.Step(step.id, step.agent, step.state));
+                copy.add(new WorkflowProgress.Step(step.id, step.name, step.agent, step.state));
             }
             return new WorkflowProgress(name, copy, summarizing);
         }
@@ -213,6 +213,9 @@ final class WorkflowTracker {
         /** 步骤标识。 */
         private final String id;
 
+        /** 人类可读的名字，可为 {@code null}。 */
+        private final String name;
+
         /** 子代理类型。 */
         private final String agent;
 
@@ -223,11 +226,13 @@ final class WorkflowTracker {
          * 构造步骤。
          *
          * @param id    步骤标识
+         * @param name  人类可读的名字，可为 {@code null}
          * @param agent 子代理类型
          * @param state 初始状态
          */
-        private Step(String id, String agent, StepState state) {
+        private Step(String id, String name, String agent, StepState state) {
             this.id = id;
+            this.name = name;
             this.agent = agent;
             this.state = state;
         }

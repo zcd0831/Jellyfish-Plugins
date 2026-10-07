@@ -69,6 +69,8 @@ final class WorkflowTool implements ExtensionHandler<ToolCallRequest, ToolCallRe
     static ToolDescriptor descriptor() {
         Map<String, Object> stepProperties = new LinkedHashMap<String, Object>();
         stepProperties.put("id", property("string", "步骤标识，spec 内唯一，被 needs 引用"));
+        stepProperties.put("name", property("string",
+                "这一步的人类可读名字，只用于界面上展示（缺省时展示标识，因此标识可读时不必写）"));
         stepProperties.put("agent", property("string",
                 "子代理类型：必须是可委派的 agent（见系统提示里的可委派类型清单）"));
         stepProperties.put("prompt", property("string",

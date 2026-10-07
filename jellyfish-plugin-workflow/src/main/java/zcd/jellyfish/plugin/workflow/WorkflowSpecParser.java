@@ -104,6 +104,9 @@ final class WorkflowSpecParser {
             if (!ids.add(id)) {
                 throw new JellyfishException(where + ".id 与前面某一步重复：" + id + "（步骤 id 必须唯一）");
             }
+            // 名字纯粹用于展示，因此只做「是不是字符串」这一层校验：它不影响任何执行语义，
+            // 为它的长度或内容设限只会让一份本来能跑的 spec 被拒
+            String name = SpecValues.optionalText(step.get("name"), where + ".name");
             String agent = SpecValues.requiredText(step.get("agent"), where + ".agent");
             String prompt = SpecValues.requiredText(step.get("prompt"), where + ".prompt");
             List<String> needs = SpecValues.textList(step.get("needs"), where + ".needs");
@@ -116,7 +119,7 @@ final class WorkflowSpecParser {
                 throw new JellyfishException(where + ".when 为 on_failure 时必须声明 needs："
                         + "没有前置步骤就不会有失败可等");
             }
-            steps.add(new WorkflowStep(id, agent, prompt, needs, when));
+            steps.add(new WorkflowStep(id, name, agent, prompt, needs, when));
         }
         for (WorkflowStep step : steps) {
             for (String need : step.getNeeds()) {

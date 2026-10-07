@@ -157,9 +157,10 @@ class WorkflowTrackerTest {
      */
     private static WorkflowSpec spec() {
         List<WorkflowStep> steps = new ArrayList<WorkflowStep>();
-        steps.add(new WorkflowStep("a", "scout", "a", null, StepCondition.ALWAYS));
-        steps.add(new WorkflowStep("b", "scout", "b", null, StepCondition.ALWAYS));
-        steps.add(new WorkflowStep("c", "planner", "c", Arrays.asList("a", "b"), StepCondition.ON_SUCCESS));
+        steps.add(new WorkflowStep("a", "任务A", "scout", "a", null, StepCondition.ALWAYS));
+        steps.add(new WorkflowStep("b", null, "scout", "b", null, StepCondition.ALWAYS));
+        steps.add(new WorkflowStep("c", "任务C", "planner", "c", Arrays.asList("a", "b"),
+                StepCondition.ON_SUCCESS));
         return new WorkflowSpec("小任务", steps, AggregateMode.SUMMARIZE, "planner");
     }
 

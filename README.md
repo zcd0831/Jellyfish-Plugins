@@ -458,15 +458,19 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 {"spec": {
   "name": "调研并写方案",
   "steps": [
-    {"id": "probe-a", "agent": "scout",   "prompt": "调研 A 方向……"},
-    {"id": "probe-b", "agent": "scout",   "prompt": "调研 B 方向……"},
-    {"id": "plan",    "agent": "planner", "prompt": "结合 A 与 B 的结论给出方案",
+    {"id": "probe-a", "name": "调研 A 方向", "agent": "scout", "prompt": "调研 A 方向……"},
+    {"id": "probe-b", "name": "调研 B 方向", "agent": "scout", "prompt": "调研 B 方向……"},
+    {"id": "plan", "name": "写方案", "agent": "planner", "prompt": "结合 A 与 B 的结论给出方案",
      "needs": ["probe-a", "probe-b"]}
   ],
   "aggregate": {"mode": "summarize", "agent": "planner"}
 }}
 ```
 
+- **`id` 给机器、`name` 给人**：`id` 是被 `needs` 引用的键（模型不必迁就可读性），`name` 是可选的人类
+  可读名字，只用于编排面板的展示。缺省时面板退回显示 `id`，因此标识本身够可读时不必写。
+  `name` **不进任何机器可读的位置**（下游任务的材料标头、失败清单、`needs` 引用一律用 `id`），
+  否则「谁依赖谁」就失去了稳定依据。面板上超过 20 字的名字会被截短（切口不落在代理对中间）。
 - **没有 `needs` 的步骤立刻开始，因此它们并行执行**；`needs` 让某一步等前几步结束，
   并把这几步给出的**结论拼进它的任务**（子代理之间彼此隔离，只有插件能替它们转交）。
 - **结论是有损转交的**：每个依赖各有字符额度（合计上限 20000 字符，对齐 `react.maxToolOutputChars`），

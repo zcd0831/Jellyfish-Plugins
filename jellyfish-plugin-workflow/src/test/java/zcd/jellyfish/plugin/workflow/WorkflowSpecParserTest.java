@@ -44,6 +44,47 @@ class WorkflowSpecParserTest {
     }
 
     @Test
+    @DisplayName("step 的 name 可省；写了就解析出来（只用于展示）")
+    void parse_shouldAcceptOptionalStepName() {
+        Map<String, Object> named = step("probe-a", "scout", "调研 A");
+        named.put("name", "调研 A 方向");
+        Map<String, Object> unnamed = step("probe-b", "scout", "调研 B");
+
+        WorkflowSpec parsed = WorkflowSpecParser.parse(specOf(named, unnamed));
+
+        assertEquals("调研 A 方向", parsed.getSteps().get(0).getName());
+        assertNull(parsed.getSteps().get(1).getName());
+    }
+
+    @Test
+    @DisplayName("name 长了也不拒：它只影响展示，为它设限只会让能跑的 spec 被拒")
+    void parse_shouldAcceptLongStepName() {
+        Map<String, Object> longNamed = step("a", "scout", "做一件事");
+        StringBuilder name = new StringBuilder();
+        for (int i = 0; i < 200; i++) {
+            name.append('长');
+        }
+        longNamed.put("name", name.toString());
+
+        WorkflowSpec parsed = WorkflowSpecParser.parse(singleStep(longNamed));
+
+        assertEquals(name.toString(), parsed.getSteps().get(0).getName());
+    }
+
+    @Test
+    @DisplayName("name 类型不对时当场拒绝，并回显实际收到的值")
+    void parse_shouldRejectNonStringStepName() {
+        Map<String, Object> bad = step("a", "scout", "做一件事");
+        bad.put("name", Integer.valueOf(7));
+
+        JellyfishException error = assertThrows(JellyfishException.class,
+                () -> WorkflowSpecParser.parse(singleStep(bad)));
+
+        assertTrue(error.getMessage().contains(".name"), error.getMessage());
+        assertTrue(error.getMessage().contains("7"), error.getMessage());
+    }
+
+    @Test
     @DisplayName("可选字段缺省：无条件、按顺序收集")
     void parse_shouldDefaultConditionAndAggregate() {
         Map<String, Object> spec = new LinkedHashMap<String, Object>();
@@ -312,6 +353,18 @@ class WorkflowSpecParserTest {
      */
     private static List<Object> stepsOf(Map<String, Object>... steps) {
         return new ArrayList<Object>(Arrays.asList(steps));
+    }
+
+    /**
+     * 构造含多个步骤的工具参数（{@link #singleStep(Map)} 的多步版本）。
+     *
+     * @param steps 步骤
+     * @return 工具参数
+     */
+    private static Map<String, Object> specOf(Map<String, Object>... steps) {
+        Map<String, Object> arguments = new LinkedHashMap<String, Object>();
+        arguments.put("spec", argumentsOf(stepsOf(steps)));
+        return arguments;
     }
 
     /**

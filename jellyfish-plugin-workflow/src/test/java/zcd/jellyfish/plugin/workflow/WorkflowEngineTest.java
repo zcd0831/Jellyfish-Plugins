@@ -459,7 +459,7 @@ class WorkflowEngineTest {
      * @return 步骤
      */
     private static WorkflowStep step(String id, String agent, String prompt, List<String> needs, String when) {
-        return new WorkflowStep(id, agent, prompt, needs,
+        return new WorkflowStep(id, null, agent, prompt, needs,
                 StepCondition.fromWire(when, "when"));
     }
 

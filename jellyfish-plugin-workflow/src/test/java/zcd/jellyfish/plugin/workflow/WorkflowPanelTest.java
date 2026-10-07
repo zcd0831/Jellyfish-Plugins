@@ -130,6 +130,73 @@ class WorkflowPanelTest {
         assertFalse(texts.contains(null));
     }
 
+    @Test
+    @DisplayName("有名字时显示名字，没有时退回标识")
+    void handle_shouldPreferNameOverId() {
+        tracker.started("s-1", namedSpec("任务A", null));
+
+        List<String> texts = textsOf(panel.handle(new PanelContributionRequest("s-1")));
+
+        // 标识是给机器用的键（被 needs 引用），面板是给人看的：给了名字就用名字
+        assertEquals("[ ] 任务A（scout）", texts.get(1));
+        // 没给名字时退回标识——它至少能把这一行与失败清单、材料标头对起来
+        assertEquals("[ ] step-b（scout）", texts.get(2));
+    }
+
+    @Test
+    @DisplayName("过长的名字由面板自己截短，不依赖外壳兜底")
+    void handle_shouldClipLongName() {
+        StringBuilder longName = new StringBuilder();
+        for (int i = 0; i < 30; i++) {
+            longName.append('长');
+        }
+        tracker.started("s-1", namedSpec(longName.toString(), null));
+
+        List<String> texts = textsOf(panel.handle(new PanelContributionRequest("s-1")));
+
+        // 40 列的名字加「（scout）」会折行，而这块面板落消息区上方（全宽）就是为了不折行
+        assertEquals(WorkflowPanel.MAX_NAME_CHARS + 1 + "（scout）".length(),
+                texts.get(1).length() - "[ ] ".length());
+        assertTrue(texts.get(1).endsWith("…（scout）"), texts.get(1));
+    }
+
+    @Test
+    @DisplayName("截短不切开代理对：半个字符在终端上是乱码")
+    void handle_shouldNotSplitSurrogatePairWhenClipping() {
+        // 19 个半角 + 两个代理对：第 20 个字符（下标 MAX_NAME_CHARS）正好是某个代理对的后半个
+        StringBuilder name = new StringBuilder("0123456789012345678");
+        name.append("\uD83D\uDE00").append("\uD83D\uDE00");
+        tracker.started("s-1", namedSpec(name.toString(), null));
+
+        List<String> label = textsOf(panel.handle(new PanelContributionRequest("s-1")));
+
+        String line = label.get(1);
+        for (int i = 0; i < line.length(); i++) {
+            char current = line.charAt(i);
+            if (Character.isHighSurrogate(current)) {
+                assertTrue(Character.isLowSurrogate(line.charAt(i + 1)), "高位代理后面没有低位代理");
+                i++;
+            } else {
+                assertFalse(Character.isLowSurrogate(current), "出现了孤立低位代理：" + line);
+            }
+        }
+        assertTrue(line.startsWith("[ ] 0123456789012345678…（scout）"), line);
+    }
+
+    /**
+     * 构造两个步骤的 spec，可分别指定名字。
+     *
+     * @param firstName  第一步的名字，可为 {@code null}
+     * @param secondName 第二步的名字，可为 {@code null}
+     * @return spec
+     */
+    private static WorkflowSpec namedSpec(String firstName, String secondName) {
+        List<WorkflowStep> steps = new ArrayList<WorkflowStep>();
+        steps.add(new WorkflowStep("step-a", firstName, "scout", "step-a", null, StepCondition.ALWAYS));
+        steps.add(new WorkflowStep("step-b", secondName, "scout", "step-b", null, StepCondition.ALWAYS));
+        return new WorkflowSpec("小任务", steps, AggregateMode.COLLECT, null);
+    }
+
     /**
      * 取面板内容行的文本。
      *
@@ -171,7 +238,7 @@ class WorkflowPanelTest {
         for (int i = 0; i < count; i++) {
             List<String> needs = i == 0 ? null : Arrays.asList("step-" + (i - 1));
             String agent = i == count - 1 ? "planner" : "scout";
-            steps.add(new WorkflowStep("step-" + i, agent, "step-" + i, needs, StepCondition.ALWAYS));
+            steps.add(new WorkflowStep("step-" + i, null, agent, "step-" + i, needs, StepCondition.ALWAYS));
         }
         return new WorkflowSpec("小任务", steps, AggregateMode.SUMMARIZE, "planner");
     }

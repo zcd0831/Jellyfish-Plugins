@@ -27,9 +27,12 @@ final class WorkflowGuidance implements ExtensionHandler<PromptContributionReque
     static final String TEXT = "workflow 工具的 spec 是一份一次性说明。示例（先并行调研两个方向，"
             + "再结合结论写方案）：\n"
             + "{\"spec\":{\"steps\":["
-            + "{\"id\":\"probe-a\",\"agent\":\"scout\",\"prompt\":\"调研 A 方向……\"},"
-            + "{\"id\":\"probe-b\",\"agent\":\"scout\",\"prompt\":\"调研 B 方向……\"},"
-            + "{\"id\":\"plan\",\"agent\":\"planner\",\"prompt\":\"结合 A 与 B 的结论给出方案\","
+            + "{\"id\":\"probe-a\",\"name\":\"调研 A 方向\",\"agent\":\"scout\","
+            + "\"prompt\":\"调研 A 方向……\"},"
+            + "{\"id\":\"probe-b\",\"name\":\"调研 B 方向\",\"agent\":\"scout\","
+            + "\"prompt\":\"调研 B 方向……\"},"
+            + "{\"id\":\"plan\",\"name\":\"写方案\",\"agent\":\"planner\","
+            + "\"prompt\":\"结合 A 与 B 的结论给出方案\","
             + "\"needs\":[\"probe-a\",\"probe-b\"]}],"
             + "\"aggregate\":{\"mode\":\"summarize\",\"agent\":\"scout\"}}}\n"
             + "要点：没有 needs 的步骤立刻开始，因此它们并行执行；带 needs 的步骤会等到这几步结束，"
@@ -38,6 +41,7 @@ final class WorkflowGuidance implements ExtensionHandler<PromptContributionReque
             + "spec 里没有循环、变量与表达式，也不做重试——要改主意就重新提交一份 spec。"
             + "一次编排派出的子代理数受本回合额度限制（subAgent.maxSpawnsPerTurn，缺省 12），"
             + "装不下会在派生任何子代理之前整份拒绝。"
+            + "step 的 name 可省，只用于界面展示（标识本身够可读时不必写）。"
             + "只派一个子代理做一件事时用 task，不必写 spec。";
 
     @Override

@@ -109,6 +109,9 @@ final class WorkflowProgress {
         /** 步骤标识。 */
         private final String id;
 
+        /** 人类可读的名字，可为 {@code null}。 */
+        private final String name;
+
         /** 子代理类型。 */
         private final String agent;
 
@@ -119,11 +122,13 @@ final class WorkflowProgress {
          * 构造步骤状态。
          *
          * @param id    步骤标识，不可为空白
+         * @param name  人类可读的名字，可为 {@code null}
          * @param agent 子代理类型，不可为空白
          * @param state 状态，不可为 {@code null}
          */
-        Step(String id, String agent, StepState state) {
+        Step(String id, String name, String agent, StepState state) {
             this.id = id;
+            this.name = name;
             this.agent = agent;
             this.state = state;
         }
@@ -135,6 +140,15 @@ final class WorkflowProgress {
          */
         String getId() {
             return id;
+        }
+
+        /**
+         * 获取人类可读的名字。
+         *
+         * @return 名字；没写时为 {@code null}
+         */
+        String getName() {
+            return name;
         }
 
         /**

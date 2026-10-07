@@ -48,6 +48,20 @@ final class WorkflowPanel implements ExtensionHandler<PanelContributionRequest, 
     /** 面板行数上限（含标题行与汇总行）。 */
     static final int MAX_LINES = 12;
 
+    /**
+     * 步骤名在面板上的显示上限（字符）。
+     * <p>
+     * <b>宽度也由插件自己先收一道</b>，与 {@link #MAX_LINES} 同一条理由：外壳会给面板兜底
+     * （折行、截断），但插件不该依赖那个兜底。这一行是「标记 + 名字（类型）」，终端常见宽度下中文
+     * 按 2 列算，20 字已占 40 列；再长就会折行，而这块面板特意建议落消息区上方（全宽）就是为了不折行。
+     * <p>
+     * <b>只截展示、不改数据</b>：截断发生在渲染这一步，{@code WorkflowProgress} 里的名字始终是完整的。
+     */
+    static final int MAX_NAME_CHARS = 20;
+
+    /** 名字被截断时追加的标记。 */
+    private static final String ELLIPSIS = "…";
+
     /** 编排台账。 */
     private final WorkflowTracker tracker;
 
@@ -110,7 +124,7 @@ final class WorkflowPanel implements ExtensionHandler<PanelContributionRequest, 
     }
 
     /**
-     * 渲染一个步骤：标记 + 标识（类型）。
+     * 渲染一个步骤：标记 + 名字（类型）。
      * <p>
      * 强调档位跟着状态走：跑着的用 {@link UiEmphasis#ACCENT}（扫一眼最想知道的那一行），
      * 已完成的退到 {@link UiEmphasis#DIM}（面板的用处是「还差什么」），失败的用
@@ -122,7 +136,45 @@ final class WorkflowPanel implements ExtensionHandler<PanelContributionRequest, 
     private static UiLine lineOf(WorkflowProgress.Step step) {
         UiEmphasis emphasis = emphasisOf(step.getState());
         return UiLine.of(UiSegment.of(step.getState().mark(), emphasis),
-                UiSegment.of(step.getId() + "（" + step.getAgent() + "）", emphasis));
+                UiSegment.of(labelOf(step) + "（" + step.getAgent() + "）", emphasis));
+    }
+
+    /**
+     * 取一个步骤在面板上的显示名。
+     * <p>
+     * <b>没写名字时退回标识</b>：标识至少能把面板上的这一行与失败清单、材料标头对起来，
+     * 比显示一个空位有用。
+     *
+     * @param step 步骤快照
+     * @return 显示名，保证非空白
+     */
+    private static String labelOf(WorkflowProgress.Step step) {
+        String name = step.getName();
+        if (name == null || name.trim().isEmpty()) {
+            return step.getId();
+        }
+        return clip(name.trim());
+    }
+
+    /**
+     * 按 {@link #MAX_NAME_CHARS} 截短一个名字，切口不落在代理对中间。
+     * <p>
+     * <b>为什么不能直接 {@code substring}</b>：切开一个代理对会让终端收到半个字符，显示成乱码，
+     * 而外壳算列宽时也可能因此错位。
+     *
+     * @param name 名字
+     * @return 截短结果
+     */
+    private static String clip(String name) {
+        if (name.length() <= MAX_NAME_CHARS) {
+            return name;
+        }
+        int end = MAX_NAME_CHARS;
+        // charAt(end) 是第一个不含在内的字符；它是低位代理，说明它的高位被切在了界内
+        if (Character.isLowSurrogate(name.charAt(end))) {
+            end--;
+        }
+        return name.substring(0, end) + ELLIPSIS;
     }
 
     /**
