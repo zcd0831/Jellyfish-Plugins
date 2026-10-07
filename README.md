@@ -683,7 +683,7 @@ my-plugin/
 ```properties
 plugin.id=my-plugin
 plugin.class=com.example.myplugin.MyPlugin
-plugin.version=0.0.1
+plugin.version=0.1.0
 plugin.provider=com.example
 plugin.description=一句话说明这个插件做什么
 plugin.requires=*
@@ -691,7 +691,8 @@ jellyfish.tags=example
 ```
 
 `plugin.id` 是插件身份，同时也是注册表的 **owner**；`plugin.class` 必须有一个**公开无参构造器**。
-`plugin.requires` 写不通配的语义化版本会归一到 `*`（内核版本是 `0.0.1-SNAPSHOT`，非法 semver，只能写通配）。
+`plugin.requires` 是内核兼容约束。内核目前**不声明系统版本**（PF4J 的缺省值 `0.0.0` 会让它直接跳过这条校验），
+因此示例里写 `*` 是显式声明「不限版本」；而写成非法表达式（如带 `-SNAPSHOT`）会被预检归一为 `*` 并记一条描述符错误，插件起不来。
 
 ### 2. `pom.xml`
 
@@ -699,7 +700,7 @@ jellyfish.tags=example
 <parent>
     <groupId>zcd</groupId>
     <artifactId>jellyfish-plugins</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
+    <version>0.1.0</version>
 </parent>
 
 <artifactId>my-plugin</artifactId>

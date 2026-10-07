@@ -8,7 +8,7 @@
     <groupId>zcd</groupId>
     <artifactId>jellyfish-plugins</artifactId>
     <packaging>pom</packaging>
-    <version>0.0.1-SNAPSHOT</version>
+    <version>0.1.0</version>
     <name>Jellyfish Plugins</name>
     <description>官方插件聚合：每个子模块产出一个独立插件 jar，放在 plugins/ 下由 PF4J 加载。</description>
 
