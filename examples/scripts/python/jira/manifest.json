@@ -12,8 +12,7 @@
       },
       "required": [
         "key"
-      ],
-      "readOnly": true
+      ]
     },
     {
       "name": "jira_create",
@@ -30,8 +29,7 @@
       },
       "required": [
         "summary"
-      ],
-      "readOnly": false
+      ]
     }
   ],
   "commands": [

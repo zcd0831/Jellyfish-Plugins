@@ -77,7 +77,7 @@ final class McpStdioTransport implements McpTransport {
      * <p>
      * <b>环境是「继承 + 叠加」</b>：MCP server 常常需要 PATH 与用户的 API key，
      * 因此子进程继承父进程环境，配置里的 {@code env} 只做叠加。这与 shell 插件的
-     * 「默认脱敏」是相反的取舍——那里是模型自己拼出来的命令，这里是用户在配置里写死的进程，
+     * 「默认剔除敏感变量」是相反的取舍——那里是模型自己拼出来的命令，这里是用户在配置里写死的进程，
      * 而它拿不到所需的凭证就等于用不了。
      *
      * @param config 服务配置，不可为 {@code null}

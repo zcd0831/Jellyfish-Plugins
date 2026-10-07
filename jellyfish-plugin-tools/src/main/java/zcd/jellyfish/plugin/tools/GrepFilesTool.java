@@ -71,8 +71,7 @@ public final class GrepFilesTool implements PluginTool {
                     "max_line_chars", ToolSchema.integer("单行最多显示多少字符，超出部分截尾，缺省 "
                             + DEFAULT_MAX_LINE_CHARS),
                     "max_bytes", ToolSchema.integer("结果总字节上限，缺省 " + DEFAULT_MAX_BYTES)),
-            Arrays.asList("pattern"),
-            true);
+            Arrays.asList("pattern"));
 
     @Override
     public ToolDescriptor descriptor() {
@@ -105,7 +104,26 @@ public final class GrepFilesTool implements PluginTool {
         } catch (IOException e) {
             throw new JellyfishException("搜索失败: " + ToolPaths.display(root) + " (" + e.getMessage() + ')', e);
         }
-        return new ToolCallResult(name(), render(searcher));
+        return new ToolCallResult(name(), render(searcher), ToolSummaries.of(summaryOf(pattern.pattern(), root, searcher)));
+    }
+
+    /**
+     * 组装展示摘要：一行说清「在哪儿、搜什么、命中多少」。
+     * <p>
+     * 它和回灌文本受众不同：回灌文本要把匹配行给模型看，摘要只回答「刚才那一行在干什么」。
+     * 因此即使因为没有匹配而回灌了长长一句说明，摘要仍然是短的。
+     *
+     * @param pattern  模型给的原始正则
+     * @param root     搜索起点
+     * @param searcher 已完成搜索的搜索器
+     * @return 摘要文本，保证非 {@code null}
+     */
+    private static String summaryOf(String pattern, Path root, Searcher searcher) {
+        String where = pattern + " @ " + ToolPaths.display(root);
+        if (searcher.matches.isEmpty()) {
+            return where + (searcher.truncated ? " · 已截断，无匹配" : " · 无匹配");
+        }
+        return where + " · " + searcher.matches.size() + " 处" + (searcher.truncated ? "，已截断" : "");
     }
 
     /**

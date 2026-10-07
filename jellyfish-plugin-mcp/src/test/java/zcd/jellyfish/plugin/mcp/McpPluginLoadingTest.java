@@ -5,16 +5,22 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import org.pf4j.PluginState;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.PermissionCheckRequest;
+import zcd.jellyfish.infra.action.ActionQueue;
+import zcd.jellyfish.infra.metrics.MetricsRegistry;
+import zcd.jellyfish.infra.shell.ShellIngress;
 import zcd.jellyfish.infra.event.EventChannel;
 import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
 import zcd.jellyfish.infra.plugin.PF4JPluginManager;
 import zcd.jellyfish.infra.plugin.PluginContextFactory;
 import zcd.jellyfish.infra.plugin.PluginRuntimeConfig;
+import zcd.jellyfish.infra.plugin.RuntimeInfoHolder;
 import zcd.jellyfish.infra.registry.TypeRegistry;
+import zcd.jellyfish.infra.session.SessionManager;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -40,7 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class McpPluginLoadingTest {
 
     /** 内核里本插件的标识，与 plugin.properties 保持一致。 */
-    private static final String PLUGIN_ID = "jellyfish-mcp";
+    private static final String PLUGIN_ID = "jellyfish-plugin-mcp";
 
     /** 插件根目录。 */
     @TempDir
@@ -143,7 +149,8 @@ class McpPluginLoadingTest {
      * @return 插件管理器
      */
     private PF4JPluginManager newManager() {
-        PluginContextFactory contexts = new PluginContextFactory(extensions, eventChannel, registry);
-        return new PF4JPluginManager(contexts, PluginRuntimeConfig.ofRoots(pluginsRoot));
+        PluginContextFactory contexts = new PluginContextFactory(extensions, eventChannel, registry,
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry()));
+        return new PF4JPluginManager(contexts, PluginRuntimeConfig.ofRoots(pluginsRoot), eventChannel);
     }
 }

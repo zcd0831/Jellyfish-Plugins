@@ -2,7 +2,9 @@ package zcd.jellyfish.plugin.tools;
 
 import zcd.jellyfish.api.JellyfishException;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -56,6 +58,34 @@ final class ToolSchema {
      */
     static Map<String, Object> bool(String description) {
         return typed("boolean", description);
+    }
+
+    /**
+     * 构造数组参数描述。
+     *
+     * @param description 参数用途，不可为 {@code null}
+     * @param items       元素 Schema，不可为 {@code null}
+     * @return 参数 Schema
+     */
+    static Map<String, Object> array(String description, Map<String, Object> items) {
+        Map<String, Object> schema = typed("array", description);
+        schema.put("items", items);
+        return schema;
+    }
+
+    /**
+     * 构造对象参数描述。
+     *
+     * @param properties 字段 Schema，不可为 {@code null}
+     * @param required   必填字段名，可为 {@code null}（等价无必填字段）
+     * @return 参数 Schema
+     */
+    static Map<String, Object> object(Map<String, Object> properties, List<String> required) {
+        Map<String, Object> schema = new LinkedHashMap<String, Object>();
+        schema.put(TYPE, "object");
+        schema.put("properties", properties);
+        schema.put("required", required == null ? Collections.<String>emptyList() : required);
+        return schema;
     }
 
     /**

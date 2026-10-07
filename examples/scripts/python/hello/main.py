@@ -45,19 +45,18 @@ def _note_count():
 
 @tool(
     name="hello_greet",
-    description="按名字打招呼；这是只读工具",
+    description="按名字打招呼",
     parameters={
         "name": {"type": "string", "description": "要打招呼的人"},
     },
     required=["name"],
-    read_only=True,
 )
 def hello_greet(args, ctx):
     """按名字打招呼。
 
-    ``read_only=True`` 是对内核的**能力声明**，不是注释：它让这个工具进入 PLAN 模式的
-    只读白名单。声明错了等于给模型留了一个绕过 PLAN 的后门，因此只读必须显式写出来
-    （缺省是「可写」）。宿主在清单里读到的 ``readOnly`` 才是真正生效的那一份。
+    这里**没有** ``read_only`` 参数：哪些工具在 plan 模式下可用完全由用户在
+    ``plugins.configurations.jellyfish-plugin-plan.readOnlyTools`` 里决定，
+    脚本无法自称只读（那会让名单只增不减，用户没法把工具拿出来）。
     """
     name = args.get("name")
     if not name:
@@ -78,8 +77,8 @@ def hello_greet(args, ctx):
 def hello_remember(args, ctx):
     """把一句话追加到便签里。
 
-    这是**可写**工具（没有 ``read_only=True``）：它在 PLAN 模式下会被拒绝，
-    除非用户显式批准。示例故意让两个工具的只读性不同，好让 ``/plan`` 下的差别看得见。
+    这是**可写**工具：开启 plan 时它默认被拒绝，除非用户在 ``readOnlyTools`` 里写了它。
+    示例故意让两个工具一个有副作用、一个没有，好让 ``/plan`` 下的差别看得见。
     """
     note = args.get("note")
     if not note:

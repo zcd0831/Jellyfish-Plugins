@@ -1,21 +1,54 @@
 package zcd.jellyfish.plugin.python;
 
+import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import org.pf4j.PluginState;
 import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.CommandResult;
 import zcd.jellyfish.api.extension.PromptContributionRequest;
+import zcd.jellyfish.api.extension.CancellationToken;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
+import zcd.jellyfish.api.extension.ToolMetadata;
+import zcd.jellyfish.api.extension.ToolOutputSink;
+import zcd.jellyfish.api.extension.CompactionDirective;
+import zcd.jellyfish.api.extension.CompactionPreRequest;
+import zcd.jellyfish.api.extension.CompactionTrigger;
+import zcd.jellyfish.api.extension.ModelCatalogRequest;
+import zcd.jellyfish.api.extension.ModelCatalogResult;
+import zcd.jellyfish.api.extension.SessionBeforeCloseRequest;
+import zcd.jellyfish.api.extension.SessionBeforeForkRequest;
+import zcd.jellyfish.api.extension.ToolArgumentDecision;
+import zcd.jellyfish.api.extension.ToolArgumentPreRequest;
+import zcd.jellyfish.api.extension.ToolResultAdjustment;
+import zcd.jellyfish.api.extension.ToolResultPostRequest;
+import zcd.jellyfish.api.extension.TurnContextRequest;
+import zcd.jellyfish.api.extension.AgingStrategyRequest;
+import zcd.jellyfish.api.extension.InputDirectiveRequest;
+import zcd.jellyfish.api.extension.InputDirectiveResult;
+import zcd.jellyfish.api.extension.InputTransformRequest;
+import zcd.jellyfish.api.extension.InputTransformResult;
+import zcd.jellyfish.api.extension.RequestTuningRequest;
+import zcd.jellyfish.api.extension.ToolActivationRequest;
+import zcd.jellyfish.api.extension.ToolDescriptor;
+import zcd.jellyfish.api.extension.TurnBeforeRequest;
+import zcd.jellyfish.infra.action.ActionQueue;
+import zcd.jellyfish.infra.metrics.MetricsRegistry;
+import zcd.jellyfish.infra.shell.ShellIngress;
 import zcd.jellyfish.infra.plugin.PF4JPluginManager;
 import zcd.jellyfish.infra.plugin.PluginContextFactory;
 import zcd.jellyfish.infra.plugin.PluginRuntimeConfig;
+import zcd.jellyfish.infra.plugin.RuntimeInfoHolder;
+import zcd.jellyfish.infra.session.SessionManager;
 import zcd.jellyfish.script.ScriptBridgeConfig;
+import zcd.jellyfish.script.ScriptScheduler;
+import zcd.jellyfish.script.protocol.ScriptCancelledException;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -27,9 +60,12 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -121,6 +157,33 @@ class PythonScriptIT {
     }
 
     @Test
+    @DisplayName("scripts.<id> 应按脚本 id 送达：ctx.configuration 与模块级 configuration() 都读得到")
+    void scriptConfiguration_should_reachScript_when_configured() throws IOException {
+        writeScript("web", CONFIG_SCRIPT, CONFIG_MANIFEST);
+        Map<String, Object> web = new LinkedHashMap<String, Object>();
+        web.put("provider", "brave");
+        web.put("apiKey", "k-123");
+        Map<String, Map<String, Object>> scripts = new LinkedHashMap<String, Map<String, Object>>();
+        scripts.put("web", web);
+        startRuntime(5, scripts);
+
+        ToolCallResult result = invokeTool("web_probe", Collections.<String, Object>emptyMap());
+
+        assertEquals("provider=brave; key=k-123; module=brave", result.getOutput());
+    }
+
+    @Test
+    @DisplayName("没配 scripts 的脚本读到空配置，而不是报错")
+    void scriptConfiguration_should_beEmpty_when_notConfigured() throws IOException {
+        writeScript("web", CONFIG_SCRIPT, CONFIG_MANIFEST);
+        startRuntime();
+
+        ToolCallResult result = invokeTool("web_probe", Collections.<String, Object>emptyMap());
+
+        assertEquals("provider=None; key=None; module=None", result.getOutput());
+    }
+
+    @Test
     @DisplayName("脚本抛出的异常应变成可读的调用失败，而不是静默的空结果")
     void tool_should_failWithMessage_when_scriptRaises() throws IOException {
         writeScript("jira", TOOL_SCRIPT, FULL_MANIFEST);
@@ -131,6 +194,184 @@ class PythonScriptIT {
                 () -> invokeTool("jira_issue", Collections.<String, Object>emptyMap()));
 
         assertTrue(failure.getMessage().contains("缺少参数 key"), failure.getMessage());
+    }
+
+    @Test
+    @DisplayName("取消令牌触发时，在途脚本调用应立即失败，而不是等满超时")
+    void cancellation_should_abortInflightCall() throws Exception {
+        writeScript("jira", TOOL_SCRIPT, FULL_MANIFEST);
+        // 超时给足：失败必须来自取消，而不是超时
+        startRuntime(60);
+        // 先把网关拉起来（懒启动），否则取消回调会在冷启动窗口里的另一条路径上
+        invokeTool("jira_issue", Collections.<String, Object>singletonMap("key", "PROJ-1"));
+
+        AtomicReference<Runnable> canceller = new AtomicReference<Runnable>();
+        CancellationToken token = new CancellationToken() {
+            @Override
+            public boolean isCancelled() {
+                return false;
+            }
+
+            @Override
+            public void onCancel(Runnable callback) {
+                canceller.set(callback);
+            }
+        };
+        ToolCallRequest request = new ToolCallRequest("jira_hang", Collections.<String, Object>emptyMap(),
+                "s-1", token, ToolOutputSink.NOOP, null, null, null);
+
+        AtomicReference<Throwable> failure = new AtomicReference<Throwable>();
+        long started = System.currentTimeMillis();
+        Thread call = new Thread(() -> {
+            try {
+                extensions.invoke(extensions.handler(ToolCallRequest.class, "jira_hang"), request);
+            } catch (Throwable error) {
+                failure.set(error);
+            }
+        }, "cancel-it-call");
+        call.start();
+
+        long deadline = System.currentTimeMillis() + 10_000L;
+        while (canceller.get() == null && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50L);
+        }
+        assertNotNull(canceller.get(), "取消回调未被注册，说明令牌没被传到网关");
+        canceller.get().run();
+        call.join(15_000L);
+        long elapsed = System.currentTimeMillis() - started;
+
+        assertNotNull(failure.get(), "取消后调用仍未返回");
+        assertTrue(failure.get() instanceof ScriptCancelledException
+                        || String.valueOf(failure.get().getMessage()).contains("已取消"),
+                String.valueOf(failure.get()));
+        assertTrue(elapsed < 20_000L, "取消后耗时过长: " + elapsed + "ms");
+    }
+
+    @Test
+    @DisplayName("工具返回 ToolResult 时：正文进 output，摘要与调用者身份进 metadata")
+    void toolResult_should_carryMetadataAndIdentity_when_scriptReturnsIt() throws IOException {
+        writeScript("web", METADATA_SCRIPT, METADATA_MANIFEST);
+        startRuntime();
+
+        ToolCallResult result = extensions.invoke(
+                extensions.handler(ToolCallRequest.class, "web_meta"),
+                new ToolCallRequest("web_meta", Collections.<String, Object>emptyMap(), "s-1",
+                        CancellationToken.NONE, ToolOutputSink.NOOP, "parent-1", "r-1", "root-1"));
+
+        assertEquals("正文", result.getOutput());
+        assertEquals("parent=parent-1 run=r-1 root=root-1",
+                ToolMetadata.summaryOf(result.getMetadata()));
+    }
+
+    @Test
+    @DisplayName("没返回 ToolResult 的工具元数据为空，行为与引入之前一致")
+    void toolResult_should_beEmpty_when_scriptReturnsPlainValue() throws IOException {
+        writeScript("jira", TOOL_SCRIPT, FULL_MANIFEST);
+        startRuntime();
+
+        ToolCallResult result = invokeTool("jira_issue",
+                Collections.<String, Object>singletonMap("key", "PROJ-1"));
+
+        assertTrue(result.getMetadata().isEmpty());
+    }
+
+    @Test
+    @DisplayName("二期扩展点应能被脚本声明并真实调用（含 routed handler）")
+    void secondWaveExtensions_should_beInvoked_endToEnd() throws IOException {
+        writeScript("ext", SECOND_WAVE_SCRIPT, SECOND_WAVE_MANIFEST);
+        startRuntime();
+
+        assertEquals("now: 2026-10-04", extensions.invoke(
+                extensions.handler(TurnContextRequest.class, null),
+                new TurnContextRequest("s-1", "hi", false)).getText());
+
+        ToolArgumentDecision decision = extensions.invoke(
+                extensions.handler(ToolArgumentPreRequest.class, null),
+                new ToolArgumentPreRequest("coder", "read_file", Collections.<String, Object>emptyMap(),
+                        ToolArgumentPreRequest.Source.MODEL, "s-1"));
+        assertTrue(decision.isReplace());
+        assertEquals("/tmp/read_file", decision.getArguments().get("path"));
+
+        ToolResultAdjustment adjustment = extensions.invoke(
+                extensions.handler(ToolResultPostRequest.class, null),
+                new ToolResultPostRequest("coder", "read_file", Collections.<String, Object>emptyMap(),
+                        "body", Collections.<String, Object>emptyMap(), false, "s-1"));
+        assertTrue(adjustment.hasMetadata());
+        assertEquals("已脱敏", adjustment.getMetadata().get("summary"));
+
+        assertTrue(extensions.invoke(extensions.handler(SessionBeforeCloseRequest.class, null),
+                new SessionBeforeCloseRequest("s-1", "coder",
+                        SessionBeforeCloseRequest.Reason.USER_REQUEST)).isCancelled());
+
+        assertTrue(extensions.invoke(extensions.handler(SessionBeforeForkRequest.class, null),
+                new SessionBeforeForkRequest("s-1", "coder", "m-1", 0, 1)).isCancelled());
+
+        CompactionDirective directive = extensions.invoke(
+                extensions.handler(CompactionPreRequest.class, null),
+                new CompactionPreRequest("s-1", CompactionTrigger.MANUAL, 10, 1000, 5, null));
+        assertEquals(3, directive.getKeepRecent().intValue());
+
+        ModelCatalogResult catalog = extensions.invoke(
+                extensions.handler(ModelCatalogRequest.class, "local"),
+                new ModelCatalogRequest("local", "openai"));
+        assertEquals(1, catalog.getModels().size());
+        assertEquals("local-model", catalog.getModels().get(0).getId());
+        assertEquals(8192, catalog.getModels().get(0).getContextLength());
+    }
+
+    @Test
+    @DisplayName("三期扩展点应能被脚本声明并真实调用（含 input_directive 的标记路由）")
+    void thirdWaveExtensions_should_beInvoked_endToEnd() throws IOException {
+        writeScript("ext", THIRD_WAVE_SCRIPT, THIRD_WAVE_MANIFEST);
+        startRuntime();
+
+        // 先暖网关（热路径点不冷启动）
+        assertTrue(extensions.invoke(extensions.handler(TurnBeforeRequest.class, null),
+                new TurnBeforeRequest("s-1", "coder", "干活", false, 0)).hasInput());
+
+        assertTrue(extensions.invoke(extensions.handler(ToolActivationRequest.class, null),
+                new ToolActivationRequest("s-1", "coder", new ToolDescriptor("bad", "坏工具")))
+                .isHidden());
+        assertFalse(extensions.invoke(extensions.handler(ToolActivationRequest.class, null),
+                new ToolActivationRequest("s-1", "coder", new ToolDescriptor("good", "好工具")))
+                .isDecided());
+
+        assertEquals(1, extensions.invoke(extensions.handler(RequestTuningRequest.class, null),
+                new RequestTuningRequest("s-1", "openai", "m", "k", 1, 1)).getCacheBreakpoints()
+                .intValue());
+        assertEquals(30, extensions.invoke(extensions.handler(AgingStrategyRequest.class, null),
+                new AgingStrategyRequest("s-1", 1, 1, 1, 1, 1, 1)).getAgingPercent().intValue());
+
+        InputTransformResult transformed = extensions.invoke(
+                extensions.handler(InputTransformRequest.class, null),
+                new InputTransformRequest("s-1", "!ls", InputTransformRequest.Source.CLI, true));
+        assertTrue(transformed.isHandled());
+        assertEquals("已接过去", transformed.getNotice());
+
+        InputDirectiveResult directive = extensions.invoke(
+                extensions.handler(InputDirectiveRequest.class, "!"),
+                new InputDirectiveRequest("!", "ls -la", "s-1"));
+        assertTrue(directive.isToolCall());
+        assertEquals("shell", directive.getToolName());
+        assertEquals("ls -la", directive.getArguments().get("command"));
+    }
+
+    @Test
+    @DisplayName("热路径点在 worker 未热时按「不表态」处理，不冷启动")
+    void hotPath_should_notColdStart() throws IOException {
+        writeScript("ext", THIRD_WAVE_SCRIPT, THIRD_WAVE_MANIFEST);
+        startRuntime();
+
+        // 未做任何调用 → 网关没起来 → 热路径点应直接返回「不表态」
+        assertNull(extensions.invoke(extensions.handler(RequestTuningRequest.class, null),
+                new RequestTuningRequest("s-1", "openai", "m", "k", 1, 1)).getCacheBreakpoints());
+
+        // 调一个非热路径的点把 worker 拉起来，再问一次——这次应该拿到脚本的答案
+        assertTrue(extensions.invoke(extensions.handler(TurnBeforeRequest.class, null),
+                new TurnBeforeRequest("s-1", "coder", "干活", false, 0)).hasInput());
+        assertEquals(1, extensions.invoke(extensions.handler(RequestTuningRequest.class, null),
+                new RequestTuningRequest("s-1", "openai", "m", "k", 1, 1)).getCacheBreakpoints()
+                .intValue());
     }
 
     @Test
@@ -233,6 +474,52 @@ class PythonScriptIT {
         assertTrue(result.getOutput().contains("运行时"), result.getOutput());
     }
 
+
+    @Test
+    @DisplayName("周期任务应按间隔反复触发，并在每次成功后由桥接层代发界面失效")
+    void periodic_should_fireRepeatedly_and_invalidateUi() throws IOException {
+        writeScript("beat", PERIODIC_SCRIPT, PERIODIC_MANIFEST);
+        java.util.List<zcd.jellyfish.api.event.notification.UiInvalidatedEvent> invalidated =
+                Collections.synchronizedList(new java.util.ArrayList<>());
+        events.subscribe("it-periodic", zcd.jellyfish.api.event.notification.UiInvalidatedEvent.class,
+                invalidated::add);
+
+        startRuntime();
+
+        // 两次以上才算「反复」：只跳一次无法区分「周期任务」与「启动时打了一发」
+        assertTrue(awaitEventLog("beat", "tick:1") && awaitEventLog("beat", "tick:2"),
+                "周期任务没有按间隔反复触发，实际记录: " + readEventLog("beat"));
+
+        long deadline = System.currentTimeMillis() + 10_000L;
+        while (invalidated.isEmpty() && System.currentTimeMillis() < deadline) {
+            sleepQuietly(100L);
+        }
+        // 脚本发不了这个事件（可发布事件白名单里没有它），因此它必须来自桥接层的代发。
+        // 这是「定时刷到的新数据能画上屏」的全部通路，缺了它面板永远不会自己重画
+        assertFalse(invalidated.isEmpty(), "周期任务成功后应代发一次界面失效事件");
+    }
+
+    @Test
+    @DisplayName("周期任务的间隔可被 scripts.<id>.schedules.<name>.intervalSeconds 覆写")
+    void periodic_should_honourIntervalOverride_fromScriptConfiguration() throws IOException {
+        // 清单里声明 60 秒（用例窗口内绝不可能触发），配置段覆写成 1 秒：
+        // 只有覆写真的生效，这个用例才会观察到跳动
+        writeScript("beat", PERIODIC_SCRIPT, PERIODIC_MANIFEST_SLOW);
+        Map<String, Object> schedules = new LinkedHashMap<String, Object>();
+        Map<String, Object> entry = new LinkedHashMap<String, Object>();
+        entry.put(ScriptScheduler.KEY_INTERVAL, Integer.valueOf(1));
+        schedules.put("beat", entry);
+        Map<String, Object> beatConfig = new LinkedHashMap<String, Object>();
+        beatConfig.put(ScriptScheduler.KEY_SCHEDULES, schedules);
+        Map<String, Map<String, Object>> scriptConfigs =
+                new LinkedHashMap<String, Map<String, Object>>();
+        scriptConfigs.put("beat", beatConfig);
+
+        startRuntime(5, scriptConfigs);
+
+        assertTrue(awaitEventLog("beat", "tick:1"),
+                "覆写的间隔没有生效（清单里是 60 秒，实际记录: " + readEventLog("beat") + "）");
+    }
 
     @Test
     @DisplayName("空闲的 worker 应自行退场，进程数回到只剩网关")
@@ -561,12 +848,225 @@ class PythonScriptIT {
     }
 
     @Test
+    @DisplayName("web 示例：搜索端点在内网不需要任何放行开关，但 web_fetch 不沾这个光")
+    void webExample_should_trustConfiguredEndpoint_without_unlockingFetch() throws Exception {
+        HttpServer server = startMockServer();
+        try {
+            String base = "http://127.0.0.1:" + server.getAddress().getPort();
+            installExample("web");
+            // 只配了 endpoint，没有任何「允许内网」的开关：auto 认出端点是自建的，用它
+            startRuntime(10, scripts(webConfig("endpoint", base)));
+
+            // 搜索打的是用户自己配的端点——它来自配置文件、不是模型能拨动的，因此直接放行
+            ToolCallResult search = invokeTool("web_search",
+                    Collections.<String, Object>singletonMap("query", "jellyfish"));
+            String listed = String.valueOf(search.getOutput());
+            assertTrue(listed.contains("示例标题一"), listed);
+            assertTrue(listed.contains("http://example.com/a"), listed);
+            // 摘要进 metadata（给人看），并且把服务它的后端也写出来
+            assertEquals("搜到 2 条（searxng）", ToolMetadata.summaryOf(search.getMetadata()));
+
+            // 同样是 127.0.0.1，web_fetch 的目标却是模型给的 —— 因此照旧拒绝。
+            // 「我有内网搜索服务」不该顺带放开抓取，这是这次修复的核心
+            JellyfishException failure = assertThrows(JellyfishException.class,
+                    () -> invokeTool("web_fetch",
+                            Collections.<String, Object>singletonMap("url", base + "/page")));
+            assertTrue(failure.getMessage().contains("内网地址"), failure.getMessage());
+            assertTrue(failure.getMessage().contains("allowRanges"),
+                    "报错要直接给出下一步: " + failure.getMessage());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("web 示例：allowRanges 放行网段后，抓取正文与重定向都走得通")
+    void webExample_should_fetchWithinAllowedRanges() throws Exception {
+        HttpServer server = startMockServer();
+        try {
+            String base = "http://127.0.0.1:" + server.getAddress().getPort();
+            installExample("web");
+            // allowRanges 是「整段网段豁免」，真正的用途是 TUN + 假 IP 代理（公网域名被解析到保留网段）。
+            // 这里拿它给回环网段放行，因为走的是同一条判定路径
+            Map<String, Object> web = webConfig("endpoint", base);
+            web.put("allowRanges", Collections.singletonList("127.0.0.0/8"));
+            startRuntime(10, scripts(web));
+
+            ToolCallResult fetch = invokeTool("web_fetch",
+                    Collections.<String, Object>singletonMap("url", base + "/page"));
+            String text = String.valueOf(fetch.getOutput());
+            assertTrue(text.contains("第一段正文"), text);
+            assertTrue(text.contains("第二段 & 实体"), text);
+            // 脚本 / 样式 / 导航 / 页脚都不是正文：它们出现在结果里就说明提取没生效
+            assertFalse(text.contains("导航应被丢弃"), text);
+            assertFalse(text.contains("页脚应被丢弃"), text);
+            assertFalse(text.contains("var x=1"), text);
+
+            // 重定向是逐跳校验的，因此豁免也必须跟着带过去；否则第二跳会被拦下来
+            ToolCallResult redirected = invokeTool("web_fetch",
+                    Collections.<String, Object>singletonMap("url", base + "/redirect"));
+            assertTrue(String.valueOf(redirected.getOutput()).contains("第一段正文"),
+                    String.valueOf(redirected.getOutput()));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("web 示例：什么都不配时默认走 Exa 的公开 MCP 端点（零配置就能搜）")
+    void webExample_should_defaultToExaMcp_withoutAnyKey() throws Exception {
+        HttpServer server = startMockServer();
+        try {
+            String base = "http://127.0.0.1:" + server.getAddress().getPort();
+            installExample("web");
+            // 没有 provider、没有 endpoint、没有 apiKey，只把公开端点指向 mock：
+            // 这条路径要证明的就是「不填任何东西也有得用」
+            startRuntime(10, scripts(webConfig("exaMcpUrl", base + "/mcp")));
+
+            ToolCallResult search = invokeTool("web_search",
+                    Collections.<String, Object>singletonMap("query", "jellyfish"));
+            String listed = String.valueOf(search.getOutput());
+            // 端点回的是 SSE，解析器必须能从 data: 行里把结果抠出来
+            assertTrue(listed.contains("MCP-标题一"), listed);
+            assertTrue(listed.contains("http://example.com/mcp-1"), listed);
+            assertTrue(String.valueOf(ToolMetadata.summaryOf(search.getMetadata())).contains("exa-mcp"),
+                    String.valueOf(ToolMetadata.summaryOf(search.getMetadata())));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    @DisplayName("web 示例：已移除的 allowPrivateAddresses 要当场报错，而不是被静默忽略")
+    void webExample_should_rejectRemovedFlag() throws Exception {
+        installExample("web");
+        Map<String, Object> web = webConfig("endpoint", "https://searx.example.org");
+        web.put("allowPrivateAddresses", Boolean.TRUE);
+        startRuntime(10, scripts(web));
+
+        JellyfishException failure = assertThrows(JellyfishException.class,
+                () -> invokeTool("web_search",
+                        Collections.<String, Object>singletonMap("query", "x")));
+
+        // 静默忽略会让人以为「已经配好了」，然后在另一个地方莫名其妙地失败
+        assertTrue(failure.getMessage().contains("allowPrivateAddresses"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("allowRanges"), failure.getMessage());
+    }
+
+    /**
+     * 造一份只放一个键的 {@code scripts.web} 配置。
+     *
+     * @param key   配置键
+     * @param value 配置值
+     * @return scripts.web 段
+     */
+    private static Map<String, Object> webConfig(String key, Object value) {
+        Map<String, Object> web = new LinkedHashMap<String, Object>();
+        web.put(key, value);
+        return web;
+    }
+
+    /**
+     * 把一份 {@code scripts.web} 段包成逐脚本配置。
+     *
+     * @param web scripts.web 段
+     * @return 逐脚本配置
+     */
+    private static Map<String, Map<String, Object>> scripts(Map<String, Object> web) {
+        Map<String, Map<String, Object>> all = new LinkedHashMap<String, Map<String, Object>>();
+        all.put("web", web);
+        return all;
+    }
+
+    /**
+     * 起一个只在回环上监听的 mock 服务：搜索接口、一个 MCP 端点、一个 HTML 页面、一条重定向。
+     *
+     * @return 已启动的服务
+     * @throws IOException 启动失败时抛出
+     */
+    private static HttpServer startMockServer() throws IOException {
+        HttpServer server = HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/search", exchange -> respond(exchange, "application/json",
+                "{\"results\":["
+                        + "{\"title\":\"示例标题一\",\"url\":\"http://example.com/a\","
+                        + "\"content\":\"摘要一\",\"engine\":\"mock\"},"
+                        + "{\"title\":\"示例标题二\",\"url\":\"http://example.com/b\","
+                        + "\"content\":\"摘要二\",\"engine\":\"mock\"}]}"));
+        // Exa 的公开端点回的是 SSE（text/event-stream）而不是裸 JSON。
+        // mock 也照真实形状回，否则「两种形态都试一次」的分支永远没被跨过。
+        // 并且照真实服务那样**校验请求头**：少了 Content-Type: application/json 就回 415。
+        // 这不是凑数——urllib 带 body 时会自己塞 application/x-www-form-urlencoded，
+        // 不校的话测试会绿而真实调用 415（真撞过一次）
+        server.createContext("/mcp", exchange -> {
+            String contentType = String.valueOf(exchange.getRequestHeaders().getFirst("Content-Type"));
+            String accept = String.valueOf(exchange.getRequestHeaders().getFirst("Accept"));
+            if (!contentType.startsWith("application/json") || !accept.contains("text/event-stream")) {
+                respond(exchange, 415, "text/plain; charset=utf-8",
+                        "需要 Content-Type: application/json 且 Accept 含 text/event-stream");
+                return;
+            }
+            respond(exchange, 200, "text/event-stream",
+                    "event: message\n"
+                            + "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":["
+                            + "{\"type\":\"text\",\"text\":"
+                            + "\"Title: MCP-标题一\\nURL: http://example.com/mcp-1\\n"
+                            + "Published: N/A\\nHighlights:\\n来自 MCP 的正文一。\\n---\\n"
+                            + "Title: MCP-标题二\\nURL: http://example.com/mcp-2\\n"
+                            + "Highlights:\\n来自 MCP 的正文二。\"}]}}\n\n");
+        });
+        server.createContext("/page", exchange -> respond(exchange, "text/html; charset=utf-8",
+                "<!doctype html><html><head><title>示例页面</title>"
+                        + "<script>var x=1;</script><style>.a{color:red}</style></head>"
+                        + "<body><nav>导航应被丢弃</nav><article><h1>标题一</h1>"
+                        + "<p>第一段正文。</p><p>第二段 &amp; 实体。</p></article>"
+                        + "<footer>页脚应被丢弃</footer></body></html>"));
+        server.createContext("/redirect", exchange -> {
+            exchange.getResponseHeaders().add("Location", "/page");
+            exchange.sendResponseHeaders(302, -1L);
+            exchange.close();
+        });
+        server.start();
+        return server;
+    }
+
+    /**
+     * 回一段固定内容。
+     *
+     * @param exchange   交换对象
+     * @param status     状态码
+     * @param contentType 内容类型
+     * @param body       正文
+     * @throws IOException 写入失败时抛出
+     */
+    private static void respond(com.sun.net.httpserver.HttpExchange exchange, int status,
+                                String contentType, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().add("Content-Type", contentType);
+        exchange.sendResponseHeaders(status, bytes.length);
+        exchange.getResponseBody().write(bytes);
+        exchange.close();
+    }
+
+    /**
+     * 回一段 200 固定内容。
+     *
+     * @param exchange    交换对象
+     * @param contentType 内容类型
+     * @param body        正文
+     * @throws IOException 写入失败时抛出
+     */
+    private static void respond(com.sun.net.httpserver.HttpExchange exchange, String contentType,
+                                String body) throws IOException {
+        respond(exchange, 200, contentType, body);
+    }
+
+    @Test
     @DisplayName("清单生成器：生成结果必须能被内核接受，且与仓库里的清单一致")
     void dumpManifest_should_agreeWithExamples() throws IOException {
         // 两件事一起验，因为它们是同一个承诺的两面：
         // ① 生成器吐出来的是内核认得的清单（能直接落盘），② 示例的清单没有落后于实现。
         // 后者是「清单与实现必须一致」这条约束唯一能自动守住的地方
-        for (String id : new String[] {"hello", "jira"}) {
+        for (String id : new String[] {"hello", "jira", "web"}) {
             Path script = examplesDirectory().resolve(id);
             String generated = runPython(resources("dump_manifest.py"), script.toString());
             zcd.jellyfish.script.ScriptManifest fromCode = zcd.jellyfish.script.ScriptManifest.parse(
@@ -1069,8 +1569,11 @@ class PythonScriptIT {
         python.put(ScriptBridgeConfig.KEY_CIRCUIT_BREAKER, breaker);
         Map<String, Map<String, Object>> configurations = new LinkedHashMap<String, Map<String, Object>>();
         configurations.put("jellyfish-plugin-python", python);
-        manager = new PF4JPluginManager(new PluginContextFactory(extensions, events, registry),
-                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations));
+        manager = new PF4JPluginManager(new PluginContextFactory(
+                extensions, events, registry,
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry())),
+                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations),
+                events);
         manager.bootstrap();
         assertEquals(PluginState.STARTED, manager.stateOf("jellyfish-plugin-python"));
     }
@@ -1091,8 +1594,11 @@ class PythonScriptIT {
         python.put(ScriptBridgeConfig.KEY_WORKER_IDLE, Integer.valueOf(idleSeconds));
         Map<String, Map<String, Object>> configurations = new LinkedHashMap<String, Map<String, Object>>();
         configurations.put("jellyfish-plugin-python", python);
-        manager = new PF4JPluginManager(new PluginContextFactory(extensions, events, registry),
-                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations));
+        manager = new PF4JPluginManager(new PluginContextFactory(
+                extensions, events, registry,
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry())),
+                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations),
+                events);
         manager.bootstrap();
     }
 
@@ -1160,7 +1666,7 @@ class PythonScriptIT {
     private static final String TOOL_SCRIPT = ""
             + "from jellyfish_sdk import tool, command, contributes, ScriptError\n"
             + "\n"
-            + "@tool(name=\"jira_issue\", description=\"读 issue\", read_only=True)\n"
+            + "@tool(name=\"jira_issue\", description=\"读 issue\")\n"
             + "def jira_issue(args, ctx):\n"
             + "    if not args.get(\"key\"):\n"
             + "        raise ScriptError(\"缺少参数 key\")\n"
@@ -1227,6 +1733,65 @@ class PythonScriptIT {
             + "\"events\":[\"ConfigWarningEvent\",\"PluginNotificationEvent\"]}";
 
     /**
+     * 周期任务脚本：每次触发往文件里追加一行，另有一个工具读出已触发次数。
+     * <p>
+     * <b>为什么记到文件而不是返回给宿主</b>：周期任务**没有任何调用方**——它的返回值被丢弃
+     * （宿主只为它代发一次界面失效）。因此从外部唯一能观察它的地方就是它自己留下的痕迹。
+     * <p>
+     * 顺带断言了一件容易漏的事：周期任务调用发生在**没有会话**的上下文里，
+     * 所以脚本读到 ``ctx.session_id`` 必须是 ``None``。把它一起写进记录，
+     * 「宿主误把某个会话传下去」就会当场暴露。
+     */
+    private static final String PERIODIC_SCRIPT = ""
+            + "import os\n"
+            + "from jellyfish_sdk import periodic, tool\n"
+            + "\n"
+            + "LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"events.log\")\n"
+            + "COUNT = os.path.join(os.path.dirname(os.path.abspath(__file__)), \"count.txt\")\n"
+            + "\n"
+            + "\n"
+            + "def _bump():\n"
+            + "    current = 0\n"
+            + "    if os.path.exists(COUNT):\n"
+            + "        with open(COUNT) as handle:\n"
+            + "            current = int(handle.read().strip() or \"0\")\n"
+            + "    current += 1\n"
+            + "    with open(COUNT, \"w\") as handle:\n"
+            + "        handle.write(str(current))\n"
+            + "    return current\n"
+            + "\n"
+            + "\n"
+            + "@periodic(name=\"beat\", interval_seconds=1)\n"
+            + "def beat(ctx):\n"
+            + "    with open(LOG, \"a\") as handle:\n"
+            + "        handle.write(\"tick:%d:session=%s\\n\" % (_bump(), ctx.session_id))\n"
+            + "\n"
+            + "\n"
+            + "@tool(name=\"beat_count\", description=\"读出周期任务已触发的次数\")\n"
+            + "def beat_count(args, ctx):\n"
+            + "    if not os.path.exists(COUNT):\n"
+            + "        return \"0\"\n"
+            + "    with open(COUNT) as handle:\n"
+            + "        return handle.read().strip()\n";
+
+    /**
+     * 与 {@link #PERIODIC_SCRIPT} 逐字对应的清单（间隔 1 秒，用例窗口内够跳两次）。
+     */
+    private static final String PERIODIC_MANIFEST = "{\"entry\":\"main.py\","
+            + "\"tools\":[{\"name\":\"beat_count\"}],"
+            + "\"schedules\":[{\"name\":\"beat\",\"intervalSeconds\":1}]}";
+
+    /**
+     * 同上一份，但间隔声明成 60 秒——供「配置段覆写间隔」的用例使用。
+     * <p>
+     * <b>为什么要这一份</b>：覆写是否生效，只能靠「不该触发的却触发了」来证明。
+     * 声明 60 秒而配置写成 1 秒，用例窗口内出现跳动就只可能来自覆写。
+     */
+    private static final String PERIODIC_MANIFEST_SLOW = "{\"entry\":\"main.py\","
+            + "\"tools\":[{\"name\":\"beat_count\"}],"
+            + "\"schedules\":[{\"name\":\"beat\",\"intervalSeconds\":60}]}";
+
+    /**
      * 夹具脚本：声明了 ``has_options=True``，但函数只收 ``ctx``——
      * 于是它既回答不了候选查询，也看不出这一次到底是哪条路。
      */
@@ -1258,7 +1823,7 @@ class PythonScriptIT {
      * 用例一旦用一份过时的清单，脚本会直接拒绝服务，而错误信息会立刻指出差在哪一项。
      */
     private static final String FULL_MANIFEST = "{\"entry\":\"main.py\","
-            + "\"tools\":[{\"name\":\"jira_issue\",\"readOnly\":true},{\"name\":\"jira_hang\"}],"
+            + "\"tools\":[{\"name\":\"jira_issue\"},{\"name\":\"jira_hang\"}],"
             + "\"commands\":[{\"name\":\"jira\",\"descriptor\":{\"summary\":\"操作 Jira\"}}],"
             + "\"contributions\":[\"prompt\"]}";
 
@@ -1271,13 +1836,123 @@ class PythonScriptIT {
     private static final String GIT_SCRIPT = ""
             + "from jellyfish_sdk import tool\n"
             + "\n"
-            + "@tool(name=\"git_status\", description=\"工作区状态\", read_only=True)\n"
+            + "@tool(name=\"git_status\", description=\"工作区状态\")\n"
             + "def git_status(args, ctx):\n"
             + "    return \"main 干净\"\n";
 
     /** 与 {@link #GIT_SCRIPT} 逐字对应的清单。 */
     private static final String GIT_MANIFEST = "{\"entry\":\"main.py\","
-            + "\"tools\":[{\"name\":\"git_status\",\"readOnly\":true}]}";
+            + "\"tools\":[{\"name\":\"git_status\"}]}";
+
+    /**
+     * 读配置的脚本：同时从 ``ctx.configuration`` 与模块级 ``configuration()`` 取值。
+     * <p>
+     * 两个入口都要试：模块级那个要求 worker **在 import 脚本之前**注入配置，
+     * 而这是一个很容易在重构中丢掉、且现场看起来像「配置没生效」的细节。
+     */
+    private static final String CONFIG_SCRIPT = ""
+            + "from jellyfish_sdk import tool, configuration\n"
+            + "\n"
+            + "@tool(name=\"web_probe\", description=\"读配置\")\n"
+            + "def web_probe(args, ctx):\n"
+            + "    cfg = ctx.configuration\n"
+            + "    return \"provider=%s; key=%s; module=%s\" % (cfg.get(\"provider\"),"
+            + " cfg.get(\"apiKey\"), configuration().get(\"provider\"))\n";
+
+    /** 与 {@link #CONFIG_SCRIPT} 逐字对应的清单。 */
+    private static final String CONFIG_MANIFEST = "{\"entry\":\"main.py\","
+            + "\"tools\":[{\"name\":\"web_probe\"}]}";
+
+    /** 返回 {@code ToolResult} 的脚本：摘要里带上调用者身份，一次验证两件事。 */
+    private static final String METADATA_SCRIPT = ""
+            + "from jellyfish_sdk import tool, ToolResult\n"
+            + "\n"
+            + "@tool(name=\"web_meta\", description=\"带元数据的工具\")\n"
+            + "def web_meta(args, ctx):\n"
+            + "    summary = \"parent=%s run=%s root=%s\" % (\n"
+            + "        ctx.parent_session_id, ctx.run_id, ctx.root_run_id)\n"
+            + "    return ToolResult(\"正文\", summary=summary)\n";
+
+    /** 与 {@link #METADATA_SCRIPT} 逐字对应的清单。 */
+    private static final String METADATA_MANIFEST = "{\"entry\":\"main.py\","
+            + "\"tools\":[{\"name\":\"web_meta\"}]}";
+
+    /**
+     * 二期扩展点夹具：六个类型级贡献 + 一个带路由键的处理器（{@code model_catalog}）。
+     * <p>
+     * 处理器签名刻意不一致：有的只声明 {@code ctx}（不关心的参数就不必列），有的声明了用得上的槽位。
+     * 两种写法都要能跑——这是 SDK “声明什么就给什么”的约定。
+     */
+    private static final String SECOND_WAVE_SCRIPT = ""
+            + "from jellyfish_sdk import contributes, handler\n"
+            + "\n"
+            + "@contributes(\"turn_context\")\n"
+            + "def turn_context(ctx):\n"
+            + "    return \"now: 2026-10-04\"\n"
+            + "\n"
+            + "@contributes(\"tool_argument_pre\")\n"
+            + "def tool_argument_pre(tool_name, ctx):\n"
+            + "    return {\"arguments\": {\"path\": \"/tmp/\" + str(tool_name)}}\n"
+            + "\n"
+            + "@contributes(\"tool_result_post\")\n"
+            + "def tool_result_post(ctx):\n"
+            + "    return {\"metadata\": {\"summary\": \"已脱敏\"}}\n"
+            + "\n"
+            + "@contributes(\"session_before_close\")\n"
+            + "def session_before_close(veto_supported, ctx):\n"
+            + "    return \"dirty\" if veto_supported else None\n"
+            + "\n"
+            + "@contributes(\"session_before_fork\")\n"
+            + "def session_before_fork(ctx):\n"
+            + "    return True\n"
+            + "\n"
+            + "@contributes(\"compaction_pre\")\n"
+            + "def compaction_pre(ctx):\n"
+            + "    return {\"keepRecent\": 3}\n"
+            + "\n"
+            + "@handler(\"model_catalog\", route=\"local\")\n"
+            + "def local_catalog(provider_name, provider_type, ctx):\n"
+            + "    return [{\"id\": \"local-model\", \"contextLength\": 8192}]\n";
+
+    /** 与 {@link #SECOND_WAVE_SCRIPT} 逐字对应的清单。 */
+    private static final String SECOND_WAVE_MANIFEST = "{\"entry\":\"main.py\","
+            + "\"contributions\":[\"turn_context\",\"tool_argument_pre\",\"tool_result_post\","
+            + "\"session_before_close\",\"session_before_fork\",\"compaction_pre\"],"
+            + "\"handlers\":[{\"type\":\"model_catalog\",\"route\":\"local\"}]}";
+
+    /** 三期夹具：五个类型级贡献 + 一个带标记路由的 {@code input_directive}。 */
+    private static final String THIRD_WAVE_SCRIPT = ""
+            + "from jellyfish_sdk import contributes, handler\n"
+            + "\n"
+            + "@contributes(\"tool_activation\")\n"
+            + "def tool_activation(tool_name, ctx):\n"
+            + "    return \"service down\" if tool_name == \"bad\" else None\n"
+            + "\n"
+            + "@contributes(\"request_tuning\")\n"
+            + "def request_tuning(ctx):\n"
+            + "    return {\"cacheBreakpoints\": 1}\n"
+            + "\n"
+            + "@contributes(\"aging_strategy\")\n"
+            + "def aging_strategy(ctx):\n"
+            + "    return {\"agingPercent\": 30}\n"
+            + "\n"
+            + "@contributes(\"input_transform\")\n"
+            + "def input_transform(ctx):\n"
+            + "    return {\"handled\": True, \"notice\": \"已接过去\"}\n"
+            + "\n"
+            + "@contributes(\"turn_before\")\n"
+            + "def turn_before(ctx):\n"
+            + "    return {\"input\": \"改写后的输入\"}\n"
+            + "\n"
+            + "@handler(\"input_directive\", route=\"!\")\n"
+            + "def bang(marker, input, ctx):\n"
+            + "    return {\"toolName\": \"shell\", \"arguments\": {\"command\": input}}\n";
+
+    /** 与 {@link #THIRD_WAVE_SCRIPT} 逐字对应的清单。 */
+    private static final String THIRD_WAVE_MANIFEST = "{\"entry\":\"main.py\","
+            + "\"contributions\":[\"tool_activation\",\"request_tuning\",\"aging_strategy\","
+            + "\"input_transform\",\"turn_before\"],"
+            + "\"handlers\":[{\"type\":\"input_directive\",\"route\":\"!\"}]}";
 
     /**
      * 启动插件并完成注册。
@@ -1286,6 +1961,18 @@ class PythonScriptIT {
      * @throws IOException 安装插件失败时抛出
      */
     private void startRuntime(int invokeTimeoutSeconds) throws IOException {
+        startRuntime(invokeTimeoutSeconds, Collections.<String, Map<String, Object>>emptyMap());
+    }
+
+    /**
+     * 启动插件并完成注册，同时下发逐脚本配置。
+     *
+     * @param invokeTimeoutSeconds 单次调用超时秒数
+     * @param scriptConfigs        逐脚本配置（脚本 id → 配置）
+     * @throws IOException 安装插件失败时抛出
+     */
+    private void startRuntime(int invokeTimeoutSeconds, Map<String, Map<String, Object>> scriptConfigs)
+            throws IOException {
         installPlugin();
         Map<String, Object> python = new LinkedHashMap<String, Object>();
         python.put(ScriptBridgeConfig.KEY_SCRIPTS_ROOT, scriptsRoot.toString());
@@ -1293,10 +1980,16 @@ class PythonScriptIT {
         python.put(ScriptBridgeConfig.KEY_INVOKE_TIMEOUT, Integer.valueOf(invokeTimeoutSeconds));
         python.put(PythonBridgePlugin.KEY_INTERPRETER, interpreter());
         python.put(ScriptBridgeConfig.KEY_PID_DIRECTORY, pidRoot.toString());
+        if (!scriptConfigs.isEmpty()) {
+            python.put(ScriptBridgeConfig.KEY_SCRIPTS, scriptConfigs);
+        }
         Map<String, Map<String, Object>> configurations = new LinkedHashMap<String, Map<String, Object>>();
         configurations.put("jellyfish-plugin-python", python);
-        manager = new PF4JPluginManager(new PluginContextFactory(extensions, events, registry),
-                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations));
+        manager = new PF4JPluginManager(new PluginContextFactory(
+                extensions, events, registry,
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry())),
+                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations),
+                events);
         manager.bootstrap();
         assertEquals(PluginState.STARTED, manager.stateOf("jellyfish-plugin-python"));
     }

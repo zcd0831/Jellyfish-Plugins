@@ -14,7 +14,7 @@ import java.util.Map;
 
 /**
  * 本插件的配置：把 {@code jellyfish.json} 里的
- * {@code plugins.configurations.jellyfish-shell} 段解析成值对象。
+ * {@code plugins.configurations.jellyfish-plugin-shell} 段解析成值对象。
  * <p>
  * 项目级覆盖全局级、字符串值里的 {@code ${ENV}} 替换都由内核完成，这里拿到的就是最终值。
  * <p>
@@ -32,7 +32,7 @@ final class PluginConfig {
     private static final Logger LOG = LoggerFactory.getLogger(PluginConfig.class);
 
     /** 配置来源，用于告警定位。 */
-    private static final String SOURCE = "plugins.configurations.jellyfish-shell";
+    private static final String SOURCE = "plugins.configurations.jellyfish-plugin-shell";
 
     /** 缺省墙上时钟超时（秒）。 */
     static final int DEFAULT_TIMEOUT_SECONDS = 120;

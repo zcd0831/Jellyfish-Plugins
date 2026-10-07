@@ -10,7 +10,7 @@ import java.util.Map;
 
 /**
  * 本插件的配置解析：把 {@code jellyfish.json} 里的
- * {@code plugins.configurations.jellyfish-session-file} 段解析成值对象。
+ * {@code plugins.configurations.jellyfish-plugin-session-file} 段解析成值对象。
  * <p>
  * 两件由内核完成、这里<b>不再重复做</b>的事：项目级覆盖全局级、字符串值里的 {@code ${ENV}} 替换——
  * 拿到的就是最终值。但 {@code ~} <b>没有</b>被替换（内核只在配置文件的路径段上做展开），

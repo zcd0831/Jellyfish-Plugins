@@ -72,7 +72,7 @@ final class McpRegistry {
         }
     }
 
-    /** 工具展开名 → 是否只读。 */
+    /** 工具展开名 → 是否为用户声明的只读工具（只驱动本插件的审批策略）。 */
     private final Map<String, Boolean> readOnlyTools = new ConcurrentHashMap<String, Boolean>();
 
     /** server 标识 → 该 server 当前提供的工具展开名。 */
@@ -151,10 +151,10 @@ final class McpRegistry {
     }
 
     /**
-     * 判断一个工具是否为只读。
+     * 判断一个工具是否被用户声明为只读。
      *
      * @param qualifiedName 工具展开名，可为 {@code null}
-     * @return 只读返回 {@code true}；未知工具返回 {@code false}
+     * @return 用户声明为只读时返回 {@code true}；未知工具返回 {@code false}
      */
     boolean isReadOnly(String qualifiedName) {
         return Boolean.TRUE.equals(readOnlyTools.get(qualifiedName));

@@ -3,7 +3,7 @@ package zcd.jellyfish.plugin.sessionfile;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import zcd.jellyfish.api.JellyfishException;
-import zcd.jellyfish.api.extension.PermissionMode;
+import zcd.jellyfish.api.extension.SessionKind;
 import zcd.jellyfish.api.extension.SessionSnapshot;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -46,7 +46,6 @@ class SnapshotJsonTest {
         assertEquals("coder", restored.getAgentId());
         assertEquals("openai", restored.getProvider());
         assertEquals("gpt-4o", restored.getModel());
-        assertEquals(PermissionMode.PLAN, restored.getPermissionMode());
         assertEquals(4, restored.getMessages().size());
         assertEquals("call-1", restored.getMessages().get(1).getToolCalls().get(0).getId());
         assertEquals("{\"path\":\"a.txt\"}", restored.getMessages().get(1).getToolCalls().get(0).getArguments());
@@ -60,6 +59,40 @@ class SnapshotJsonTest {
         assertEquals(300L, restored.getCompaction().getCreatedAt());
         // 丢弃条数漏了会静默失真：重启后会声称「这些历史都在摘要里」
         assertEquals(4, restored.getCompaction().getDroppedMessageCount());
+        // 会话种类与分支来源漏了会让重启后的分支会话被当成普通根会话
+        assertEquals(SessionKind.FORKED, restored.getKind());
+        assertEquals("session-0", restored.getParentSessionId());
+        assertEquals("m-2", restored.getForkPointMessageId());
+        // 扩展条目是插件自己写进会话的状态，丢了插件就「重启后不记得」
+        assertEquals(1, restored.getExtensionEntries().size());
+        assertEquals("todo::items", restored.getExtensionEntries().get(0).getKey());
+        assertEquals(Integer.valueOf(3),
+                restored.getExtensionEntries().get(0).getValue().get("count"));
+        assertEquals(250L, restored.getExtensionEntries().get(0).getUpdatedAt());
+    }
+
+    @Test
+    @DisplayName("旧版本落盘的文件没有 kind / 分支 / 扩展条目的字段，也必须读得回来")
+    void read_should_tolerate_missingSessionKindFields() {
+        // Given：把新写出的 JSON 里那四个新字段整块删掉，模拟升级前留下的文件
+        String withKind = SnapshotJson.write(TestSnapshots.full("session-1"));
+        String legacy = withKind
+                .replaceAll("(?s),?\\s*\"kind\"\\s*:\\s*\"[A-Z]+\"", "")
+                .replaceAll("(?s),?\\s*\"parentSessionId\"\\s*:\\s*(\"[^\"]*\"|null)", "")
+                .replaceAll("(?s),?\\s*\"forkPointMessageId\"\\s*:\\s*(\"[^\"]*\"|null)", "")
+                .replaceAll("(?s),?\\s*\"extensionEntries\"\\s*:\\s*\\[[^\\]]*\\]", "");
+        assertTrue(legacy.length() < withKind.length(), "测试自身没删掉新增字段");
+
+        // When
+        SessionSnapshot restored = SnapshotJson.read(legacy, "test");
+
+        // Then：缺字段按「普通根会话、无扩展条目」读回，其余字段照旧
+        assertEquals(SessionKind.NORMAL, restored.getKind());
+        assertNull(restored.getParentSessionId());
+        assertNull(restored.getForkPointMessageId());
+        assertTrue(restored.getExtensionEntries().isEmpty());
+        assertEquals(4, restored.getMessages().size());
+        assertEquals("session-1", restored.getSessionId());
     }
 
     @Test

@@ -171,6 +171,15 @@ class ScriptState {
     get manifest() {
         return this.spec.manifest || {};
     }
+
+    /**
+     * 本脚本的配置段（宿主下发的 `scripts.<id>`）。
+     *
+     * 可能含密钥，因此网关只把它交给对应 worker，不记日志、不进台账。
+     */
+    get config() {
+        return this.spec.config || {};
+    }
 }
 
 /**
@@ -909,6 +918,7 @@ class Gateway {
                 strict: Boolean(this.settings.manifestStrict),
                 idleSeconds: this.settings.workerIdleSeconds || 0,
                 maxFrameBytes: wire.MAX_FRAME_BYTES,
+                config: state.config,
             },
         }));
         this.log(`[${spec.id}] worker 已启动: pid=${child.pid}`);

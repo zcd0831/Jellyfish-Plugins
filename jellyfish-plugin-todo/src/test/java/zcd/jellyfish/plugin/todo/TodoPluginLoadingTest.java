@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import org.pf4j.PluginState;
 import zcd.jellyfish.api.extension.CommandDescriptor;
 import zcd.jellyfish.api.extension.CommandRequest;
@@ -13,6 +14,10 @@ import zcd.jellyfish.api.extension.PromptContributionRequest;
 import zcd.jellyfish.api.extension.StatusLineContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolDescriptor;
+import zcd.jellyfish.api.extension.TurnContextRequest;
+import zcd.jellyfish.infra.action.ActionQueue;
+import zcd.jellyfish.infra.metrics.MetricsRegistry;
+import zcd.jellyfish.infra.shell.ShellIngress;
 import zcd.jellyfish.infra.event.EventChannel;
 import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.DescriptorBinding;
@@ -20,7 +25,9 @@ import zcd.jellyfish.infra.extension.ExtensionRegistry;
 import zcd.jellyfish.infra.plugin.PF4JPluginManager;
 import zcd.jellyfish.infra.plugin.PluginContextFactory;
 import zcd.jellyfish.infra.plugin.PluginRuntimeConfig;
+import zcd.jellyfish.infra.plugin.RuntimeInfoHolder;
 import zcd.jellyfish.infra.registry.TypeRegistry;
+import zcd.jellyfish.infra.session.SessionManager;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -47,7 +54,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class TodoPluginLoadingTest {
 
     /** 内核里本插件的标识，与 plugin.properties 保持一致。 */
-    private static final String PLUGIN_ID = "jellyfish-todo";
+    private static final String PLUGIN_ID = "jellyfish-plugin-todo";
 
     /** 插件根目录。 */
     @TempDir
@@ -93,7 +100,7 @@ class TodoPluginLoadingTest {
     }
 
     @Test
-    @DisplayName("启动后 /todo 命令、todo_write 工具、提示词贡献、状态栏贡献与面板贡献都应可路由")
+    @DisplayName("启动后 /todo 命令、五个工具、选型提示词、回合块、状态栏与面板都应可路由")
     void bootstrap_should_registerAllCapabilities() throws IOException {
         installPlugin();
 
@@ -116,13 +123,18 @@ class TodoPluginLoadingTest {
             tools.add(descriptor.getName());
         }
         assertTrue(tools.contains(TodoWriteTool.NAME), tools.toString());
+        assertTrue(tools.contains(TodoClaimTool.NAME), tools.toString());
+        assertTrue(tools.contains(TodoDoneTool.NAME), tools.toString());
+        assertTrue(tools.contains(TodoReleaseTool.NAME), tools.toString());
+        assertTrue(tools.contains(TodoBlockTool.NAME), tools.toString());
 
         assertEquals(1, extensions.handlers(PromptContributionRequest.class, null).size());
+        assertEquals(1, extensions.handlers(TurnContextRequest.class, null).size());
         assertEquals(1, extensions.handlers(PanelContributionRequest.class, null).size());
     }
 
     @Test
-    @DisplayName("插件卸载后五个面的注册都应被按 owner 全部回收")
+    @DisplayName("插件卸载后全部注册都应被按 owner 回收")
     void close_should_unregisterAllCapabilities() throws IOException {
         installPlugin();
 
@@ -132,8 +144,13 @@ class TodoPluginLoadingTest {
         manager = null;
 
         assertTrue(extensions.handlers(ToolCallRequest.class, TodoWriteTool.NAME).isEmpty());
+        assertTrue(extensions.handlers(ToolCallRequest.class, TodoClaimTool.NAME).isEmpty());
+        assertTrue(extensions.handlers(ToolCallRequest.class, TodoDoneTool.NAME).isEmpty());
+        assertTrue(extensions.handlers(ToolCallRequest.class, TodoReleaseTool.NAME).isEmpty());
+        assertTrue(extensions.handlers(ToolCallRequest.class, TodoBlockTool.NAME).isEmpty());
         assertTrue(extensions.handlers(CommandRequest.class, "todo").isEmpty());
         assertTrue(extensions.handlers(PromptContributionRequest.class, null).isEmpty());
+        assertTrue(extensions.handlers(TurnContextRequest.class, null).isEmpty());
         assertTrue(extensions.handlers(StatusLineContributionRequest.class, null).isEmpty());
         assertTrue(extensions.handlers(PanelContributionRequest.class, null).isEmpty());
     }
@@ -160,7 +177,8 @@ class TodoPluginLoadingTest {
      * @return 插件管理器
      */
     private PF4JPluginManager newManager() {
-        PluginContextFactory contexts = new PluginContextFactory(extensions, eventChannel, registry);
-        return new PF4JPluginManager(contexts, PluginRuntimeConfig.ofRoots(pluginsRoot));
+        PluginContextFactory contexts = new PluginContextFactory(extensions, eventChannel, registry,
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry()));
+        return new PF4JPluginManager(contexts, PluginRuntimeConfig.ofRoots(pluginsRoot), eventChannel);
     }
 }

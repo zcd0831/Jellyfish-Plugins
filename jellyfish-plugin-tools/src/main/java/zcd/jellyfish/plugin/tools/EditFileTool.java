@@ -72,7 +72,8 @@ public final class EditFileTool implements PluginTool {
         } catch (IOException e) {
             throw new JellyfishException("写入文件失败: " + ToolPaths.display(file) + " (" + e.getMessage() + ')', e);
         }
-        return new ToolCallResult(name(), "已在 " + ToolPaths.display(file) + " 替换 " + matches + " 处");
+        return new ToolCallResult(name(), "已在 " + ToolPaths.display(file) + " 替换 " + matches + " 处",
+                ToolSummaries.of(ToolPaths.display(file) + " · 替换 " + matches + " 处"));
     }
 
     /**

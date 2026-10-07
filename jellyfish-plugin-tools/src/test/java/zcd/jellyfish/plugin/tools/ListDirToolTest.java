@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.extension.ToolCallResult;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -15,6 +16,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.args;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.expectFailure;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.invoke;
+import static zcd.jellyfish.plugin.tools.ToolTestSupport.invokeResult;
+import static zcd.jellyfish.plugin.tools.ToolTestSupport.summaryOf;
 
 /**
  * {@link ListDirTool} 的单元测试。
@@ -139,6 +142,25 @@ class ListDirToolTest {
 
         assertTrue(failure.getMessage().contains("offset 超出目录项数"), failure.getMessage());
         assertTrue(failure.getMessage().contains("共 1 项"), failure.getMessage());
+    }
+
+    @Test
+    @DisplayName("摘要给出「显示第几项 / 共几项」，分页时也能看出位置")
+    void handle_should_summarizeDisplayedRange() throws Exception {
+        write("a.txt", "x");
+        write("b.txt", "y");
+
+        ToolCallResult result = invokeResult(tool, args("path", tempDir.toString()));
+
+        assertTrue(summaryOf(result).contains(" · 第 1-2 项，共 2 项"), summaryOf(result));
+    }
+
+    @Test
+    @DisplayName("空目录的摘要说明是空目录")
+    void handle_should_summarizeEmptyDirectory() throws Exception {
+        ToolCallResult result = invokeResult(tool, args("path", tempDir.toString()));
+
+        assertTrue(summaryOf(result).endsWith("（空目录）"), summaryOf(result));
     }
 
     /**

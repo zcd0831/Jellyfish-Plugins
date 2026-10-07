@@ -14,8 +14,8 @@ import zcd.jellyfish.api.extension.PermissionVerdict;
  * 而这里要的恰恰是「让人看一眼再决定」——只读工具免打扰、其余弹一次批准框，与 shell 插件的分类器
  * 是同一种便利机制（区分只读与写入，而不是替用户下结论）。
  * <p>
- * <b>它不是安全边界</b>：{@code readOnlyHint} 由 server 自己填，填错了这里就会放行。真正的边界是
- * 「装了什么 server」以及 {@code askTools} / {@code allowedTools} 那套核心策略——本处理器只是
+ * <b>它不是安全边界</b>：只读与否只由用户写的 {@code readOnlyTools} 决定，用户写错了这里就会放行。
+ * 真正的边界是「装了什么 server」以及 {@code askTools} / {@code allowedTools} 那套核心策略——本处理器只是
  * 让默认姿势偏保守一点。
  * <p>
  * <b>为什么在处理器里再判一次工具名</b>：{@link PermissionCheckRequest} 是<b>类型级</b>扩展点，

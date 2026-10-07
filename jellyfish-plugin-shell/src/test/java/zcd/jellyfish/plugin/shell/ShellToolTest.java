@@ -138,7 +138,7 @@ class ShellToolTest {
     }
 
     @Test
-    @DisplayName("环境变量：脱敏后叠加防挂死与用户配置")
+    @DisplayName("环境变量：剔除敏感变量后叠加防挂死与用户配置")
     void handle_should_buildEnvironment() throws Exception {
         ShellTestSupport.FakeProcess process = new ShellTestSupport.FakeProcess();
         ShellTestSupport.FakeLauncher launcher = new ShellTestSupport.FakeLauncher(process);

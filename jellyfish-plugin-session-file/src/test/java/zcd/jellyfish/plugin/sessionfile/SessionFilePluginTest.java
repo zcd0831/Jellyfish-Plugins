@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import zcd.jellyfish.api.extension.SessionDeleteRequest;
 import zcd.jellyfish.api.extension.SessionPersistRequest;
 import zcd.jellyfish.api.extension.SessionRestoreRequest;
@@ -12,11 +13,16 @@ import zcd.jellyfish.api.extension.SessionRestoreResult;
 import zcd.jellyfish.api.extension.SessionSnapshot;
 import zcd.jellyfish.api.plugin.PluginContext;
 import zcd.jellyfish.api.plugin.PluginDeclaration;
+import zcd.jellyfish.infra.action.ActionQueue;
+import zcd.jellyfish.infra.metrics.MetricsRegistry;
+import zcd.jellyfish.infra.shell.ShellIngress;
 import zcd.jellyfish.infra.event.EventChannel;
 import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
 import zcd.jellyfish.infra.plugin.PluginContextFactory;
+import zcd.jellyfish.infra.plugin.RuntimeInfoHolder;
 import zcd.jellyfish.infra.registry.TypeRegistry;
+import zcd.jellyfish.infra.session.SessionManager;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -41,7 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class SessionFilePluginTest {
 
     /** 本插件标识。 */
-    private static final String PLUGIN_ID = "jellyfish-session-file";
+    private static final String PLUGIN_ID = "jellyfish-plugin-session-file";
 
     /** 用例独立的工作目录。 */
     @TempDir
@@ -185,7 +191,8 @@ class SessionFilePluginTest {
         Map<String, Object> configuration = new HashMap<String, Object>();
         configuration.put(PluginConfig.KEY_SESSION_DIR, tempDir.toString());
         configuration.put(PluginConfig.KEY_GIT_ENABLED, gitEnabled);
-        PluginContext context = new PluginContextFactory(extensions, eventChannel, registry)
+        PluginContext context = new PluginContextFactory(extensions, eventChannel, registry,
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry()))
                 .create(PluginDeclaration.of(PLUGIN_ID, configuration));
         new SessionFilePlugin().start(context);
     }

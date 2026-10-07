@@ -48,8 +48,7 @@ public final class ReadFileTool implements PluginTool {
                     "offset", ToolSchema.integer("起始行号，从 1 开始；缺省从第一行开始"),
                     "limit", ToolSchema.integer("最多读取多少行；缺省读到文件末尾"),
                     "max_bytes", ToolSchema.integer("最多读取多少字节，缺省 " + DEFAULT_MAX_BYTES)),
-            Arrays.asList("path"),
-            true);
+            Arrays.asList("path"));
 
     @Override
     public ToolDescriptor descriptor() {
@@ -73,7 +72,8 @@ public final class ReadFileTool implements PluginTool {
             throw new JellyfishException("max_bytes 必须大于 0: " + maxBytes);
         }
         requireRegularFile(file);
-        return new ToolCallResult(name(), readLines(file, offset, limit, maxBytes));
+        ReadOutcome outcome = readLines(file, offset, limit, maxBytes);
+        return new ToolCallResult(name(), outcome.text, ToolSummaries.of(outcome.summary));
     }
 
     /**
@@ -101,10 +101,10 @@ public final class ReadFileTool implements PluginTool {
      * @param offset   起始行号，从 1 开始
      * @param limit    最多读取行数，{@code 0} 表示不限
      * @param maxBytes 最多读取字节数（按 UTF-8 计）
-     * @return 文件内容，行间以 {@code \n} 连接
+     * @return 回灌文本与展示摘要
      * @throws JellyfishException 起始行超出文件行数或读取失败时抛出
      */
-    private static String readLines(Path file, int offset, int limit, int maxBytes) {
+    private static ReadOutcome readLines(Path file, int offset, int limit, int maxBytes) {
         StringBuilder text = new StringBuilder();
         int lineNumber = 0;
         int taken = 0;
@@ -146,14 +146,43 @@ public final class ReadFileTool implements PluginTool {
         if (taken == 0) {
             if (lineNumber == 0) {
                 // 空文件不是错误，「什么都没有」本身就是答案
-                return "（文件为空）";
+                return new ReadOutcome("（文件为空）", ToolPaths.display(file) + "（空文件）");
             }
             throw new JellyfishException("起始行超出文件行数: offset=" + offset + "，文件共 " + lineNumber + " 行");
         }
         if (moreContent) {
             appendTruncationHint(text, offset + taken);
         }
-        return text.toString();
+        // 摘要取实际读到的行区间，「+」表示后面还有内容（被 limit 或 max_bytes 截住）
+        String range = ToolPaths.display(file) + ':' + offset + '-' + (offset + taken - 1)
+                + (moreContent ? "+" : "");
+        return new ReadOutcome(text.toString(), range);
+    }
+
+    /**
+     * 一次读取的产物：回灌给模型的正文，以及给界面看的一行摘要。
+     * <p>
+     * 两者受众不同（前者要能当文件内容用，后者要能在一行里说清「读了哪一段」），
+     * 因此分开携带，而不是让调用点去解析正文里的续读提示。
+     */
+    private static final class ReadOutcome {
+
+        /** 回灌给模型的正文。 */
+        private final String text;
+
+        /** 展示摘要，形如 {@code path:起始行-结束行}。 */
+        private final String summary;
+
+        /**
+         * 构造读取产物。
+         *
+         * @param text    回灌正文
+         * @param summary 展示摘要
+         */
+        ReadOutcome(String text, String summary) {
+            this.text = text;
+            this.summary = summary;
+        }
     }
 
     /**

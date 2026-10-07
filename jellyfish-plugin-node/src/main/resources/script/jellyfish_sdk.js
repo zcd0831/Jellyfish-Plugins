@@ -25,6 +25,10 @@
 /** 本模块所在目录：网关资源抽取目录，也就是 SDK 与 worker 所在的地方。 */
 const HERE = __dirname;
 
+/** 读能力档与解析路径：两者都是 Node 内置模块，不需要 npm install。 */
+const fs = require('fs');
+const path = require('path');
+
 /**
  * 让脚本里的 `require('jellyfish_sdk')` 在任何工作目录下都能解析出来。
  *
@@ -72,8 +76,18 @@ const commandOptionDecls = [];
 /** 订阅的事件名。 */
 const subscriptions = [];
 
+/** 周期任务声明。条目只放清单需要的键（处理函数进 `handlers` 表）；未给间隔时不写 `intervalSeconds`。 */
+const schedules = [];
+
 /** 声明过的贡献类型，用于检测「同一类型声明了两个函数」。 */
 const contributionTypes = new Set();
+
+/**
+ * 带路由键、且路由键来自用户配置的处理器声明（目前只有 `model_catalog`）。
+ *
+ * 每条是 `{type, route}`；route 由用户配置决定（provider 名），脚本无法从自己的声明里推出来。
+ */
+const handlerDecls = [];
 
 /**
  * 可以发布的事件名（与 Java 侧 ScriptEventFactory 的白名单一致）。
@@ -87,6 +101,39 @@ const contributionTypes = new Set();
  * 真正的裁决仍在宿主侧，因此这份清单哪怕过时也只会多一句提醒，不会吞掉事件。
  */
 const EMITTABLE_EVENTS = Object.freeze(['PluginNotificationEvent', 'ConfigWarningEvent']);
+
+/**
+ * 本脚本的配置段：由 worker 在 **加载脚本之前** 注入，因此模块顶层读也拿得到。
+ * 内容来自 `plugins.configurations.<桥接插件>.scripts.<脚本 id>`，
+ * 内核已完成双源合并与 `${ENV}` 插值。
+ */
+let currentConfiguration = {};
+
+/**
+ * 注入本脚本的配置段。
+ *
+ * 由 worker 调用，脚本作者不需要也不应该调它。时机必须是「加载脚本之前」，
+ * 否则脚本在模块顶层读 `configuration()` 会拿到空对象，而那种失败看起来就像
+ * 「配置没生效」——最难归因的一类现场。
+ *
+ * @param {object|null} values 配置映射，可为 `null`（等价空）
+ */
+function setConfiguration(values) {
+    currentConfiguration = Object.assign({}, values || {});
+}
+
+/**
+ * 获取本脚本的配置段。
+ *
+ * 与 `ctx.configuration` 是同一份，差别只在拿到的时机：本函数在模块顶层就能调。
+ * 密钥写在这里比写在脚本目录的文件里更一致，也与 Java 插件的
+ * `PluginContext.configuration()` 同一条通道。
+ *
+ * @returns {object} 配置映射，保证非 `null`
+ */
+function configuration() {
+    return currentConfiguration;
+}
 
 /**
  * 权限拦截能表达的三态；刻意没有「放行」——脚本只能收紧，不能放宽内核已经允许的调用。
@@ -109,6 +156,37 @@ class ScriptError extends Error {
     constructor(message) {
         super(message);
         this.name = 'ScriptError';
+    }
+}
+
+/**
+ * 工具返回值：正文之外再带上给界面看的元数据。
+ *
+ * 普通返回值就是 `output`；只有需要一行摘要或失败标记时才用它。
+ * `summary` 是轨迹行上显示的一句话（给人看，不是给模型看），`terminal` 取不等于
+ * `COMPLETED` 的值时让界面出警示标记（例如 `FAILED` / `TIMEOUT`），`metadata`
+ * 里还可以放任意结构化事实（内核只透传、不解释）。
+ *
+ * 它**不进模型上下文**：模型看到的仍是 `output` 那段文本。
+ */
+class ToolResult {
+    /**
+     * 构造工具结果。
+     *
+     * @param {*} output 回灌给模型的正文（任意 JSON）
+     * @param {object} [details] `{summary, terminal, metadata}`，均可省略
+     */
+    constructor(output, details) {
+        const shape = details || {};
+        this.output = output === undefined ? null : output;
+        const merged = Object.assign({}, shape.metadata || {});
+        if (shape.summary !== undefined && shape.summary !== null) {
+            merged.summary = shape.summary;
+        }
+        if (shape.terminal !== undefined && shape.terminal !== null) {
+            merged.terminal = shape.terminal;
+        }
+        this.metadata = merged;
     }
 }
 
@@ -148,6 +226,40 @@ class ScriptContext {
     }
 
     /**
+     * 本脚本的配置段（`plugins.configurations.<桥接插件>.scripts.<脚本 id>`）。
+     *
+     * 内核已完成双源合并与 `${ENV}` 插值，因此这里拿到的就是最终值。
+     * 与模块级 `configuration()` 同一份。
+     *
+     * @returns {object} 配置映射，保证非 `null`
+     */
+    get configuration() {
+        return currentConfiguration;
+    }
+
+    /**
+     * 派生当前会话的那个会话；根会话（用户直接对话的那一个）为 `null`。
+     *
+     * 子代理有独立的会话，而协作状态往往要落在父会话上——该用哪个键只有内核知道，
+     * 模型无从指定。与 `sessionId` 的分工：后者是「我自己」，前者是「我属于谁」。
+     *
+     * @returns {string|null} 父会话标识
+     */
+    get parentSessionId() {
+        return this.payloadData.parentSessionId === undefined ? null : this.payloadData.parentSessionId;
+    }
+
+    /** 本次调用所在的 run；顶层回合或进程级调用为 `null`。 */
+    get runId() {
+        return this.payloadData.runId === undefined ? null : this.payloadData.runId;
+    }
+
+    /** 本次调用所在的 run 树根；不在任何 run 上时为 `null`。 */
+    get rootRunId() {
+        return this.payloadData.rootRunId === undefined ? null : this.payloadData.rootRunId;
+    }
+
+    /**
      * 发布一条事件。
      *
      * **尽力而为，没有返回值，也不要依赖它一定送达**：事件通道的契约是「可以丢」，
@@ -181,16 +293,17 @@ class ScriptContext {
  * 接受的参数一致——不一致的后果是模型按错误的签名调用，而错误只在运行期以
  * 「参数缺失」的形式出现。
  *
- * `readOnly` 参与内核 PLAN 模式的只读白名单，缺省 `false`（可写）：
- * 误声明只读等于给模型留了一个绕过 PLAN 的后门，因此只读必须是显式选择。
+ * 这里**没有** `readOnly`：哪些工具在某个模式下可用完全由用户决定
+ * （例如 plan 插件的 `jellyfish.json` 段 `plugins.configurations.jellyfish-plugin-plan.readOnlyTools`），
+ * 工具无法自称只读。传了它会被**当场拒绝**——静默忽略会让作者以为自己声明成功了。
  *
  * JS 里没有装饰器，因此用法是「声明 + 就地注册」，返回值就是那个函数：
  * ```js
- * const greet = tool({name: 'hello_greet', description: '按名字打招呼', readOnly: true},
+ * const greet = tool({name: 'hello_greet', description: '按名字打招呼'},
  *                    (params, ctx) => '你好，' + params.args.name);
  * ```
  *
- * @param {object} spec 声明：`name` / `description` / `parameters` / `required` / `readOnly`
+ * @param {object} spec 声明：`name` / `description` / `parameters` / `required`
  * @param {Function} handler 处理函数，签名 `(params, ctx)`；工具用 `params.args`
  * @returns {Function} 同一个处理函数，便于赋值给变量
  */
@@ -199,12 +312,14 @@ function tool(spec, handler) {
     if (tools.some((item) => item.name === spec.name)) {
         throw new ScriptError(`工具名重复声明: ${spec.name}`);
     }
+    if (spec.readOnly !== undefined) {
+        throw new ScriptError('readOnly 已不再支持：哪些工具可用由用户在各模式插件的 readOnlyTools 里声明');
+    }
     tools.push({
         name: spec.name,
         description: spec.description === undefined ? null : spec.description,
         parameters: spec.parameters || {},
         required: listOf(spec.required),
-        readOnly: Boolean(spec.readOnly),
     });
     handlers.set(`tool\u0000${spec.name}`, handler);
     return handler;
@@ -296,7 +411,11 @@ function commandOptions(commandName, handler) {
  * 声明一个类型级扩展点贡献。
  *
  * 支持的类型：`prompt` / `status_line` / `panel` / `permission` /
- * `session_persist` / `session_restore` / `session_delete` / `compaction`。
+ * `session_persist` / `session_restore` / `session_delete` / `compaction` /
+ * `tool_argument_pre` / `tool_result_post` / `turn_context` /
+ * `session_before_close` / `session_before_fork` / `compaction_pre` /
+ * `tool_activation` / `request_tuning` / `aging_strategy` / `input_transform` / `turn_before`。
+ * 带路由键的点（`model_catalog` 的 provider 名、`input_directive` 的标记）用 `handler`。
  *
  * 同一类型只能声明一个函数：清单里的 `contributions` 是「类型名集合」，
  * 它表达不了「同一个类型挂两个函数」，因此第二个声明会被当场拒绝，
@@ -350,6 +469,83 @@ function subscribe(...eventNames) {
 }
 
 /**
+ * 声明一个周期任务。
+ *
+ * 宿主（桥接插件）会按 `intervalSeconds` 的节奏调用它，**到点由宿主的定时器发起**：
+ * 脚本自己没有主循环、进程空闲还会被回收，因此脚本无法自行计时——这是在脚本侧做定时
+ * 唯一的形态。处理函数签名固定为 `(params, ctx)`（也可以不声明参数），返回值被忽略。
+ *
+ * **成功之后宿主会代发一次「界面内容失效」事件**：脚本发布不了那个事件
+ * （见 {@link EMITTABLE_EVENTS}），而周期任务的语义就是「我后台更新了自己贡献的内容」，
+ * 因此这一步由宿主代劳。没有它，定时抓到的新数据只会写进文件，而屏上那块面板不会自己重画。
+ *
+ * `intervalSeconds` 缺省 `5`、**下限 1 秒**。下限存在的理由不是安全，而是诚实：
+ * 宿主对界面内容的显示粒度就是秒级，比它更快的刷新只是重复问同一个数字。
+ * 不写这个键时由宿主按缺省与用户配置决定；写了的会被写进清单，而且还能被用户的配置段覆写：
+ * `plugins.configurations.<桥接插件>.scripts.<脚本 id>.schedules.<任务名>.intervalSeconds`
+ * （配了越界值会回落声明值并告警，不会让脚本起不来）。
+ *
+ * **失败只记日志、并且不会让这个任务停掉**，但也不会发失效事件——数据没变，
+ * 发一次只会让所有面板白跑一遍。因此任务体应当自己做该做的容错。
+ *
+ * ```js
+ * const refresh = periodic({ name: 'refresh', intervalSeconds: 60 }, (params, ctx) => {
+ *     return loadData();   // 返回值被忽略：成果要写进自己贡献的内容或文件里
+ * });
+ * ```
+ *
+ * @param {{name: string, intervalSeconds: number}} spec 声明：`name` 必填且在本脚本内唯一（宿主按它路由）
+ * @param {Function} handler 处理函数，签名 `(params, ctx)`
+ * @returns {Function} 同一个处理函数
+ */
+function periodic(spec, handler) {
+    requireName(spec, 'periodic');
+    const name = spec.name;
+    if (schedules.some((item) => item.name === name)) {
+        throw new ScriptError(`周期任务重复声明: ${name}`);
+    }
+    const entry = { name: name };
+    // `null` 与 `undefined` 同义（都是「没给」），与 Python 侧那个缺省值 `None` 取值一致
+    if (spec.intervalSeconds !== undefined && spec.intervalSeconds !== null) {
+        if (!Number.isInteger(spec.intervalSeconds)) {
+            throw new ScriptError(`周期任务 ${name} 的间隔必须是整数秒: `
+                + `${JSON.stringify(spec.intervalSeconds)}`);
+        }
+        if (spec.intervalSeconds < 1) {
+            throw new ScriptError(`周期任务 ${name} 的间隔不能小于 1 秒: ${spec.intervalSeconds}`);
+        }
+        entry.intervalSeconds = spec.intervalSeconds;
+    }
+    schedules.push(entry);
+    handlers.set(`periodic\u0000${name}`, handler);
+    return handler;
+}
+
+/**
+ * 声明一个带路由键的处理器（目前只有 `model_catalog` 需要）。
+ *
+ * 路由键由**用户配置**决定（provider 名），脚本无法从自己的声明里推出来，因此必须显式写出来。
+ * 它对应清单里的 `handlers` 条目，处理函数走的是「同键唯一」那一路（与工具、命令同构）。
+ *
+ * @param {{type: string, route: string}} spec 类型名与路由键
+ * @param {Function} fn 处理函数，签名 `(params, ctx)`
+ * @returns {Function} 同一个处理函数
+ */
+function handler(spec, fn) {
+    const type = spec && spec.type;
+    const route = spec && spec.route === undefined ? null : String(spec.route).trim();
+    if (!type || !route) {
+        throw new ScriptError('handler 需要非空的 type 与 route');
+    }
+    if (handlerDecls.some((item) => item.type === type && item.route === route)) {
+        throw new ScriptError(`处理器重复声明: ${type} route=${route}`);
+    }
+    handlerDecls.push({ type: type, route: route });
+    handlers.set(`${type}\u0000${route}`, fn);
+    return fn;
+}
+
+/**
  * 返回全部声明，供 worker 做清单校验与 `--dump-manifest` 使用。
  *
  * @returns {object} 声明表
@@ -361,6 +557,8 @@ function declarations() {
         commandOptions: commandOptionDecls,
         contributions: Array.from(contributionTypes).sort(),
         events: subscriptions.slice(),
+        handlers: handlerDecls.map((item) => Object.assign({}, item)),
+        schedules: schedules.map((item) => Object.assign({}, item)),
     };
 }
 
@@ -384,7 +582,6 @@ function dumpManifest(scriptId, entry) {
         description: item.description,
         parameters: item.parameters,
         required: item.required,
-        readOnly: item.readOnly,
     }));
     manifest.commands = commands.map((item) => ({
         name: item.name,
@@ -399,6 +596,20 @@ function dumpManifest(scriptId, entry) {
     }
     if (subscriptions.length > 0) {
         manifest.events = subscriptions.slice();
+    }
+    if (handlerDecls.length > 0) {
+        manifest.handlers = handlerDecls.map((item) => Object.assign({}, item));
+    }
+    if (schedules.length > 0) {
+        // 条目的 `name` 与可选的 `intervalSeconds` 在这里逐个点名：清单结构是协议的一部分，
+        // 不能靠「声明表里恰好没多别的键」来保证
+        manifest.schedules = schedules.map((item) => {
+            const entry = { name: item.name };
+            if (item.intervalSeconds !== undefined) {
+                entry.intervalSeconds = item.intervalSeconds;
+            }
+            return entry;
+        });
     }
     return manifest;
 }
@@ -430,6 +641,12 @@ function compareWith(manifest) {
     compareNames(problems, 'contributions', Array.from(contributionTypes).sort(),
         listOf(source.contributions));
     compareNames(problems, 'events', subscriptions.slice(), listOf(source.events));
+    // 路由处理器按 `type::route` 比：宿主下发的是这个键，路由名写错一样是「模型调不到」
+    compareNames(problems, 'handlers',
+        handlerDecls.map((item) => `${item.type}::${item.route}`),
+        listOf(source.handlers));
+    // 周期任务按名字比：名字写错的表现是「任务静默不跑」，而清单校验是唯一会有人看的地方
+    compareNames(problems, 'schedules', schedules.map((item) => item.name), namesOf(source.schedules));
     return problems;
 }
 
@@ -481,17 +698,65 @@ function compareNames(problems, label, declared, expected) {
  * 若散落成 if/else，新增一个扩展点时最容易漏掉的恰恰是「结果形状」那一半，
  * 而漏掉的后果是宿主拿到一个形状不对的载荷后静默地当成「脚本没返回内容」。
  */
-const dispatch = new Map();
+/**
+ * 扩展点实参构造与结果整形：键名来自 extension-points.json 的 args / shape 字段。
+ *
+ * 「有哪些扩展点、每个用哪个实参构造与整形」这份事实只有一份，就在那个 JSON 里；
+ * 这里只按它引用到的键提供实现。因此新增一个扩展点时，只要能复用既有键，
+ * 本文件一行都不用改——那份名单也不会再有第二份抄写。
+ */
+const ARGS = new Map();
+const SHAPES = new Map();
+
+/** 能力档文件位置：与 SDK 同目录（网关资源抽取目录下的 script/）。 */
+const CAPABILITY_FILE = path.join(HERE, 'extension-points.json');
 
 /**
- * 登记一个扩展点的实参构造与结果整形。
+ * 登记一个键对应的实参构造。
  *
- * @param {string} typeName 扩展点类型名
- * @param {Function} buildParams 载荷 → 处理函数的第一个参数
- * @param {Function|null} shape 处理函数返回值 → 协议结果
+ * @param {string} key 键名（来自能力档的 args 字段）
+ * @param {Function} builder 载荷 → 处理函数的第一个参数
  */
-function register(typeName, buildParams, shape) {
-    dispatch.set(typeName, { buildParams: buildParams, shape: shape });
+function defineArgs(key, builder) {
+    ARGS.set(key, builder);
+}
+
+/**
+ * 登记一个键对应的结果整形。
+ *
+ * @param {string} key 键名（来自能力档的 shape 字段）
+ * @param {Function} shaper 处理函数返回值 → 协议结果
+ */
+function defineShape(key, shaper) {
+    SHAPES.set(key, shaper);
+}
+
+/**
+ * 按能力档构建「类型名 → (实参构造, 结果整形)」。
+ *
+ * 文件缺失、或引用了本 SDK 没有实现的键时**当场报错**：那意味着 SDK 与能力档不是同一版，
+ * 静默降级只会把问题推迟到某次调用上，以「脚本没返回内容」的形态出现。
+ *
+ * @returns {Map<string, {buildParams: Function, shape: Function}>} 分发表
+ */
+function loadDispatch() {
+    let table;
+    try {
+        table = JSON.parse(fs.readFileSync(CAPABILITY_FILE, 'utf8'));
+    } catch (error) {
+        throw new ScriptError(`读取扩展点能力档失败: ${CAPABILITY_FILE} (${error.message})`);
+    }
+    const built = new Map();
+    for (const entry of table.in || []) {
+        const argsKey = entry.args;
+        const shapeKey = entry.shape;
+        if (!ARGS.has(argsKey) || !SHAPES.has(shapeKey)) {
+            throw new ScriptError(`扩展点能力档引用了 SDK 未实现的键: ${entry.type} `
+                + `(args=${argsKey}, shape=${shapeKey})；SDK 与能力档版本不一致`);
+        }
+        built.set(entry.type, { buildParams: ARGS.get(argsKey), shape: SHAPES.get(shapeKey) });
+    }
+    return built;
 }
 
 /**
@@ -508,17 +773,29 @@ function asMapping(result, fallback) {
 
 // ---- 工具 -----------------------------------------------------------------
 
-register('tool', (payload) => ({ args: payload.arguments || {} }),
-    // 任意 JSON 都能作为 output：字符串、数字、对象、数组都合法，
-    // 因为内核的截断与序列化对它们的处理是统一的（见 ToolCodec）
-    (result) => ({ output: result === undefined ? null : result }));
+defineArgs('tool', (payload) => ({ args: payload.arguments || {} }));
+
+// 任意 JSON 都能作为 output：字符串、数字、对象、数组都合法，
+// 因为内核的截断与序列化对它们的处理是统一的（见 ToolCodec）
+defineShape('tool', (result) => {
+    if (result instanceof ToolResult) {
+        const payload = { output: result.output };
+        if (Object.keys(result.metadata).length > 0) {
+            payload.metadata = result.metadata;
+        }
+        return payload;
+    }
+    return { output: result === undefined ? null : result };
+});
 
 // ---- 命令 -----------------------------------------------------------------
 
-register('command', (payload) => {
+defineArgs('command', (payload) => {
     const arguments_ = payload.arguments || {};
     return { tokens: listOf(arguments_.tokens), raw: arguments_.raw || '' };
-}, (result) => {
+});
+
+defineShape('command', (result) => {
     if (result === undefined || result === null) {
         return { kind: 'OK', output: null };
     }
@@ -541,7 +818,9 @@ register('command', (payload) => {
 // 与执行那条路**同一套形状**，只是两个实参为 null：约定「tokens === null ⇒ 这次是候选查询」。
 // 早先这里给的是空对象，于是「同一个函数回答两条路」（hasOptions: true）在用户按下补全键时
 // 才会炸，而报出来的是与候选查询看不出关系的 undefined 相关错误
-register('command_options', () => ({ tokens: null, raw: null }), (result) => {
+defineArgs('command_options', () => ({ tokens: null, raw: null }));
+
+defineShape('choices', (result) => {
     if (result === undefined || result === null) {
         return { choices: [] };
     }
@@ -583,12 +862,12 @@ function shapeText(result) {
     return mapping;
 }
 
-register('prompt', () => ({}), shapeText);
-register('status_line', () => ({}), shapeText);
+defineArgs('none', () => ({}));
+defineShape('text', shapeText);
 
 // ---- 面板 -----------------------------------------------------------------
 
-register('panel', () => ({}), (result) => {
+defineShape('panel', (result) => {
     if (result === undefined || result === null) {
         return null;
     }
@@ -604,7 +883,7 @@ register('panel', () => ({}), (result) => {
 
 // ---- 权限拦截 -------------------------------------------------------------
 
-register('permission', () => ({}), (result) => {
+defineShape('permission', (result) => {
     if (result === undefined || result === null || result === false) {
         return { verdict: 'ABSTAIN' };
     }
@@ -674,9 +953,10 @@ function shapeNothing() {
     return null;
 }
 
-register('session_persist', (payload) => ({ snapshot: payload.snapshot }), shapeNothing);
+defineArgs('snapshot', (payload) => ({ snapshot: payload.snapshot }));
+defineShape('nothing', shapeNothing);
 
-register('session_restore', () => ({}), (result) => {
+defineShape('sessions', (result) => {
     if (result === undefined || result === null) {
         return { sessions: [] };
     }
@@ -694,18 +974,428 @@ register('session_restore', () => ({}), (result) => {
     return shaped;
 });
 
-register('session_delete', (payload) => ({ sessionId: payload.sessionId }), shapeNothing);
+defineArgs('session_id', (payload) => ({ sessionId: payload.sessionId }));
 
 // ---- 压缩策略 -------------------------------------------------------------
 
-register('compaction', (payload) => Object.assign({}, payload || {}), (result) => asMapping(result, null));
+defineArgs('request', (payload) => Object.assign({}, payload || {}));
+defineShape('mapping', (result) => asMapping(result, null));
+
+// ---- 二期打通的能力档（数据进出、不在渲染线程/启动期）------------------------
+
+/** 参数改写能表达的三态；刻意没有「放行」——改写之后照旧要过权限判定。 */
+const ARGUMENT_OUTCOMES = Object.freeze(['ABSTAIN', 'REPLACE', 'DENY']);
+
+/**
+ * 参数改写裁定的整形。
+ *
+ * 接受的写法：`null` / `false`（不改）、`true`（拒绝）、原因字符串（带理由的拒绝）、
+ * `{arguments: {...}}`（替换）、`{outcome, arguments, reason}`。
+ * 未知 outcome 一律报错而不是静默按「不改」处理。
+ */
+defineShape('argument_decision', (result) => {
+    if (result === undefined || result === null || result === false) {
+        return { outcome: 'ABSTAIN' };
+    }
+    if (result === true) {
+        return { outcome: 'DENY' };
+    }
+    if (typeof result === 'string') {
+        return { outcome: 'DENY', reason: result };
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('参数改写返回值必须是 null、布尔、原因字符串或 {outcome, arguments, reason}');
+    }
+    if (mapping.outcome !== undefined) {
+        const outcome = String(mapping.outcome || '').trim().toUpperCase();
+        if (!ARGUMENT_OUTCOMES.includes(outcome)) {
+            throw new ScriptError(`outcome 必须是 ${ARGUMENT_OUTCOMES.join(' / ')}，`
+                + `实际是 ${JSON.stringify(mapping.outcome)}`);
+        }
+        const shaped = { outcome: outcome };
+        if (outcome === 'REPLACE') {
+            shaped.arguments = mapping.arguments || {};
+        }
+        if (mapping.reason !== undefined && mapping.reason !== null) {
+            shaped.reason = mapping.reason;
+        }
+        return shaped;
+    }
+    if (mapping.arguments !== undefined) {
+        return { outcome: 'REPLACE', arguments: mapping.arguments || {} };
+    }
+    throw new ScriptError('参数改写返回值含未知键，允许：outcome / arguments / reason');
+});
+
+defineArgs('tool_argument_pre', (payload) => ({
+    agentId: payload.agentId === undefined ? null : payload.agentId,
+    toolName: payload.toolName,
+    arguments: payload.arguments || {},
+    source: payload.source,
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+}));
+
+/**
+ * 结果整形的整形：`null` 表示不改；`{output, metadata}` 只改给出的那一项。
+ *
+ * **输出保持原始类型**：字符串就是字符串、结构化对象就是结构化对象。
+ */
+defineShape('result_adjustment', (result) => {
+    if (result === undefined || result === null) {
+        return null;
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('结果整形返回值必须是 null 或 {output, metadata}');
+    }
+    const shaped = {};
+    if (mapping.output !== undefined && mapping.output !== null) {
+        shaped.output = mapping.output;
+    }
+    if (mapping.metadata !== undefined && mapping.metadata !== null) {
+        shaped.metadata = mapping.metadata;
+    }
+    return Object.keys(shaped).length > 0 ? shaped : null;
+});
+
+defineArgs('tool_result_post', (payload) => ({
+    agentId: payload.agentId === undefined ? null : payload.agentId,
+    toolName: payload.toolName,
+    arguments: payload.arguments || {},
+    output: payload.output === undefined ? null : payload.output,
+    metadata: payload.metadata || {},
+    failed: Boolean(payload.failed),
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+}));
+
+defineShape('turn_context', (result) => {
+    if (result === undefined || result === null) {
+        return null;
+    }
+    if (typeof result === 'string') {
+        return { text: result };
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('回合上下文返回值必须是 null、字符串或 {text: ...}');
+    }
+    return mapping;
+});
+
+defineArgs('turn_context', (payload) => ({
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+    userInput: payload.userInput || '',
+    nested: Boolean(payload.nested),
+}));
+
+/** 生命周期裁定的整形：`null` / `false` 放行，`true` 拦下，字符串是带理由的拦下。 */
+defineShape('lifecycle_verdict', (result) => {
+    if (result === undefined || result === null || result === false) {
+        return { cancel: false };
+    }
+    if (result === true) {
+        return { cancel: true };
+    }
+    if (typeof result === 'string') {
+        return { cancel: true, reason: result };
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('生命周期裁定必须是 null、布尔、原因字符串或 {cancel, reason}');
+    }
+    const shaped = { cancel: Boolean(mapping.cancel) };
+    if (mapping.reason !== undefined && mapping.reason !== null) {
+        shaped.reason = mapping.reason;
+    }
+    return shaped;
+});
+
+defineArgs('session_before_close', (payload) => ({
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+    agentId: payload.agentId === undefined ? null : payload.agentId,
+    reason: payload.reason,
+    vetoSupported: Boolean(payload.vetoSupported),
+}));
+
+defineArgs('session_before_fork', (payload) => ({
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+    agentId: payload.agentId === undefined ? null : payload.agentId,
+    messageId: payload.messageId === undefined ? null : payload.messageId,
+    cutIndex: payload.cutIndex,
+    messageCount: payload.messageCount,
+}));
+
+/** 压缩指令的整形：`null` 放行，`{cancel: true}` 拦下，`{keepRecent: n}` 改保留条数。 */
+defineShape('compaction_directive', (result) => {
+    if (result === undefined || result === null) {
+        return null;
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('压缩指令必须是 null 或 {cancel, reason, keepRecent}');
+    }
+    if (mapping.cancel) {
+        const shaped = { cancel: true };
+        if (mapping.reason !== undefined && mapping.reason !== null) {
+            shaped.reason = mapping.reason;
+        }
+        return shaped;
+    }
+    if (mapping.keepRecent !== undefined && mapping.keepRecent !== null) {
+        return { keepRecent: mapping.keepRecent };
+    }
+    return null;
+});
+
+defineArgs('compaction_pre', (payload) => ({
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+    trigger: payload.trigger,
+    messageCount: payload.messageCount,
+    tokensBefore: payload.tokensBefore,
+    keepRecentMessages: payload.keepRecentMessages,
+    previousBoundaryMessageId: payload.previousBoundaryMessageId === undefined
+        ? null : payload.previousBoundaryMessageId,
+}));
+
+/** 模型目录的整形：空列表含义是「我不表态」，回落成配置里的 models。 */
+defineShape('model_catalog', (result) => {
+    if (result === undefined || result === null) {
+        return { models: [] };
+    }
+    if (Array.isArray(result)) {
+        return { models: result };
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('模型目录返回值必须是 null、列表或 {models: [...]}');
+    }
+    const shaped = Object.assign({}, mapping);
+    if (shaped.models === undefined) {
+        shaped.models = [];
+    }
+    return shaped;
+});
+
+defineArgs('model_catalog', (payload) => ({
+    providerName: payload.providerName,
+    providerType: payload.providerType === undefined ? null : payload.providerType,
+}));
+
+// ---- 热路径与提交路径的扩展点（三期）-------------------------------------
+
+/**
+ * 工具激活裁定的整形。
+ *
+ * `null` = 不表态（后续插件继续）；`true` = 明确要它可见（能压过后面的插件）；
+ * `false` / 原因字符串 = 明确隐藏。布尔会把「不想管」与「明确要它可见」变成同一个值，
+ * 因此这里把它们区分开。
+ */
+defineShape('tool_activation', (result) => {
+    if (result === undefined || result === null) {
+        return null;
+    }
+    if (result === true) {
+        return { visible: true };
+    }
+    if (result === false) {
+        return { hidden: true };
+    }
+    if (typeof result === 'string') {
+        return { hidden: true, reason: result };
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('工具激活返回值必须是 null、布尔、原因字符串或 {visible, hidden, reason}');
+    }
+    if (mapping.visible) {
+        return { visible: true };
+    }
+    if (mapping.hidden) {
+        const shaped = { hidden: true };
+        if (mapping.reason !== undefined && mapping.reason !== null) {
+            shaped.reason = mapping.reason;
+        }
+        return shaped;
+    }
+    return null;
+});
+
+defineArgs('tool_activation', (payload) => ({
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+    agentId: payload.agentId === undefined ? null : payload.agentId,
+    toolName: payload.toolName,
+    description: payload.description === undefined ? null : payload.description,
+}));
+
+/** 请求调优的整形：`null` 表示不改；只读已知字段（cacheKey / cacheRetention / cacheBreakpoints）。 */
+defineShape('request_tuning', (result) => {
+    if (result === undefined || result === null) {
+        return null;
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('请求调优返回值必须是 null 或 {cacheKey, cacheRetention, cacheBreakpoints}');
+    }
+    return mapping;
+});
+
+defineArgs('request_tuning', (payload) => ({
+    providerType: payload.providerType === undefined ? null : payload.providerType,
+    modelId: payload.modelId === undefined ? null : payload.modelId,
+    defaultCacheKey: payload.defaultCacheKey === undefined ? null : payload.defaultCacheKey,
+    messageCount: payload.messageCount,
+    toolCount: payload.toolCount,
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+}));
+
+/** 老化策略的整形：`null` 表示不改；只读已知字段。 */
+defineShape('aging_strategy', (result) => {
+    if (result === undefined || result === null) {
+        return null;
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('老化策略返回值必须是 null 或 {keepRecentMessages, agingPercent, stubText}');
+    }
+    return mapping;
+});
+
+defineArgs('aging_strategy', (payload) => ({
+    messageCount: payload.messageCount,
+    usedTokens: payload.usedTokens,
+    budgetTokens: payload.budgetTokens,
+    compressionBoundary: payload.compressionBoundary,
+    defaultKeepRecentMessages: payload.defaultKeepRecentMessages,
+    defaultAgingPercent: payload.defaultAgingPercent,
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+}));
+
+/**
+ * 输入改写的整形：`null` 不改；字符串 = 改成这句；
+ * `{handled: true, notice: ...}` = 接过去、不进对话（像命令那样，只给用户一句说明）。
+ */
+defineShape('input_transform', (result) => {
+    if (result === undefined || result === null) {
+        return null;
+    }
+    if (typeof result === 'string') {
+        return { text: result };
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('输入改写返回值必须是 null、字符串或 {text, handled, notice}');
+    }
+    if (mapping.handled) {
+        const shaped = { handled: true };
+        if (mapping.notice !== undefined && mapping.notice !== null) {
+            shaped.notice = mapping.notice;
+        }
+        return shaped;
+    }
+    if (mapping.text !== undefined && mapping.text !== null) {
+        return { text: mapping.text };
+    }
+    return null;
+});
+
+defineArgs('input_transform', (payload) => ({
+    text: payload.text || '',
+    source: payload.source,
+    hasSession: Boolean(payload.hasSession),
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+}));
+
+/** 回合前指令的整形：`null` 放行；`true` / 原因字符串 = 拦下；`{input: ...}` = 改写输入。 */
+defineShape('turn_before', (result) => {
+    if (result === undefined || result === null || result === false) {
+        return null;
+    }
+    if (result === true) {
+        return { cancel: true };
+    }
+    if (typeof result === 'string') {
+        return { cancel: true, reason: result };
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('回合前指令必须是 null、布尔、原因字符串或 {cancel, input}');
+    }
+    if (mapping.cancel) {
+        const shaped = { cancel: true };
+        if (mapping.reason !== undefined && mapping.reason !== null) {
+            shaped.reason = mapping.reason;
+        }
+        return shaped;
+    }
+    if (mapping.input !== undefined && mapping.input !== null) {
+        return { input: mapping.input };
+    }
+    return null;
+});
+
+defineArgs('turn_before', (payload) => ({
+    agentId: payload.agentId === undefined ? null : payload.agentId,
+    input: payload.input || '',
+    nested: Boolean(payload.nested),
+    depth: payload.depth,
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+}));
+
+/**
+ * 输入指令的整形：`null` / `{unclaimed: true}` 不认领；字符串或 `{toolName, arguments}`
+ * 声明一次工具调用（真正的执行走内核完整的权限与审批链）。
+ */
+defineShape('input_directive', (result) => {
+    if (result === undefined || result === null) {
+        return null;
+    }
+    if (typeof result === 'string') {
+        return { toolName: result, arguments: {} };
+    }
+    const mapping = asMapping(result, null);
+    if (mapping === null) {
+        throw new ScriptError('输入指令返回值必须是 null、工具名字符串或 {toolName, arguments}');
+    }
+    if (mapping.unclaimed || !mapping.toolName) {
+        return null;
+    }
+    return { toolName: mapping.toolName, arguments: mapping.arguments || {} };
+});
+
+defineArgs('input_directive', (payload) => ({
+    marker: payload.marker,
+    input: payload.input || '',
+    sessionId: payload.sessionId === undefined ? null : payload.sessionId,
+}));
 
 // ---- 事件 -----------------------------------------------------------------
 
-register('event', (payload) => ({ event: payload }),
+defineArgs('event', (payload) => ({ event: payload }));
+
+// ---- 周期任务 -------------------------------------------------------------
+
+defineArgs('periodic', (payload) => ({ name: payload.name }));
+
+/**
+ * 类型名 → (实参构造, 结果整形)。
+ *
+ * 事件与周期任务都**不是扩展点**（它们是协议里的方法：前者由内核通知脚本，
+ * 后者由宿主定时器发起），因此能力档里没有它们；但两者走同一张分发表，
+ * 所以要在加载能力档之后各补一条。
+ */
+const dispatch = loadDispatch();
+dispatch.set('event', {
+    buildParams: ARGS.get('event'),
     // 事件处理器的返回值没有去处：事件是通知，不是请求。返回 null 让调用方
     // 不必因为脚本「顺手 return 了一个值」而报错
-    () => null);
+    shape: () => null,
+});
+dispatch.set('periodic', {
+    buildParams: ARGS.get('periodic'),
+    // 周期任务的返回值同样没有接收方：它不进任何人的上下文，也不落盘
+    shape: shapeNothing,
+});
 
 /**
  * 按类型分发一次调用。
@@ -714,14 +1404,17 @@ register('event', (payload) => ({ event: payload }),
  * 「失败」这条路，而不是返回一个看起来正常的空结果——后者会让模型以为
  * 「脚本说没有内容」，问题就此静默。
  *
+ * **handler 可以是 async 的**（返回 Promise），这里会等它；同步 handler 行为不变。
+ * 因此本函数返回 Promise，调用方必须 `await`。
+ *
  * @param {string} scriptId 脚本标识，用于填上下文
  * @param {string} typeName 扩展点类型名
  * @param {string} routeKey 路由键（工具名 / 命令名）；类型级扩展点用类型名
  * @param {object} payload 请求载荷
  * @param {Function|null} emitter 事件发布回调（由 worker 注入）；`null` 表示当前上下文不支持发布事件
- * @returns {*} 结果载荷，可为 `null`
+ * @returns {Promise<*>} 结果载荷，可为 `null`
  */
-function invoke(scriptId, typeName, routeKey, payload, emitter) {
+async function invoke(scriptId, typeName, routeKey, payload, emitter) {
     const lookupKey = routeKey === undefined || routeKey === null ? typeName : routeKey;
     const handler = handlers.get(`${typeName}\u0000${lookupKey}`);
     if (!handler) {
@@ -732,7 +1425,7 @@ function invoke(scriptId, typeName, routeKey, payload, emitter) {
         throw new ScriptError(`未知的扩展点类型: ${typeName}`);
     }
     const context = new ScriptContext(scriptId, payload, emitter);
-    const result = handler(entry.buildParams(payload || {}), context);
+    const result = await handler(entry.buildParams(payload || {}), context);
     return entry.shape ? entry.shape(result) : null;
 }
 
@@ -764,13 +1457,18 @@ function listOf(value) {
 module.exports = {
     EMITTABLE_EVENTS,
     ScriptError,
+    ToolResult,
     ensureResolvable,
     ScriptContext,
+    configuration,
+    setConfiguration,
     tool,
+    handler,
     command,
     commandOptions,
     contributes,
     subscribe,
+    periodic,
     declarations,
     dumpManifest,
     compareWith,

@@ -131,7 +131,7 @@ def _install_orphan_watchdog(script_id):
     signal.setitimer(signal.ITIMER_REAL, ORPHAN_CHECK_SECONDS, ORPHAN_CHECK_SECONDS)
 
 
-def serve(sock, script_id, script_dir, entry_name, manifest, strict, idle_seconds):
+def serve(sock, script_id, script_dir, entry_name, manifest, strict, idle_seconds, config=None):
     """worker 主函数，由网关在 ``fork`` 之后直接调用。
 
     :param sock: 与网关通信的套接字（已就绪的一侧）
@@ -141,6 +141,7 @@ def serve(sock, script_id, script_dir, entry_name, manifest, strict, idle_second
     :param manifest: 网关下发的清单摘要，用于一致性校验
     :param strict: 严格校验失败时是否拒绝服务
     :param idle_seconds: 空闲多久后自行退出（网关也会做同一件事，这里是双保险）
+    :param config: 本脚本的配置段（``scripts.<脚本 id>``），可为 ``None``
     :return: 退出码
     """
     stopping = _Stopping()
@@ -151,6 +152,9 @@ def serve(sock, script_id, script_dir, entry_name, manifest, strict, idle_second
 
     if script_dir not in sys.path:
         sys.path.insert(0, script_dir)
+
+    # 必须先注入配置再加载脚本：脚本可能在模块顶层就读它，而那种失败看起来就像「配置没生效」
+    sdk.set_configuration(config)
 
     try:
         load_script(script_id, script_dir, entry_name)
@@ -302,12 +306,22 @@ def _route_key(type_name, payload):
     """从请求载荷里取路由键。
 
     路由键由请求字段决定而不是协议字段：宿主只下发 ``type`` 与 ``request``，
-    因此 tool / command 的名字只能从请求里读。其余扩展点是类型级的，路由键就是类型名。
+    因此 tool / command / model_catalog / input_directive 的名字只能从请求里读。
+    其余扩展点是类型级的，路由键就是类型名。
     """
     if type_name == "tool":
         return payload.get("tool")
     if type_name in ("command", "command_options"):
         return payload.get("command")
+    if type_name == "model_catalog":
+        # 路由键是 provider 名（来自用户配置），不是类型名——它只能从请求里读
+        return payload.get("providerName")
+    if type_name == "input_directive":
+        # 路由键是标记本身（! / @）
+        return payload.get("marker")
+    if type_name == "periodic":
+        # 路由键是任务名：它由宿主的定时器按清单发起，因此只能从请求里读
+        return payload.get("name")
     return type_name
 
 

@@ -23,6 +23,40 @@ import sys
 # 扩展点类型名 → 处理函数。类型名与 Java 侧 codec 的 typeName() 必须逐字一致。
 _HANDLERS = {}
 
+#: 处理函数 → 它声明的关键字参数名集合（``None`` 表示接受全部，即带 ``**kwargs``）。
+#: 按函数对象缓存（函数本身被 ``_HANDLERS`` 持有，不存在回收后 id 复用的问题）。
+_SIGNATURE_CACHE = {}
+
+
+def _accepted_kwargs(func):
+    """取处理函数声明的关键字参数名。
+
+    **为什么要看签名**：扩展点的实参由能力档的 args 函数给出，而处理器往往只用得上其中一两个
+    （例如 ``session_before_close`` 只看 ``veto_supported``）。强制作者把用不到的参数也
+    一个一个列进签名，是把「协议里有什么」泄到「实现要用什么」上；不列又会在调用时报
+    「unexpected keyword argument」——两种都不好。
+
+    因此这里采「声明什么就给什么」：签了名的参数才传，带 ``**kwargs`` 的收全部。
+    这与命令候选查询那套签名约束同源（那里也只能给函数声明过的槽位）。
+
+    :param func: 处理函数
+    :return: 声明的参数名集合；``None`` 表示接受全部
+    """
+    if func in _SIGNATURE_CACHE:
+        return _SIGNATURE_CACHE[func]
+    try:
+        parameters = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        # 没有可内省的签名（内建函数、某些 C 扩展）：按「收全部」处理，保持原行为
+        _SIGNATURE_CACHE[func] = None
+        return None
+    if any(item.kind == inspect.Parameter.VAR_KEYWORD for item in parameters.values()):
+        accepted = None
+    else:
+        accepted = frozenset(name for name in parameters if name != "ctx")
+    _SIGNATURE_CACHE[func] = accepted
+    return accepted
+
 #: 候选查询调用时固定填 ``None`` 的两个实参：约定「``tokens is None`` ⇒ 这次是候选查询」。
 #: 放在 SDK 而不是某个装饰器里，是为了让 ``has_options=True`` 与 ``@command_options``
 #: 两个入口共用同一份约定——两处各写一遍的话，它们迟早会不一致
@@ -33,9 +67,13 @@ _TOOLS = []
 _COMMANDS = []
 _COMMAND_OPTIONS = []
 _SUBSCRIPTIONS = []
+_SCHEDULES = []
 
 # 声明过的贡献类型，用于检测「同一类型声明了两个函数」。
 _CONTRIBUTION_TYPES = set()
+
+#: 带路由键、且路由键来自用户配置的处理器声明（目前只有 ``model_catalog``）。
+_HANDLERS_DECL = []
 
 # 可以发布的事件名（与 Java 侧 ScriptEventFactory 的白名单一致）。
 #
@@ -48,6 +86,34 @@ _CONTRIBUTION_TYPES = set()
 # 真正的裁决仍在宿主侧，因此这份清单哪怕过时也只会多一句提醒，不会吞掉事件。
 EMITTABLE_EVENTS = frozenset(("PluginNotificationEvent", "ConfigWarningEvent"))
 
+#: 本脚本的配置段：由 worker 在 **import 脚本之前** 注入，因此模块顶层读也拿得到。
+#: 内容来自 ``plugins.configurations.<桥接插件>.scripts.<脚本 id>``，
+#: 内核已完成双源合并与 ``${ENV}`` 插值。
+_CONFIGURATION = {}
+
+
+def set_configuration(values):
+    """注入本脚本的配置段。
+
+    由 worker 调用，脚本作者不需要也不应该调它。时机必须是「import 脚本之前」，
+    否则脚本在模块顶层读 ``configuration()`` 会拿到空映射，而那种失败看起来就像
+    「配置没生效」——最难归因的一类现场。
+
+    :param values: 配置映射，可为 ``None``（等价空）
+    """
+    global _CONFIGURATION
+    _CONFIGURATION = dict(values or {})
+
+
+def configuration():
+    """获取本脚本的配置段。
+
+    与 ``ctx.configuration`` 是同一份，差别只在拿到的时机：本函数在模块顶层就能调。
+
+    :return: 只读用途的配置映射，保证非 ``None``
+    """
+    return _CONFIGURATION
+
 
 class ScriptError(Exception):
     """脚本侧的可预期失败。
@@ -56,6 +122,35 @@ class ScriptError(Exception):
     （工具调用表现为「工具执行失败：…」，回合继续）。**不要**用返回值里的
     ``{"error": ...}`` 表达失败——那会被当成正常输出，语义静默错位。
     """
+
+
+class ToolResult:
+    """工具返回值：正文之外再带上给界面看的元数据。
+
+    普通返回值就是 ``output``；只有需要一行摘要或失败标记时才用它。
+    ``summary`` 是轨迹行上显示的一句话（给人看，不是给模型看），``terminal`` 取不等于
+    ``COMPLETED`` 的值时让界面出警示标记（例如 ``FAILED`` / ``TIMEOUT``），``metadata``
+    里还可以放任意结构化事实（内核只透传、不解释）。
+
+    它**不进模型上下文**：模型看到的仍是 ``output`` 那段文本。
+
+    :param output: 回灌给模型的正文（任意 JSON）
+    :param summary: 单行摘要，可为 ``None``
+    :param terminal: 终止原因，可为 ``None``（缺省表示正常完成）
+    :param metadata: 其它结构化元数据，可为 ``None``
+    """
+
+    def __init__(self, output=None, summary=None, terminal=None, metadata=None):
+        self.output = output
+        merged = dict(metadata or {})
+        if summary is not None:
+            merged["summary"] = summary
+        if terminal is not None:
+            merged["terminal"] = terminal
+        self.metadata = merged
+
+    def __repr__(self):
+        return "ToolResult(output=%r, metadata=%r)" % (self.output, self.metadata)
 
 
 class ScriptContext:
@@ -85,6 +180,35 @@ class ScriptContext:
         """原始请求载荷（只读用途，改它不会影响宿主）。"""
         return dict(self._payload)
 
+    @property
+    def configuration(self):
+        """本脚本的配置段（``plugins.configurations.<桥接插件>.scripts.<脚本 id>``）。
+
+        内核已完成双源合并与 ``${ENV}`` 插值，因此这里拿到的就是最终值。
+        与模块级 ``configuration()`` 同一份；密钥写在这里比写在脚本目录的文件里更一致，
+        也与 Java 插件的 ``PluginContext.configuration()`` 同一条通道。
+        """
+        return _CONFIGURATION
+
+    @property
+    def parent_session_id(self):
+        """派生当前会话的那个会话；根会话（用户直接对话的那一个）为 ``None``。
+
+        子代理有独立的会话，而协作状态往往要落在父会话上——该用哪个键只有内核知道，
+        模型无从指定。与 ``session_id`` 的分工：后者是「我自己」，前者是「我属于谁」。
+        """
+        return self._payload.get("parentSessionId")
+
+    @property
+    def run_id(self):
+        """本次调用所在的 run；顶层回合或进程级调用为 ``None``。"""
+        return self._payload.get("runId")
+
+    @property
+    def root_run_id(self):
+        """本次调用所在的 run 树根；不在任何 run 上时为 ``None``。"""
+        return self._payload.get("rootRunId")
+
     def emit_event(self, name, payload=None):
         """发布一条事件。
 
@@ -113,7 +237,7 @@ class ScriptContext:
 # ---------------------------------------------------------------- 装饰器
 
 
-def tool(name, description=None, parameters=None, required=None, read_only=False):
+def tool(name, description=None, parameters=None, required=None):
     """声明一个工具。
 
     ``parameters`` 是 JSON Schema 的 ``properties`` 部分，``required`` 是必填参数名列表：
@@ -121,8 +245,9 @@ def tool(name, description=None, parameters=None, required=None, read_only=False
     接受的参数一致——不一致的后果是模型按错误的签名调用，而错误只在运行期以
     「参数缺失」的形式出现。
 
-    ``read_only`` 参与内核 PLAN 模式的只读白名单，缺省 ``False``（可写）：
-    误声明只读等于给模型留了一个绕过 PLAN 的后门，因此只读必须是显式选择。
+    这里**没有** ``read_only`` 参数：哪些工具在某个模式下可用完全由用户决定
+    （例如 plan 插件的 ``jellyfish.json`` 段 ``plugins.configurations.jellyfish-plugin-plan.readOnlyTools``），
+    工具无法自称只读——那会让名单只增不减，用户没法把工具拿出来。
     """
 
     def decorate(func):
@@ -133,7 +258,6 @@ def tool(name, description=None, parameters=None, required=None, read_only=False
             "description": description or _first_doc_line(func),
             "parameters": parameters or {},
             "required": list(required or []),
-            "readOnly": bool(read_only),
             "handler": func,
         })
         _HANDLERS[("tool", name)] = func
@@ -289,7 +413,11 @@ def contributes(type_name):
     """声明一个类型级扩展点贡献。
 
     支持的类型：``prompt`` / ``status_line`` / ``panel`` / ``permission`` /
-    ``session_persist`` / ``session_restore`` / ``session_delete`` / ``compaction``。
+    ``session_persist`` / ``session_restore`` / ``session_delete`` / ``compaction`` /
+    ``tool_argument_pre`` / ``tool_result_post`` / ``turn_context`` /
+    ``session_before_close`` / ``session_before_fork`` / ``compaction_pre`` /
+    ``tool_activation`` / ``request_tuning`` / ``aging_strategy`` / ``input_transform`` / ``turn_before``。
+    带路由键的点（``model_catalog`` 的 provider 名、``input_directive`` 的标记）用 ``handler``。
 
     同一类型只能声明一个函数：清单里的 ``contributions`` 是「类型名集合」，
     它表达不了「同一个类型挂两个函数」，因此第二个声明会被当场拒绝，
@@ -336,7 +464,73 @@ def subscribe(*event_names):
     return decorate
 
 
+def periodic(name, interval_seconds=None):
+    """声明一个周期任务。
+
+    宿主（桥接插件）会按 ``interval_seconds`` 的节奏调用它，**到点由宿主的定时器发起**：
+    脚本自己没有主循环、进程空闲还会被回收，因此脚本无法自行计时——这是在脚本侧做定时
+    唯一的形态。被装饰的函数签名固定为 ``(ctx)``（也可以不声明参数），返回值被忽略。
+
+    **成功之后宿主会代发一次「界面内容失效」事件**：脚本发布不了那个事件
+    （见 :data:`EMITTABLE_EVENTS`），而周期任务的语义就是「我后台更新了自己贡献的内容」，
+    因此这一步由宿主代劳。没有它，定时抓到的新数据只会写进文件，而屏上那块面板不会自己重画。
+
+    ``interval_seconds`` 缺省 ``5``、**下限 1 秒**。下限存在的理由不是安全，而是诚实：
+    宿主对界面内容的显示粒度就是秒级，比它更快的刷新只是重复问同一个数字。
+    它还可以被用户的配置段覆写：``plugins.configurations.<桥接插件>.scripts.<脚本 id>.schedules.<任务名>.intervalSeconds``
+    （配了越界值会回落声明值并告警，不会让脚本起不来）。
+
+    **失败只记日志、并且不会让这个任务停掉**，但也不会发失效事件——数据没变，
+    发一次只会让所有面板白跑一遍。因此任务体应当自己做该做的容错。
+
+    :param name: 任务名，在同一个脚本内唯一（宿主按它路由）
+    :param interval_seconds: 间隔秒数，可为 ``None``（用宿主缺省）
+    """
+
+    def decorate(func):
+        if any(item["name"] == name for item in _SCHEDULES):
+            raise ScriptError("周期任务重复声明: %s" % name)
+        entry = {"name": name, "handler": func}
+        if interval_seconds is not None:
+            try:
+                seconds = int(interval_seconds)
+            except (TypeError, ValueError):
+                raise ScriptError("周期任务 %s 的间隔必须是整数秒: %r" % (name, interval_seconds))
+            if seconds < 1:
+                raise ScriptError("周期任务 %s 的间隔不能小于 1 秒: %d" % (name, seconds))
+            entry["intervalSeconds"] = seconds
+        _SCHEDULES.append(entry)
+        _HANDLERS[("periodic", name)] = func
+        return func
+
+    return decorate
+
+
 # ---------------------------------------------------------------- 清单生成
+
+
+def handler(type_name, route):
+    """声明一个带路由键的处理器（目前只有 ``model_catalog`` 需要）。
+
+    路由键由**用户配置**决定（provider 名），脚本无法从自己的声明里推出来，因此必须显式写出来。
+    它对应清单里的 ``handlers`` 条目，而处理函数走的是「同键唯一」那一路（与工具、命令同构）。
+
+    :param type_name: 扩展点类型名（如 ``model_catalog``）
+    :param route: 路由键（如 provider 名）
+    """
+
+    def decorate(func):
+        cleaned = None if route is None else str(route).strip()
+        if not cleaned:
+            raise ScriptError("handler 的 route 不能为空")
+        if any(item["type"] == type_name and item["route"] == cleaned
+               for item in _HANDLERS_DECL):
+            raise ScriptError("处理器重复声明: %s route=%s" % (type_name, cleaned))
+        _HANDLERS_DECL.append({"type": type_name, "route": cleaned})
+        _HANDLERS[(type_name, cleaned)] = func
+        return func
+
+    return decorate
 
 
 def declarations():
@@ -347,6 +541,8 @@ def declarations():
         "commandOptions": _COMMAND_OPTIONS,
         "contributions": sorted(_CONTRIBUTION_TYPES),
         "events": list(_SUBSCRIPTIONS),
+        "handlers": [dict(item) for item in _HANDLERS_DECL],
+        "schedules": [dict(item) for item in _SCHEDULES],
     }
 
 
@@ -365,7 +561,6 @@ def dump_manifest(script_id=None, entry="main.py"):
             "description": item["description"],
             "parameters": item["parameters"],
             "required": item["required"],
-            "readOnly": item["readOnly"],
         }
         for item in _TOOLS
     ]
@@ -380,6 +575,13 @@ def dump_manifest(script_id=None, entry="main.py"):
         manifest["contributions"] = sorted(_CONTRIBUTION_TYPES)
     if _SUBSCRIPTIONS:
         manifest["events"] = list(_SUBSCRIPTIONS)
+    if _HANDLERS_DECL:
+        manifest["handlers"] = [dict(item) for item in _HANDLERS_DECL]
+    if _SCHEDULES:
+        # ``handler`` 是运行期才有的东西，不进清单（与 tools / commands 同一口径）
+        manifest["schedules"] = [
+            {key: value for key, value in item.items() if key != "handler"} for item in _SCHEDULES
+        ]
     return manifest
 
 
@@ -407,6 +609,13 @@ def compare_with(manifest):
     _compare_names(problems, "contributions", sorted(_CONTRIBUTION_TYPES),
                    list(manifest.get("contributions", [])))
     _compare_names(problems, "events", _SUBSCRIPTIONS, list(manifest.get("events", [])))
+    # 路由处理器按 ``type::route`` 比：宿主下发的是这个键，路由名写错一样是「模型调不到」
+    _compare_names(problems, "handlers",
+                   [item["type"] + "::" + item["route"] for item in _HANDLERS_DECL],
+                   list(manifest.get("handlers", [])))
+    # 周期任务按名字比：名字写错的表现是「任务静默不跑」，而清单校验是唯一会有人看的地方
+    _compare_names(problems, "schedules", [item["name"] for item in _SCHEDULES],
+                   _names(manifest.get("schedules")))
     return problems
 
 
@@ -433,16 +642,51 @@ def _compare_names(problems, label, declared, expected):
 
 # ---------------------------------------------------------------- 分发
 
-# 扩展点类型名 → (实参构造, 结果整形)。
+# 扩展点实参构造与结果整形：键名来自 extension-points.json 的 args / shape 字段。
 #
-# 集中成一张表是为了让「每个扩展点怎么被调用、返回值要长什么样」一眼可见。
-# 若散落成 if/else，新增一个扩展点时最容易漏掉的恰恰是「结果形状」那一半，
-# 而漏掉的后果是宿主拿到一个形状不对的载荷后静默地当成「脚本没返回内容」。
-_DISPATCH = {}
+# 「有哪些扩展点、每个用哪个实参构造与整形」这份事实只有一份，就在那个 JSON 里；
+# 这里只按它引用到的键提供实现。因此新增一个扩展点时，只要能复用既有键，
+# 本文件一行都不用改——那份名单也不会再有第二份抄写。
+_ARGS = {}
+_SHAPES = {}
+
+#: 能力档文件位置：与 SDK 同目录（网关资源抽取目录下的 script/）。
+_CAPABILITY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "extension-points.json")
 
 
-def _register(type_name, arguments, shaper):
-    _DISPATCH[type_name] = (arguments, shaper)
+def _define_args(key, builder):
+    _ARGS[key] = builder
+
+
+def _define_shape(key, shaper):
+    _SHAPES[key] = shaper
+
+
+def _load_dispatch():
+    """按能力档构建「类型名 → (实参构造, 结果整形)」。
+
+    文件缺失、或引用了本 SDK 没有实现的键时**当场报错**：那意味着 SDK 与能力档不是同一版，
+    静默降级只会把问题推迟到某次调用上，以「脚本没返回内容」的形态出现。
+
+    :return: 类型名 → (实参构造, 结果整形)
+    """
+    try:
+        with open(_CAPABILITY_FILE, "r", encoding="utf-8") as handle:
+            table = json.load(handle)
+    except (IOError, ValueError) as error:
+        raise ScriptError("读取扩展点能力档失败: %s (%s)" % (_CAPABILITY_FILE, error))
+    dispatch = {}
+    for entry in table.get("in", []):
+        type_name = entry.get("type")
+        args_key = entry.get("args")
+        shape_key = entry.get("shape")
+        if args_key not in _ARGS or shape_key not in _SHAPES:
+            raise ScriptError(
+                "扩展点能力档引用了 SDK 未实现的键: %s (args=%r, shape=%r)；"
+                "SDK 与能力档版本不一致" % (type_name, args_key, shape_key))
+        dispatch[type_name] = (_ARGS[args_key], _SHAPES[shape_key])
+    return dispatch
 
 
 def _as_mapping(result, default=None):
@@ -459,10 +703,16 @@ def _args_tool(payload):
 def _shape_tool(result):
     # 任意 JSON 都能作为 output：字符串、数字、对象、数组都合法，
     # 因为内核的截断与序列化对它们的处理是统一的（见 ToolCodec）
+    if isinstance(result, ToolResult):
+        payload = {"output": result.output}
+        if result.metadata:
+            payload["metadata"] = result.metadata
+        return payload
     return {"output": result}
 
 
-_register("tool", _args_tool, _shape_tool)
+_define_args("tool", _args_tool)
+_define_shape("tool", _shape_tool)
 
 
 # ---- 命令 -----------------------------------------------------------------
@@ -486,7 +736,8 @@ def _shape_command(result):
     return shaped
 
 
-_register("command", _args_command, _shape_command)
+_define_args("command", _args_command)
+_define_shape("command", _shape_command)
 
 
 # ---- 命令候选查询 ---------------------------------------------------------
@@ -512,7 +763,8 @@ def _shape_choices(result):
     return dict(mapping)
 
 
-_register("command_options", _args_none, _shape_choices)
+_define_args("command_options", _args_none)
+_define_shape("choices", _shape_choices)
 
 
 # ---- 只返回一段文本的贡献 -------------------------------------------------
@@ -529,8 +781,8 @@ def _shape_text(result):
     return mapping
 
 
-_register("prompt", _args_none, _shape_text)
-_register("status_line", _args_none, _shape_text)
+_define_args("none", _args_none)
+_define_shape("text", _shape_text)
 
 
 # ---- 面板 -----------------------------------------------------------------
@@ -547,7 +799,7 @@ def _shape_panel(result):
     return mapping
 
 
-_register("panel", _args_none, _shape_panel)
+_define_shape("panel", _shape_panel)
 
 
 # ---- 权限拦截 -------------------------------------------------------------
@@ -610,7 +862,7 @@ def _shaped_verdict(mapping):
     return shaped
 
 
-_register("permission", _args_none, _shape_permission)
+_define_shape("permission", _shape_permission)
 
 
 # ---- 会话持久化 / 恢复 / 删除 ---------------------------------------------
@@ -626,7 +878,8 @@ def _shape_nothing(result):
     return None
 
 
-_register("session_persist", _args_snapshot, _shape_nothing)
+_define_args("snapshot", _args_snapshot)
+_define_shape("nothing", _shape_nothing)
 
 
 def _shape_sessions(result):
@@ -642,14 +895,14 @@ def _shape_sessions(result):
     return shaped
 
 
-_register("session_restore", _args_none, _shape_sessions)
+_define_shape("sessions", _shape_sessions)
 
 
 def _args_session_id(payload):
     return {"session_id": payload.get("sessionId")}
 
 
-_register("session_delete", _args_session_id, _shape_nothing)
+_define_args("session_id", _args_session_id)
 
 
 # ---- 压缩策略 -------------------------------------------------------------
@@ -659,7 +912,387 @@ def _args_request(payload):
     return {"request": dict(payload or {})}
 
 
-_register("compaction", _args_request, _as_mapping)
+_define_args("request", _args_request)
+_define_shape("mapping", _as_mapping)
+
+
+# ---- 二期打通的能力档（数据进出、不在渲染线程/启动期）------------------------
+
+
+def _args_tool_argument_pre(payload):
+    return {
+        "agent_id": payload.get("agentId"),
+        "tool_name": payload.get("toolName"),
+        "arguments": payload.get("arguments") or {},
+        "source": payload.get("source"),
+        "session_id": payload.get("sessionId"),
+    }
+
+
+#: 参数改写能表达的三态；刻意没有「放行」——改写之后照旧要过权限判定。
+_ARGUMENT_OUTCOMES = ("ABSTAIN", "REPLACE", "DENY")
+
+
+def _shape_argument_decision(result):
+    """参数改写裁定的整形。
+
+    接受的写法：``None`` / ``False``（不改）、``True``（拒绝）、原因字符串（带理由的拒绝）、
+    ``{"arguments": {...}}``（替换）、``{"outcome": ..., "arguments": ..., "reason": ...}``。
+    未知 outcome 一律报错而不是静默按「不改」处理。
+    """
+    if result is None or result is False:
+        return {"outcome": "ABSTAIN"}
+    if result is True:
+        return {"outcome": "DENY"}
+    if isinstance(result, str):
+        return {"outcome": "DENY", "reason": result}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("参数改写返回值必须是 None、布尔、原因字符串或 {outcome, arguments, reason}")
+    if "outcome" in mapping:
+        outcome = str(mapping.get("outcome") or "").strip().upper()
+        if outcome not in _ARGUMENT_OUTCOMES:
+            raise ScriptError("outcome 必须是 %s，实际是 %r"
+                              % (" / ".join(_ARGUMENT_OUTCOMES), mapping.get("outcome")))
+        shaped = {"outcome": outcome}
+        if outcome == "REPLACE":
+            shaped["arguments"] = mapping.get("arguments") or {}
+        if mapping.get("reason") is not None:
+            shaped["reason"] = mapping["reason"]
+        return shaped
+    if "arguments" in mapping:
+        return {"outcome": "REPLACE", "arguments": mapping["arguments"] or {}}
+    raise ScriptError("参数改写返回值含未知键，允许：outcome / arguments / reason")
+
+
+def _args_tool_result_post(payload):
+    return {
+        "agent_id": payload.get("agentId"),
+        "tool_name": payload.get("toolName"),
+        "arguments": payload.get("arguments") or {},
+        "output": payload.get("output"),
+        "metadata": payload.get("metadata") or {},
+        "failed": bool(payload.get("failed")),
+        "session_id": payload.get("sessionId"),
+    }
+
+
+def _shape_result_adjustment(result):
+    """结果整形的整形：``None`` 表示不改；``{output, metadata}`` 只改给出的那一项。
+
+    **输出保持原始类型**：字符串就是字符串、结构化对象就是结构化对象。
+    """
+    if result is None:
+        return None
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("结果整形返回值必须是 None 或 {output, metadata}")
+    shaped = {}
+    if mapping.get("output") is not None:
+        shaped["output"] = mapping["output"]
+    if mapping.get("metadata") is not None:
+        shaped["metadata"] = mapping["metadata"]
+    return shaped or None
+
+
+def _args_turn_context(payload):
+    return {
+        "session_id": payload.get("sessionId"),
+        "user_input": payload.get("userInput") or "",
+        "nested": bool(payload.get("nested")),
+    }
+
+
+def _shape_turn_context(result):
+    if result is None:
+        return None
+    if isinstance(result, str):
+        return {"text": result}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("回合上下文返回值必须是 None、字符串或 {text: ...}")
+    return mapping
+
+
+def _args_session_before_close(payload):
+    return {
+        "session_id": payload.get("sessionId"),
+        "agent_id": payload.get("agentId"),
+        "reason": payload.get("reason"),
+        "veto_supported": bool(payload.get("vetoSupported")),
+    }
+
+
+def _args_session_before_fork(payload):
+    return {
+        "session_id": payload.get("sessionId"),
+        "agent_id": payload.get("agentId"),
+        "message_id": payload.get("messageId"),
+        "cut_index": payload.get("cutIndex"),
+        "message_count": payload.get("messageCount"),
+    }
+
+
+def _shape_lifecycle_verdict(result):
+    """生命周期裁定的整形：``None`` / ``False`` 放行，``True`` 拦下，字符串是带理由的拦下。"""
+    if result is None or result is False:
+        return {"cancel": False}
+    if result is True:
+        return {"cancel": True}
+    if isinstance(result, str):
+        return {"cancel": True, "reason": result}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("生命周期裁定必须是 None、布尔、原因字符串或 {cancel, reason}")
+    shaped = {"cancel": bool(mapping.get("cancel"))}
+    if mapping.get("reason") is not None:
+        shaped["reason"] = mapping["reason"]
+    return shaped
+
+
+def _args_compaction_pre(payload):
+    return {
+        "session_id": payload.get("sessionId"),
+        "trigger": payload.get("trigger"),
+        "message_count": payload.get("messageCount"),
+        "tokens_before": payload.get("tokensBefore"),
+        "keep_recent_messages": payload.get("keepRecentMessages"),
+        "previous_boundary_message_id": payload.get("previousBoundaryMessageId"),
+    }
+
+
+def _shape_compaction_directive(result):
+    """压缩指令的整形：``None`` 放行，``{"cancel": true}`` 拦下，``{"keepRecent": n}`` 改保留条数。"""
+    if result is None:
+        return None
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("压缩指令必须是 None 或 {cancel, reason, keepRecent}")
+    if mapping.get("cancel"):
+        shaped = {"cancel": True}
+        if mapping.get("reason") is not None:
+            shaped["reason"] = mapping["reason"]
+        return shaped
+    if mapping.get("keepRecent") is not None:
+        return {"keepRecent": mapping["keepRecent"]}
+    return None
+
+
+def _args_model_catalog(payload):
+    return {
+        "provider_name": payload.get("providerName"),
+        "provider_type": payload.get("providerType"),
+    }
+
+
+def _shape_model_catalog(result):
+    """模型目录的整形：空列表含义是「我不表态」，回落成配置里的 models。"""
+    if result is None:
+        return {"models": []}
+    if isinstance(result, (list, tuple)):
+        return {"models": list(result)}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("模型目录返回值必须是 None、列表或 {models: [...]}")
+    shaped = dict(mapping)
+    shaped.setdefault("models", [])
+    return shaped
+
+
+_define_args("tool_argument_pre", _args_tool_argument_pre)
+_define_shape("argument_decision", _shape_argument_decision)
+_define_args("tool_result_post", _args_tool_result_post)
+_define_shape("result_adjustment", _shape_result_adjustment)
+_define_args("turn_context", _args_turn_context)
+_define_shape("turn_context", _shape_turn_context)
+_define_args("session_before_close", _args_session_before_close)
+_define_args("session_before_fork", _args_session_before_fork)
+_define_shape("lifecycle_verdict", _shape_lifecycle_verdict)
+_define_args("compaction_pre", _args_compaction_pre)
+_define_shape("compaction_directive", _shape_compaction_directive)
+_define_args("model_catalog", _args_model_catalog)
+_define_shape("model_catalog", _shape_model_catalog)
+
+
+# ---- 热路径与提交路径的扩展点（三期）------------------------------------
+
+
+def _args_tool_activation(payload):
+    return {
+        "session_id": payload.get("sessionId"),
+        "agent_id": payload.get("agentId"),
+        "tool_name": payload.get("toolName"),
+        "description": payload.get("description"),
+    }
+
+
+def _shape_tool_activation(result):
+    """工具激活裁定的整形。
+
+    ``None`` = 不表态（后续插件继续）；``True`` = 明确要它可见（能压过后面的插件）；
+    ``False`` / 原因字符串 = 明确隐藏。布尔会把「不想管」与「明确要它可见」变成同一个值，
+    因此这里把它们区分开。
+    """
+    if result is None:
+        return None
+    if result is True:
+        return {"visible": True}
+    if result is False:
+        return {"hidden": True}
+    if isinstance(result, str):
+        return {"hidden": True, "reason": result}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("工具激活返回值必须是 None、布尔、原因字符串或 {visible, hidden, reason}")
+    if mapping.get("visible"):
+        return {"visible": True}
+    if mapping.get("hidden"):
+        shaped = {"hidden": True}
+        if mapping.get("reason") is not None:
+            shaped["reason"] = mapping["reason"]
+        return shaped
+    return None
+
+
+def _args_request_tuning(payload):
+    return {
+        "provider_type": payload.get("providerType"),
+        "model_id": payload.get("modelId"),
+        "default_cache_key": payload.get("defaultCacheKey"),
+        "message_count": payload.get("messageCount"),
+        "tool_count": payload.get("toolCount"),
+        "session_id": payload.get("sessionId"),
+    }
+
+
+def _shape_request_tuning(result):
+    """请求调优的整形：``None`` 表示不改；只读已知字段（cacheKey / cacheRetention / cacheBreakpoints）。"""
+    if result is None:
+        return None
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("请求调优返回值必须是 None 或 {cacheKey, cacheRetention, cacheBreakpoints}")
+    return mapping
+
+
+def _args_aging_strategy(payload):
+    return {
+        "message_count": payload.get("messageCount"),
+        "used_tokens": payload.get("usedTokens"),
+        "budget_tokens": payload.get("budgetTokens"),
+        "compression_boundary": payload.get("compressionBoundary"),
+        "default_keep_recent_messages": payload.get("defaultKeepRecentMessages"),
+        "default_aging_percent": payload.get("defaultAgingPercent"),
+        "session_id": payload.get("sessionId"),
+    }
+
+
+def _shape_aging_strategy(result):
+    """老化策略的整形：``None`` 表示不改；已知字段 keepRecentMessages / agingPercent /
+    stubText / stubTextsByTool。"""
+    if result is None:
+        return None
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("老化策略返回值必须是 None 或 {keepRecentMessages, agingPercent, stubText}")
+    return mapping
+
+
+def _args_input_transform(payload):
+    return {
+        "text": payload.get("text") or "",
+        "source": payload.get("source"),
+        "has_session": bool(payload.get("hasSession")),
+        "session_id": payload.get("sessionId"),
+    }
+
+
+def _shape_input_transform(result):
+    """输入改写的整形：``None`` 不改；字符串 = 改成这句；``{"handled": true, "notice": ...}``
+    = 接过去、不进对话（像命令那样，只给用户一句说明）。"""
+    if result is None:
+        return None
+    if isinstance(result, str):
+        return {"text": result}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("输入改写返回值必须是 None、字符串或 {text, handled, notice}")
+    if mapping.get("handled"):
+        shaped = {"handled": True}
+        if mapping.get("notice") is not None:
+            shaped["notice"] = mapping["notice"]
+        return shaped
+    if mapping.get("text") is not None:
+        return {"text": mapping["text"]}
+    return None
+
+
+def _args_turn_before(payload):
+    return {
+        "agent_id": payload.get("agentId"),
+        "input": payload.get("input") or "",
+        "nested": bool(payload.get("nested")),
+        "depth": payload.get("depth"),
+        "session_id": payload.get("sessionId"),
+    }
+
+
+def _shape_turn_before(result):
+    """回合前指令的整形：``None`` 放行；``True`` / 原因字符串 = 拦下；``{"input": ...}`` = 改写输入。"""
+    if result is None or result is False:
+        return None
+    if result is True:
+        return {"cancel": True}
+    if isinstance(result, str):
+        return {"cancel": True, "reason": result}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("回合前指令必须是 None、布尔、原因字符串或 {cancel, input}")
+    if mapping.get("cancel"):
+        shaped = {"cancel": True}
+        if mapping.get("reason") is not None:
+            shaped["reason"] = mapping["reason"]
+        return shaped
+    if mapping.get("input") is not None:
+        return {"input": mapping["input"]}
+    return None
+
+
+def _args_input_directive(payload):
+    return {
+        "marker": payload.get("marker"),
+        "input": payload.get("input") or "",
+        "session_id": payload.get("sessionId"),
+    }
+
+
+def _shape_input_directive(result):
+    """输入指令的整形：``None`` / ``{"unclaimed": true}`` 不认领；字符串或 ``{toolName, arguments}``
+    声明一次工具调用（真正的执行走内核完整的权限与审批链）。"""
+    if result is None:
+        return None
+    if isinstance(result, str):
+        return {"toolName": result, "arguments": {}}
+    mapping = _as_mapping(result)
+    if mapping is None:
+        raise ScriptError("输入指令返回值必须是 None、工具名字符串或 {toolName, arguments}")
+    if mapping.get("unclaimed") or not mapping.get("toolName"):
+        return None
+    return {"toolName": mapping["toolName"], "arguments": mapping.get("arguments") or {}}
+
+
+_define_args("tool_activation", _args_tool_activation)
+_define_shape("tool_activation", _shape_tool_activation)
+_define_args("request_tuning", _args_request_tuning)
+_define_shape("request_tuning", _shape_request_tuning)
+_define_args("aging_strategy", _args_aging_strategy)
+_define_shape("aging_strategy", _shape_aging_strategy)
+_define_args("input_transform", _args_input_transform)
+_define_shape("input_transform", _shape_input_transform)
+_define_args("turn_before", _args_turn_before)
+_define_shape("turn_before", _shape_turn_before)
+_define_args("input_directive", _args_input_directive)
+_define_shape("input_directive", _shape_input_directive)
 
 
 # ---- 事件 -----------------------------------------------------------------
@@ -675,7 +1308,30 @@ def _shape_nothing_ignored(_result):
     return None
 
 
-_register("event", _args_event, _shape_nothing_ignored)
+_define_args("event", _args_event)
+
+
+# ---- 周期任务 ---------------------------------------------------------------
+
+
+def _args_periodic(payload):
+    return {"name": payload.get("name")}
+
+
+def _shape_periodic(_result):
+    # 周期任务的返回值没有接收方：它不进任何人的上下文，也不落盘，
+    # 因此与事件同理——返回什么都忽略，免得脚本顺手 return 一个值就报错
+    return None
+
+
+_define_args("periodic", _args_periodic)
+_define_shape("periodic", _shape_periodic)
+
+#: 类型名 → (实参构造, 结果整形)。事件与周期任务都**不是扩展点**（它们是协议里的方法：
+#: 前者由内核通知脚本，后者由宿主定时器发起），但走同一张分发表，因此在这里各补一条。
+_DISPATCH = _load_dispatch()
+_DISPATCH["event"] = (_ARGS["event"], _shape_nothing_ignored)
+_DISPATCH["periodic"] = (_ARGS["periodic"], _SHAPES["periodic"])
 
 
 # ---- 入口 -----------------------------------------------------------------
@@ -701,7 +1357,11 @@ def invoke(script_id, type_name, route_key, payload, emitter=None):
         raise ScriptError("没有处理 %s=%s 的函数" % (type_name, lookup_key))
     arguments, shaper = _DISPATCH[type_name]
     context = ScriptContext(script_id, payload, emitter)
-    result = handler(**arguments(payload or {}), ctx=context)
+    kwargs = arguments(payload or {})
+    accepted = _accepted_kwargs(handler)
+    if accepted is not None:
+        kwargs = {name: value for name, value in kwargs.items() if name in accepted}
+    result = handler(**kwargs, ctx=context)
     return shaper(result) if shaper is not None else None
 
 
@@ -718,13 +1378,17 @@ def _first_doc_line(func):
 
 __all__ = [
     "ScriptError",
+    "ToolResult",
     "EMITTABLE_EVENTS",
     "ScriptContext",
+    "configuration",
     "tool",
+    "handler",
     "command",
     "command_options",
     "contributes",
     "subscribe",
+    "periodic",
     "declarations",
     "dump_manifest",
     "compare_with",

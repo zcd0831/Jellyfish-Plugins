@@ -5,16 +5,22 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import org.pf4j.PluginState;
 import zcd.jellyfish.api.extension.SessionPersistRequest;
 import zcd.jellyfish.api.extension.SessionRestoreRequest;
+import zcd.jellyfish.infra.action.ActionQueue;
+import zcd.jellyfish.infra.metrics.MetricsRegistry;
+import zcd.jellyfish.infra.shell.ShellIngress;
 import zcd.jellyfish.infra.event.EventChannel;
 import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
 import zcd.jellyfish.infra.plugin.PF4JPluginManager;
 import zcd.jellyfish.infra.plugin.PluginContextFactory;
 import zcd.jellyfish.infra.plugin.PluginRuntimeConfig;
+import zcd.jellyfish.infra.plugin.RuntimeInfoHolder;
 import zcd.jellyfish.infra.registry.TypeRegistry;
+import zcd.jellyfish.infra.session.SessionManager;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -42,7 +48,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class SessionFilePluginLoadingTest {
 
     /** 内核里本插件的标识，与 plugin.properties 保持一致。 */
-    private static final String PLUGIN_ID = "jellyfish-session-file";
+    private static final String PLUGIN_ID = "jellyfish-plugin-session-file";
 
     /** 插件根目录。 */
     @TempDir
@@ -142,8 +148,11 @@ class SessionFilePluginLoadingTest {
         configuration.put(PluginConfig.KEY_GIT_ENABLED, false);
         Map<String, Map<String, Object>> configurations =
                 Collections.<String, Map<String, Object>>singletonMap(PLUGIN_ID, configuration);
-        return new PF4JPluginManager(new PluginContextFactory(extensions, eventChannel, registry),
-                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations));
+        return new PF4JPluginManager(new PluginContextFactory(
+                extensions, eventChannel, registry,
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry())),
+                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations),
+                eventChannel);
     }
 
     /**

@@ -146,10 +146,9 @@ class SkillToolTest {
     }
 
     @Test
-    @DisplayName("工具名片应声明为只读，PLAN 模式下才能加载说明")
-    void descriptor_should_beReadOnly() {
+    @DisplayName("工具名片带正确的名字")
+    void descriptor_should_carryToolName() {
         // Then
-        assertTrue(newTool(Collections.<String, Object>emptyMap()).descriptor().isReadOnly());
         assertEquals(SkillTool.NAME, newTool(Collections.<String, Object>emptyMap()).descriptor().getName());
     }
 

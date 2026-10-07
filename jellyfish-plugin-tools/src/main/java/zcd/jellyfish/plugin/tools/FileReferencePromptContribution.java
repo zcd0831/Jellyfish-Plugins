@@ -3,6 +3,7 @@ package zcd.jellyfish.plugin.tools;
 import zcd.jellyfish.api.extension.ExtensionHandler;
 import zcd.jellyfish.api.extension.PromptContribution;
 import zcd.jellyfish.api.extension.PromptContributionRequest;
+import zcd.jellyfish.api.extension.PromptPlacement;
 
 /**
  * 提示词贡献：把「{@code @路径} 是文件引用」这条约定告诉模型。
@@ -13,6 +14,10 @@ import zcd.jellyfish.api.extension.PromptContributionRequest;
  * <p>
  * <b>常驻而非按需</b>：只有几十个 token，而按需注入需要内核在组装期扫描消息、判断「本轮用没用 {@code @}」，
  * 成本与复杂度都更高，还会让 system prompt 在不同轮次间跳变（缓存的 prefix 失效）。
+ * <p>
+ * <b>声明为 {@link PromptPlacement#STATIC}</b>：这段文本是常量，连会话之间都不变，因此它是
+ * system prompt 里最应该被反复复用的那一段——排在会话内才固定的那些块（项目约定、skills 清单）
+ * 之前，能让它们在缓存前缀里占一个更靠前的位置。
  * <p>
  * <b>语气上强调「不要猜」</b>：模型面对一个路径时最常见的失败模式是照着文件名编内容，
  * 因此这里把「读不到就说读不到」直接写进约定。
@@ -31,6 +36,6 @@ final class FileReferencePromptContribution
 
     @Override
     public PromptContribution handle(PromptContributionRequest request) {
-        return PromptContribution.of(TEXT);
+        return PromptContribution.of(TEXT, PromptPlacement.STATIC);
     }
 }

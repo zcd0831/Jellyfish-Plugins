@@ -13,7 +13,7 @@ import java.util.Set;
 
 /**
  * 本插件的全局配置：把 {@code jellyfish.json} 里的
- * {@code plugins.configurations.jellyfish-mcp} 段解析成值对象。
+ * {@code plugins.configurations.jellyfish-plugin-mcp} 段解析成值对象。
  * <p>
  * <b>没有 {@code enabled} 开关</b>：插件的启停已经由 {@code plugins.enabled} 管了，
  * 再开一个只会让「为什么没生效」多一个可能的原因。单个 server 有自己的 {@code enabled}，

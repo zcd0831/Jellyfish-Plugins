@@ -5,16 +5,25 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import org.pf4j.PluginState;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.extension.CancellationToken;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.CommandResult;
 import zcd.jellyfish.api.extension.PromptContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
+import zcd.jellyfish.api.extension.ToolMetadata;
+import zcd.jellyfish.api.extension.ToolOutputSink;
+import zcd.jellyfish.infra.action.ActionQueue;
+import zcd.jellyfish.infra.metrics.MetricsRegistry;
+import zcd.jellyfish.infra.shell.ShellIngress;
 import zcd.jellyfish.infra.plugin.PF4JPluginManager;
 import zcd.jellyfish.infra.plugin.PluginContextFactory;
 import zcd.jellyfish.infra.plugin.PluginRuntimeConfig;
+import zcd.jellyfish.infra.plugin.RuntimeInfoHolder;
+import zcd.jellyfish.infra.session.SessionManager;
 import zcd.jellyfish.script.GatewayResources;
 import zcd.jellyfish.script.ScriptBridgeConfig;
 
@@ -189,6 +198,117 @@ class NodeScriptIT {
     }
 
     @Test
+    @DisplayName("scripts.<id> 应按脚本 id 送达，且 async handler 的返回值正确")
+    void scriptConfiguration_should_reachAsyncScript_when_configured() throws IOException {
+        writeScript("web", ASYNC_CONFIG_SCRIPT, ASYNC_CONFIG_MANIFEST);
+        Map<String, Object> web = new LinkedHashMap<String, Object>();
+        web.put("provider", "brave");
+        web.put("apiKey", "k-123");
+        Map<String, Map<String, Object>> scripts = new LinkedHashMap<String, Map<String, Object>>();
+        scripts.put("web", web);
+        startRuntime(5, scripts);
+
+        assertEquals("provider=brave; key=k-123; module=brave",
+                invokeTool("web_probe", Collections.<String, Object>emptyMap()).getOutput());
+    }
+
+    @Test
+    @DisplayName("async 事件处理器应真的跑完，且不拖住后续调用")
+    void asyncEventHandler_should_complete_withoutBlockingRequests() throws IOException, InterruptedException {
+        writeScript("web", ASYNC_CONFIG_SCRIPT, ASYNC_CONFIG_MANIFEST);
+        startRuntime();
+
+        // 先把网关拉起来：脚本运行时是**懒启动**的，网关还没起来时事件会直接丢掉。
+        // 这不是测试技巧，而是「事件可以丢」这条契约的真实形状（冷启动窗口内的事件本来就没有接收方）
+        invokeTool("web_events", Collections.<String, Object>emptyMap());
+
+        events.publish(new zcd.jellyfish.api.event.notification.ToolCallCompletedEvent(
+                "call-1", "web_probe", true, 5L, null, "s-1"));
+
+        String handled = null;
+        long deadline = System.currentTimeMillis() + 10_000L;
+        // 先让事件先被送达：网关对「忙」的 worker 直接丢事件，而紧接着的 invoke 就会把它标记为忙。
+        // 这个先后关系同样不是测试的妥协，而是事件通道「可以丢」这条契约的真实形状
+        Thread.sleep(300L);
+        while (System.currentTimeMillis() < deadline) {
+            // 事件处理器是 async 的，因此这里必须容忍它晚一点才跑完；
+            // 关键点是这一串 invoke 不能被它拖住（否则永远读不到 handled=1）
+            String output = String.valueOf(invokeTool("web_events",
+                    Collections.<String, Object>emptyMap()).getOutput());
+            if (output.contains("handled=1")) {
+                handled = output;
+                break;
+            }
+            Thread.sleep(100L);
+        }
+        assertNotNull(handled, "async 事件处理器未在预期时间内跑完");
+    }
+
+    @Test
+    @DisplayName("工具返回 ToolResult 时：正文进 output，摘要与调用者身份进 metadata")
+    void toolResult_should_carryMetadataAndIdentity_when_scriptReturnsIt() throws IOException {
+        writeScript("web", METADATA_SCRIPT, METADATA_MANIFEST);
+        startRuntime();
+
+        ToolCallResult result = extensions.invoke(
+                extensions.handler(ToolCallRequest.class, "web_meta"),
+                new ToolCallRequest("web_meta", Collections.<String, Object>emptyMap(), "s-1",
+                        CancellationToken.NONE, ToolOutputSink.NOOP, "parent-1", "r-1", "root-1"));
+
+        assertEquals("正文", result.getOutput());
+        assertEquals("parent=parent-1 run=r-1 root=root-1",
+                ToolMetadata.summaryOf(result.getMetadata()));
+    }
+
+    @Test
+    @DisplayName("带路由键的处理器（model_catalog）应能声明并真实调用")
+    void routedHandler_should_beInvoked_endToEnd() throws IOException {
+        writeScript("ext", HANDLER_SCRIPT, HANDLER_MANIFEST);
+        startRuntime();
+
+        zcd.jellyfish.api.extension.ModelCatalogResult catalog = extensions.invoke(
+                extensions.handler(zcd.jellyfish.api.extension.ModelCatalogRequest.class, "local"),
+                new zcd.jellyfish.api.extension.ModelCatalogRequest("local", "openai"));
+        assertEquals(1, catalog.getModels().size());
+        assertEquals("local-model", catalog.getModels().get(0).getId());
+        assertEquals(8192, catalog.getModels().get(0).getContextLength());
+
+        zcd.jellyfish.api.extension.TurnContext context = extensions.invoke(
+                extensions.handler(zcd.jellyfish.api.extension.TurnContextRequest.class, null),
+                new zcd.jellyfish.api.extension.TurnContextRequest("s-1", "hi", false));
+        assertEquals("now: 2026-10-04", context.getText());
+    }
+
+    @Test
+    @DisplayName("标记路由（input_directive）与三期扩展点应能真实调用")
+    void thirdWaveExtensions_should_beInvoked_endToEnd() throws IOException {
+        writeScript("ext", THIRD_WAVE_SCRIPT, THIRD_WAVE_MANIFEST);
+        startRuntime();
+
+        // 先暖网关（热路径点 request_tuning 不冷启动）
+        assertTrue(extensions.invoke(
+                extensions.handler(zcd.jellyfish.api.extension.TurnBeforeRequest.class, null),
+                new zcd.jellyfish.api.extension.TurnBeforeRequest("s-1", "coder", "干活", false, 0))
+                .hasInput());
+
+        zcd.jellyfish.api.extension.InputDirectiveResult directive = extensions.invoke(
+                extensions.handler(zcd.jellyfish.api.extension.InputDirectiveRequest.class, "!"),
+                new zcd.jellyfish.api.extension.InputDirectiveRequest("!", "ls -la", "s-1"));
+        assertTrue(directive.isToolCall());
+        assertEquals("shell", directive.getToolName());
+        assertEquals("ls -la", directive.getArguments().get("command"));
+
+        assertTrue(extensions.invoke(
+                extensions.handler(zcd.jellyfish.api.extension.ToolActivationRequest.class, null),
+                new zcd.jellyfish.api.extension.ToolActivationRequest("s-1", "coder",
+                        new zcd.jellyfish.api.extension.ToolDescriptor("bad", "坏工具"))).isHidden());
+        assertEquals(1, extensions.invoke(
+                extensions.handler(zcd.jellyfish.api.extension.RequestTuningRequest.class, null),
+                new zcd.jellyfish.api.extension.RequestTuningRequest("s-1", "openai", "m", "k", 1, 1))
+                .getCacheBreakpoints().intValue());
+    }
+
+    @Test
     @DisplayName("调用超时应隔离 worker，并把原因作为失败回灌")
     void timeout_should_isolateWorker_andReportReason() throws IOException, InterruptedException {
         writeScript("jira", TOOL_SCRIPT, FULL_MANIFEST);
@@ -293,6 +413,30 @@ class NodeScriptIT {
     }
 
     @Test
+    @DisplayName("周期任务应按间隔反复触发（Node 侧与 Python 同构）")
+    void periodic_should_fireRepeatedly() throws Exception {
+        writeScript("beat", PERIODIC_SCRIPT, PERIODIC_MANIFEST);
+        startRuntime();
+
+        // 脚本侧的证据：共享模块里计数，工具把它读出来。等它涨到 2 以上才算「反复触发」
+        // （只涨一次无法区分「周期任务」与「启动时打了一发」）
+        long deadline = System.currentTimeMillis() + 15_000L;
+        int seen = 0;
+        while (System.currentTimeMillis() < deadline && seen < 2) {
+            try {
+                seen = Integer.parseInt(String.valueOf(invokeTool("beat_count",
+                        Collections.<String, Object>emptyMap()).getOutput()).trim());
+            } catch (JellyfishException | NumberFormatException ignored) {
+                // worker 可能正在冷启动：重试即可，计数本身还在
+            }
+            if (seen < 2) {
+                Thread.sleep(500L);
+            }
+        }
+        assertTrue(seen >= 2, "Node 侧周期任务没有按间隔反复触发，实际触发 " + seen + " 次");
+    }
+
+    @Test
     @DisplayName("关闭运行时后不应残留网关与 worker 进程")
     void close_should_leaveNoProcesses() throws IOException, InterruptedException {
         writeScript("jira", TOOL_SCRIPT, FULL_MANIFEST);
@@ -325,6 +469,18 @@ class NodeScriptIT {
      * @throws IOException 安装插件失败时抛出
      */
     private void startRuntime(int invokeTimeoutSeconds) throws IOException {
+        startRuntime(invokeTimeoutSeconds, Collections.<String, Map<String, Object>>emptyMap());
+    }
+
+    /**
+     * 启动插件，并指定单次调用超时与逐脚本配置。
+     *
+     * @param invokeTimeoutSeconds 单次调用超时秒数
+     * @param scriptConfigs        逐脚本配置（脚本 id → 配置）
+     * @throws IOException 安装插件失败时抛出
+     */
+    private void startRuntime(int invokeTimeoutSeconds, Map<String, Map<String, Object>> scriptConfigs)
+            throws IOException {
         installPlugin();
         Map<String, Object> node = new LinkedHashMap<String, Object>();
         node.put(ScriptBridgeConfig.KEY_SCRIPTS_ROOT, scriptsRoot.toString());
@@ -332,6 +488,9 @@ class NodeScriptIT {
         node.put(ScriptBridgeConfig.KEY_INVOKE_TIMEOUT, Integer.valueOf(invokeTimeoutSeconds));
         node.put(NodeBridgePlugin.KEY_INTERPRETER, interpreter());
         node.put(ScriptBridgeConfig.KEY_PID_DIRECTORY, pidRoot.toString());
+        if (!scriptConfigs.isEmpty()) {
+            node.put(ScriptBridgeConfig.KEY_SCRIPTS, scriptConfigs);
+        }
         bootstrap(node);
     }
 
@@ -369,8 +528,11 @@ class NodeScriptIT {
     private void bootstrap(Map<String, Object> node) {
         Map<String, Map<String, Object>> configurations = new LinkedHashMap<String, Map<String, Object>>();
         configurations.put(PLUGIN_ID, node);
-        manager = new PF4JPluginManager(new PluginContextFactory(extensions, events, registry),
-                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations));
+        manager = new PF4JPluginManager(new PluginContextFactory(
+                extensions, events, registry,
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry())),
+                new PluginRuntimeConfig(Collections.singletonList(pluginsRoot), null, null, configurations),
+                events);
         manager.bootstrap();
         assertEquals(PluginState.STARTED, manager.stateOf(PLUGIN_ID));
     }
@@ -680,7 +842,7 @@ class NodeScriptIT {
             + "'use strict';\n"
             + "const { ScriptError, tool, command, contributes, subscribe } = require('jellyfish_sdk');\n"
             + "let completed = 0;\n"
-            + "tool({ name: 'jira_issue', description: '读 issue', readOnly: true,\n"
+            + "tool({ name: 'jira_issue', description: '读 issue',\n"
             + "       parameters: { key: { type: 'string' } }, required: ['key'] },\n"
             + "     (params, ctx) => {\n"
             + "         const key = params.args.key;\n"
@@ -696,11 +858,100 @@ class NodeScriptIT {
             + "contributes('status_line', () => `收到 ${completed} 次工具结束`);\n"
             + "subscribe('ToolCallCompletedEvent')(() => { completed += 1; });\n";
 
+    /**
+     * 周期任务夹具：``@periodic`` 每次触发把模块级计数加一，工具把计数读出来。
+     * <p>
+     * 两者共享同一个 worker 进程里的模块状态，因此工具读到的数就是「真的被触发了几次」——
+     * 这是从外部观察周期任务唯一可靠的方式（它的返回值被宿主丢弃，也没有调用方）。
+     */
+    private static final String PERIODIC_SCRIPT = ""
+            + "'use strict';\n"
+            + "const { periodic, tool } = require('jellyfish_sdk');\n"
+            + "let ticks = 0;\n"
+            + "periodic({ name: 'beat', intervalSeconds: 1 }, () => { ticks += 1; });\n"
+            + "tool({ name: 'beat_count', description: '读出周期任务已触发的次数' },\n"
+            + "     () => String(ticks));\n";
+
+    /** 与 {@link #PERIODIC_SCRIPT} 逐字对应的清单。 */
+    private static final String PERIODIC_MANIFEST = "{\"entry\":\"main.js\","
+            + "\"tools\":[{\"name\":\"beat_count\"}],"
+            + "\"schedules\":[{\"name\":\"beat\",\"intervalSeconds\":1}]}";
+
     /** 夹具脚本的清单：名字集合必须与上面的声明一致，否则脚本会拒绝服务。 */
     private static final String FULL_MANIFEST = "{\"entry\":\"main.js\","
-            + "\"tools\":[{\"name\":\"jira_issue\",\"description\":\"读 issue\",\"readOnly\":true},"
+            + "\"tools\":[{\"name\":\"jira_issue\",\"description\":\"读 issue\"},"
             + "{\"name\":\"jira_boom\"},{\"name\":\"jira_hang\"}],"
             + "\"commands\":[{\"name\":\"jira\",\"descriptor\":{\"summary\":\"操作 Jira\"}}],"
             + "\"contributions\":[\"prompt\",\"status_line\"],"
             + "\"events\":[\"ToolCallCompletedEvent\"]}";
+
+    /**
+     * 配置与异步夹具：一个 async 工具读配置，一个 async 事件处理器累加计数。
+     * <p>
+     * 两件事必须一起测：它们在现场是同一类需求（调用外部 API），而「配置能不能读到」与
+     * 「handler 能不能 await」是两个独立的失败点。
+     */
+    private static final String ASYNC_CONFIG_SCRIPT = ""
+            + "'use strict';\n"
+            + "const { tool, configuration, subscribe } = require('jellyfish_sdk');\n"
+            + "let handled = 0;\n"
+            + "tool({ name: 'web_probe', description: '读配置' },\n"
+            + "     async (params, ctx) => {\n"
+            + "         await new Promise((resolve) => setTimeout(resolve, 20));\n"
+            + "         return `provider=${ctx.configuration.provider}; key=${ctx.configuration.apiKey};"
+            + " module=${configuration().provider}`;\n"
+            + "     });\n"
+            + "tool({ name: 'web_events', description: '事件计数' }, () => `handled=${handled}`);\n"
+            + "subscribe('ToolCallCompletedEvent')(async () => {\n"
+            + "    await new Promise((resolve) => setTimeout(resolve, 10));\n"
+            + "    handled += 1;\n"
+            + "});\n";
+
+    /** 与 {@link #ASYNC_CONFIG_SCRIPT} 逐字对应的清单。 */
+    private static final String ASYNC_CONFIG_MANIFEST = "{\"entry\":\"main.js\","
+            + "\"tools\":[{\"name\":\"web_probe\"},{\"name\":\"web_events\"}],"
+            + "\"events\":[\"ToolCallCompletedEvent\"]}";
+
+    /** 返回 {@code ToolResult} 的脚本：摘要里带上调用者身份，一次验证两件事。 */
+    private static final String METADATA_SCRIPT = ""
+            + "'use strict';\n"
+            + "const { tool, ToolResult } = require('jellyfish_sdk');\n"
+            + "tool({ name: 'web_meta', description: '带元数据的工具' }, (params, ctx) =>\n"
+            + "    new ToolResult('正文', {\n"
+            + "        summary: `parent=${ctx.parentSessionId} run=${ctx.runId} root=${ctx.rootRunId}`,\n"
+            + "    }));\n";
+
+    /** 与 {@link #METADATA_SCRIPT} 逐字对应的清单。 */
+    private static final String METADATA_MANIFEST = "{\"entry\":\"main.js\","
+            + "\"tools\":[{\"name\":\"web_meta\"}]}";
+
+    /** 路由处理器夹具：一个类型级贡献 + 一个 {@code handler}（路由键来自用户配置）。 */
+    private static final String HANDLER_SCRIPT = ""
+            + "'use strict';\n"
+            + "const { contributes, handler } = require('jellyfish_sdk');\n"
+            + "contributes('turn_context', () => 'now: 2026-10-04');\n"
+            + "handler({ type: 'model_catalog', route: 'local' },\n"
+            + "    () => [{ id: 'local-model', contextLength: 8192 }]);\n";
+
+    /** 与 {@link #HANDLER_SCRIPT} 逐字对应的清单。 */
+    private static final String HANDLER_MANIFEST = "{\"entry\":\"main.js\","
+            + "\"contributions\":[\"turn_context\"],"
+            + "\"handlers\":[{\"type\":\"model_catalog\",\"route\":\"local\"}]}";
+
+    /** 三期夹具：四个类型级贡献 + 一个带标记路由的 {@code input_directive}。 */
+    private static final String THIRD_WAVE_SCRIPT = ""
+            + "'use strict';\n"
+            + "const { contributes, handler } = require('jellyfish_sdk');\n"
+            + "contributes('turn_before', () => ({ input: '改写后的输入' }));\n"
+            + "contributes('input_transform', () => ({ handled: true, notice: '已接过去' }));\n"
+            + "contributes('request_tuning', () => ({ cacheBreakpoints: 1 }));\n"
+            + "contributes('tool_activation',\n"
+            + "    (params) => (params.toolName === 'bad' ? 'service down' : null));\n"
+            + "handler({ type: 'input_directive', route: '!' },\n"
+            + "    (params) => ({ toolName: 'shell', arguments: { command: params.input } }));\n";
+
+    /** 与 {@link #THIRD_WAVE_SCRIPT} 逐字对应的清单。 */
+    private static final String THIRD_WAVE_MANIFEST = "{\"entry\":\"main.js\","
+            + "\"contributions\":[\"turn_before\",\"input_transform\",\"request_tuning\",\"tool_activation\"],"
+            + "\"handlers\":[{\"type\":\"input_directive\",\"route\":\"!\"}]}";
 }

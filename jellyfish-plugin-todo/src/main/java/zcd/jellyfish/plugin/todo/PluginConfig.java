@@ -11,7 +11,7 @@ import java.util.Map;
 
 /**
  * 本插件的配置解析：把 {@code jellyfish.json} 里的
- * {@code plugins.configurations.jellyfish-todo} 段解析成值对象。
+ * {@code plugins.configurations.jellyfish-plugin-todo} 段解析成值对象。
  * <p>
  * 项目级覆盖全局级、字符串值里的 {@code ${ENV}} 替换都由内核完成，这里拿到的就是最终值；
  * 但 {@code ~} <b>没有</b>被展开（内核只在配置文件的路径段上做这件事），因此这里自己展开一次，

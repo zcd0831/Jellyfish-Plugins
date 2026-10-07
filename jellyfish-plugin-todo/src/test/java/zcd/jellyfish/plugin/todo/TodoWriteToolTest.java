@@ -8,6 +8,7 @@ import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
 import zcd.jellyfish.api.extension.ToolDescriptor;
+import zcd.jellyfish.api.extension.ToolMetadata;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -23,7 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * {@link TodoWriteTool} 的单元测试：重点是「模型传坏参数时必须当场报错，而不是静默落盘」。
+ * {@link TodoWriteTool} 的单元测试：重点是「模型传坏参数时必须当场报错，而不是静默落盘」，
+ * 以及三态取值（尤其是模型习惯用的 {@code in_progress}）必须被如实接住。
  *
  * @author zcd
  */
@@ -58,9 +60,17 @@ class TodoWriteToolTest {
     }
 
     @Test
+    @DisplayName("名片里的状态 enum 必须带上三态：模型写 in_progress 时它得先知道自己可以用")
+    void descriptor_should_declareEveryStatus() {
+        ToolDescriptor descriptor = TodoWriteTool.descriptor();
+
+        assertEquals(Arrays.asList("pending", "in_progress", "completed", "blocked"), statusEnum(descriptor));
+    }
+
+    @Test
     @DisplayName("整表覆盖：新列表落盘并回显清单")
     void handle_should_replaceWholeList() {
-        store.replace("s-1", Arrays.asList(new TodoItem("旧任务", false)));
+        store.replace("s-1", Arrays.asList(new TodoItem("旧任务", TodoStatus.PENDING)));
 
         ToolCallResult result = tool.handle(request("s-1", item("写文档", "pending"), item("跑测试", "completed")));
 
@@ -72,9 +82,20 @@ class TodoWriteToolTest {
     }
 
     @Test
+    @DisplayName("in_progress 是合法状态：它曾让整批写入失败，被迫改写成 pending 或谎报 completed")
+    void handle_should_acceptInProgress() {
+        ToolCallResult result = tool.handle(request("s-1",
+                item("写文档", "completed"), item("跑测试", "in_progress")));
+
+        assertEquals(TodoStatus.COMPLETED, store.itemsOf("s-1").get(0).status());
+        assertEquals(TodoStatus.IN_PROGRESS, store.itemsOf("s-1").get(1).status());
+        assertTrue(result.getOutput().toString().contains("[~] 2. 跑测试"));
+    }
+
+    @Test
     @DisplayName("空数组表示清空")
     void handle_should_clear_when_emptyArray() {
-        store.replace("s-1", Arrays.asList(new TodoItem("旧任务", false)));
+        store.replace("s-1", Arrays.asList(new TodoItem("旧任务", TodoStatus.PENDING)));
 
         ToolCallResult result = tool.handle(request("s-1"));
 
@@ -83,14 +104,48 @@ class TodoWriteToolTest {
     }
 
     @Test
-    @DisplayName("缺少 status 按未完成处理：更容易改对的一侧")
+    @DisplayName("摘要在轨迹行上回答「现在有几项、完成几项」，与状态栏同一口径")
+    void handle_should_summarizeProgress() {
+        ToolCallResult result = tool.handle(request("s-1", item("写文档", "pending"), item("跑测试", "completed")));
+
+        assertEquals("待办 1/2", ToolMetadata.summaryOf(result.getMetadata()));
+    }
+
+    @Test
+    @DisplayName("有进行中项时摘要也要说出来，轨迹行上看得到「正在做哪一件」")
+    void handle_should_summarizeInProgress() {
+        ToolCallResult result = tool.handle(request("s-1", item("写文档", "in_progress"), item("跑测试", "pending")));
+
+        assertEquals("待办 0/2 · 进行中 1", ToolMetadata.summaryOf(result.getMetadata()));
+    }
+
+    @Test
+    @DisplayName("清空后摘要说明已清空，而不是残留上一次的进度")
+    void handle_should_summarizeClear() {
+        tool.handle(request("s-1", item("写文档", "pending")));
+
+        ToolCallResult result = tool.handle(request("s-1"));
+
+        assertEquals("待办已清空", ToolMetadata.summaryOf(result.getMetadata()));
+    }
+
+    @Test
+    @DisplayName("缺少 status 按未开始处理：更容易改对的一侧")
     void handle_should_treatMissingStatusAsPending() {
         Map<String, Object> item = new LinkedHashMap<String, Object>();
         item.put("content", "写文档");
 
         tool.handle(request("s-1", item));
 
-        assertTrue(!store.itemsOf("s-1").get(0).done());
+        assertEquals(TodoStatus.PENDING, store.itemsOf("s-1").get(0).status());
+    }
+
+    @Test
+    @DisplayName("状态打成 In-Progress 也认：一次格式差异不该让整批待办白写")
+    void handle_should_normalizeStatusText() {
+        tool.handle(request("s-1", item("写文档", " In-Progress ")));
+
+        assertEquals(TodoStatus.IN_PROGRESS, store.itemsOf("s-1").get(0).status());
     }
 
     @Test
@@ -132,10 +187,30 @@ class TodoWriteToolTest {
     @DisplayName("status 取值非法应报错并提示允许值")
     void handle_should_rejectUnknownStatus() {
         JellyfishException error = assertThrows(JellyfishException.class,
-                () -> tool.handle(request("s-1", item("写文档", "in_progress"))));
+                () -> tool.handle(request("s-1", item("写文档", "doing"))));
 
         assertTrue(error.getMessage().contains("pending"));
+        assertTrue(error.getMessage().contains("in_progress"));
         assertTrue(error.getMessage().contains("completed"));
+    }
+
+    @Test
+    @DisplayName("报错必须带上模型实际传的值：只说「实际为 String」它改不动，只会原样重试")
+    void handle_should_reportRejectedStatusValue() {
+        JellyfishException error = assertThrows(JellyfishException.class,
+                () -> tool.handle(request("s-1", item("写文档", "doing"))));
+
+        assertEquals("todos 的 status 只能是 pending、in_progress、completed 或 blocked，实际为 \"doing\"",
+                error.getMessage());
+    }
+
+    @Test
+    @DisplayName("status 不是字符串时打出类型，且消息保持单行")
+    void handle_should_reportRejectedStatusType() {
+        JellyfishException error = assertThrows(JellyfishException.class,
+                () -> tool.handle(request("s-1", item("写文档", 5))));
+
+        assertTrue(error.getMessage().endsWith("实际为 Integer"), error.getMessage());
     }
 
     @Test
@@ -177,10 +252,25 @@ class TodoWriteToolTest {
      * @param status  状态，可为 {@code null}
      * @return 待办参数
      */
-    private static Map<String, Object> item(String content, String status) {
+    private static Map<String, Object> item(String content, Object status) {
         Map<String, Object> item = new LinkedHashMap<String, Object>();
         item.put("content", content);
         item.put("status", status);
         return item;
+    }
+
+    /**
+     * 从工具名片里取出 {@code todos[].status} 的 enum 取值列表。
+     *
+     * @param descriptor 工具名片
+     * @return enum 取值列表
+     */
+    @SuppressWarnings("unchecked")
+    private static List<String> statusEnum(ToolDescriptor descriptor) {
+        Map<String, Object> todos = (Map<String, Object>) descriptor.getParameters().get("todos");
+        Map<String, Object> itemSchema = (Map<String, Object>) todos.get("items");
+        Map<String, Object> properties = (Map<String, Object>) itemSchema.get("properties");
+        Map<String, Object> status = (Map<String, Object>) properties.get("status");
+        return (List<String>) status.get("enum");
     }
 }

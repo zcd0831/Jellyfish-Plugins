@@ -1,0 +1,55 @@
+{
+  "entry": "main.py",
+  "tools": [
+    {
+      "name": "web_search",
+      "description": "联网搜索，返回标题 / 链接 / 摘要列表。需要时效信息、或本地资料里没有答案时使用。",
+      "parameters": {
+        "query": {
+          "type": "string",
+          "description": "搜索词"
+        },
+        "count": {
+          "type": "integer",
+          "description": "最多返回多少条，缺省 5，上限 20"
+        },
+        "recency": {
+          "type": "string",
+          "description": "只看最近：day / week / month / year"
+        },
+        "domains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "只在这些域名下搜（可选）"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    {
+      "name": "web_fetch",
+      "description": "抓取一个网页并返回正文文本（去掉脚本 / 样式 / 导航）。搜索之后想读全文时使用。",
+      "parameters": {
+        "url": {
+          "type": "string",
+          "description": "要抓取的 http/https 地址"
+        },
+        "max_chars": {
+          "type": "integer",
+          "description": "返回正文的字符上限，缺省 20000"
+        }
+      },
+      "required": [
+        "url"
+      ]
+    }
+  ],
+  "commands": [],
+  "commandOptions": [],
+  "contributions": [
+    "prompt"
+  ]
+}

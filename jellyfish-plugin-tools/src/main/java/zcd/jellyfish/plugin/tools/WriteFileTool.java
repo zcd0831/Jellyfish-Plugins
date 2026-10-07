@@ -59,7 +59,9 @@ public final class WriteFileTool implements PluginTool {
             throw new JellyfishException("写入文件失败: " + ToolPaths.display(file) + " (" + e.getMessage() + ')', e);
         }
         int bytes = content.getBytes(StandardCharsets.UTF_8).length;
+        String label = existed ? "覆盖" : "新建";
         return new ToolCallResult(name(), (existed ? "已覆盖写入 " : "已新建文件 ") + ToolPaths.display(file)
-                + "（" + bytes + " 字节）");
+                + "（" + bytes + " 字节）",
+                ToolSummaries.of(ToolPaths.display(file) + "（" + label + "，" + bytes + " 字节）"));
     }
 }

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.PermissionCheckRequest;
@@ -15,6 +16,7 @@ import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
 import zcd.jellyfish.infra.plugin.PluginContextImpl;
 import zcd.jellyfish.infra.registry.TypeRegistry;
+import zcd.jellyfish.infra.session.SessionManager;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -37,7 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class McpPluginTest {
 
     /** 内核里本插件的标识，与 plugin.properties 保持一致。 */
-    private static final String PLUGIN_ID = "jellyfish-mcp";
+    private static final String PLUGIN_ID = "jellyfish-plugin-mcp";
 
     /** 共用注册表。 */
     private TypeRegistry typeRegistry;
@@ -141,6 +143,7 @@ class McpPluginTest {
      * @return 上下文
      */
     private PluginContext context(Map<String, Object> configuration) {
-        return new PluginContextImpl(PluginDeclaration.of(PLUGIN_ID, configuration), extensions, events);
+        return new PluginContextImpl(PluginDeclaration.of(PLUGIN_ID, configuration), extensions,
+                events, Mockito.mock(SessionManager.class));
     }
 }

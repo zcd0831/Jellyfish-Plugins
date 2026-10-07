@@ -28,7 +28,7 @@ class McpLedgerTest {
 
         // Then
         assertTrue(text.contains("没有配置任何 MCP server"));
-        assertTrue(text.contains("plugins.configurations.jellyfish-mcp.servers"));
+        assertTrue(text.contains("plugins.configurations.jellyfish-plugin-mcp.servers"));
     }
 
     @Test
@@ -52,7 +52,7 @@ class McpLedgerTest {
         assertTrue(text.contains("remote（失败）"));
         assertTrue(text.contains("最近错误: npx: command not found"));
         assertTrue(text.contains("迟到应答（已丢弃）: 1"));
-        assertTrue(text.contains("- mcp__fs__read_file（只读）"));
+        assertTrue(text.contains("- mcp__fs__read_file（用户声明只读）"));
     }
 
     @Test

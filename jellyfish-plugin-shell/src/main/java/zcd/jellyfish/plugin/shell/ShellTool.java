@@ -135,7 +135,7 @@ final class ShellTool implements ExtensionHandler<ToolCallRequest, ToolCallResul
     }
 
     /**
-     * 取得生效的脱敏模式（内置表 + 用户追加）。
+     * 取得生效的剔除模式（内置表 + 用户追加）。
      *
      * @return 模式列表，保证非 {@code null}
      */

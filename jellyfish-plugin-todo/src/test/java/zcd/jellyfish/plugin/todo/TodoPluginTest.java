@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import zcd.jellyfish.api.event.notification.UiInvalidatedEvent;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.ExtensionHandler;
@@ -14,6 +15,7 @@ import zcd.jellyfish.api.extension.SessionDeleteRequest;
 import zcd.jellyfish.api.extension.StatusLineContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
+import zcd.jellyfish.api.extension.TurnContextRequest;
 import zcd.jellyfish.api.plugin.PluginContext;
 import zcd.jellyfish.api.plugin.PluginDeclaration;
 import zcd.jellyfish.infra.event.EventChannel;
@@ -21,6 +23,7 @@ import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
 import zcd.jellyfish.infra.plugin.PluginContextImpl;
 import zcd.jellyfish.infra.registry.TypeRegistry;
+import zcd.jellyfish.infra.session.SessionManager;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -68,7 +71,8 @@ class TodoPluginTest {
         Map<String, Object> configuration = new LinkedHashMap<String, Object>();
         configuration.put("todoDir", directory.toString());
         PluginContext context = new PluginContextImpl(
-                PluginDeclaration.of("jellyfish-todo", configuration), extensions, events);
+                PluginDeclaration.of("jellyfish-plugin-todo", configuration), extensions, events,
+                Mockito.mock(SessionManager.class));
         new TodoPlugin().start(context);
     }
 
@@ -78,14 +82,21 @@ class TodoPluginTest {
     }
 
     @Test
-    @DisplayName("五个面各注册一次，另注册一次会话删除清理")
+    @DisplayName("五个面各注册一次，另注册五个工具与会话删除清理")
     void start_should_registerAllCapabilities() {
         assertEquals(1, extensions.bindings(CommandRequest.class, "todo").size());
         assertEquals(1, extensions.bindings(ToolCallRequest.class, TodoWriteTool.NAME).size());
-        assertEquals(1, extensions.bindings(PromptContributionRequest.class, null).size());
+        // 共享协作面：子代理认领与完成，与父回合读写同一份清单
+        assertEquals(1, extensions.bindings(ToolCallRequest.class, TodoClaimTool.NAME).size());
+        assertEquals(1, extensions.bindings(ToolCallRequest.class, TodoDoneTool.NAME).size());
+        assertEquals(1, extensions.bindings(ToolCallRequest.class, TodoReleaseTool.NAME).size());
+        assertEquals(1, extensions.bindings(ToolCallRequest.class, TodoBlockTool.NAME).size());
+        assertEquals(1, extensions.bindings(TurnContextRequest.class, null).size());
         assertEquals(1, extensions.bindings(StatusLineContributionRequest.class, null).size());
         assertEquals(1, extensions.bindings(PanelContributionRequest.class, null).size());
         assertEquals(1, extensions.bindings(SessionDeleteRequest.class, null).size());
+        // 选型规则走 STATIC 提示词；状态仍走回合块（两者分工写在各自主类的 javadoc 里）
+        assertEquals(1, extensions.bindings(PromptContributionRequest.class, null).size());
     }
 
     @Test
@@ -99,6 +110,21 @@ class TodoPluginTest {
                 new SessionDeleteRequest("s-1"));
 
         assertFalse(Files.exists(file));
+    }
+
+    @Test
+    @DisplayName("认领成功后也广播 UI 失效：子代理改了清单，父回合那边没有别的信号")
+    void claimTool_should_publishUiInvalidatedEvent() throws Exception {
+        writeTool().handle(request());
+        CountDownLatch invalidated = new CountDownLatch(1);
+        events.subscribe("claim-probe", UiInvalidatedEvent.class, event -> invalidated.countDown());
+        ExtensionHandler<ToolCallRequest, ToolCallResult> claim =
+                extensions.bindings(ToolCallRequest.class, TodoClaimTool.NAME).get(0).getHandler();
+
+        claim.handle(new ToolCallRequest(TodoClaimTool.NAME, new LinkedHashMap<String, Object>(), "s-1",
+                null, null, null, "run-1", null));
+
+        assertTrue(invalidated.await(2, TimeUnit.SECONDS), "认领应触发一次 UI 失效");
     }
 
     @Test

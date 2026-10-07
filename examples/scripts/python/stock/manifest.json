@@ -1,0 +1,116 @@
+{
+  "entry": "main.py",
+  "tools": [
+    {
+      "name": "stock_quote",
+      "description": "查 A 股实时快照（现价、涨跌幅、开高低、成交量额、换手、量比、PE、PB、市值）。一次可以查多只，代码用逗号分隔。指数加前缀，例如 sh000001 是上证指数。",
+      "parameters": {
+        "codes": {
+          "type": "string",
+          "description": "股票代码，多只用逗号分隔，例如 600519,000858"
+        }
+      },
+      "required": [
+        "codes"
+      ]
+    },
+    {
+      "name": "stock_history",
+      "description": "查 A 股日线行情（开高低收、涨跌幅、振幅、成交量额、换手率），可选带上简单移动平均线。前复权默认开启，适合看趋势与技术指标。",
+      "parameters": {
+        "code": {
+          "type": "string",
+          "description": "股票代码，例如 600519"
+        },
+        "days": {
+          "type": "integer",
+          "description": "取最近多少个交易日，缺省 60，上限 250"
+        },
+        "adjust": {
+          "type": "string",
+          "description": "复权方式：qfq 前复权（缺省）/ hfq 后复权 / none 不复权"
+        },
+        "ma": {
+          "type": "string",
+          "description": "要算的均线窗口，逗号分隔，缺省 5,20；传空字符串则不算"
+        }
+      },
+      "required": [
+        "code"
+      ]
+    },
+    {
+      "name": "stock_fundamentals",
+      "description": "查 A 股公司概况（行业、上市日期、主营）与关键财务指标（营收、净利润、ROE、毛利率、资产负债率、每股指标等，按期对比）。",
+      "parameters": {
+        "code": {
+          "type": "string",
+          "description": "股票代码，例如 600519"
+        },
+        "periods": {
+          "type": "integer",
+          "description": "取最近多少期定期报告，缺省 4，上限 8"
+        }
+      },
+      "required": [
+        "code"
+      ]
+    },
+    {
+      "name": "stock_moneyflow",
+      "description": "查 A 股个股资金流（主力/超大单/大单/中单/小单的净额与净占比）。若东财逐日明细取不到，会退到同花顺的累计口径并在结果里说明。",
+      "parameters": {
+        "code": {
+          "type": "string",
+          "description": "股票代码，例如 600519"
+        },
+        "days": {
+          "type": "integer",
+          "description": "取最近多少个交易日，缺省 20，上限 60"
+        }
+      },
+      "required": [
+        "code"
+      ]
+    },
+    {
+      "name": "stock_watch",
+      "description": "维护用户的自选股列表（list 查看、add 加入、remove 移除、refresh 刷新行情）。自选股会显示在界面侧栏的面板上。",
+      "parameters": {
+        "action": {
+          "type": "string",
+          "description": "list / add / remove / refresh 之一"
+        },
+        "codes": {
+          "type": "string",
+          "description": "add 与 remove 时给代码，多只用逗号分隔"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "name": "stock",
+      "descriptor": {
+        "summary": "A 股行情与自选股",
+        "usage": "/stock [add|del|refresh|clear] [代码...]，refresh 可带 on|off",
+        "aliases": [],
+        "sessionRequired": true
+      },
+      "hasOptions": false
+    }
+  ],
+  "commandOptions": [],
+  "contributions": [
+    "prompt"
+  ],
+  "schedules": [
+    {
+      "name": "refresh",
+      "intervalSeconds": 60
+    }
+  ]
+}

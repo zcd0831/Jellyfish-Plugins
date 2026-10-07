@@ -5,20 +5,25 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import org.pf4j.PluginState;
 import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.CommandRequest;
 import zcd.jellyfish.api.extension.CommandResult;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolDescriptor;
+import zcd.jellyfish.infra.action.ActionQueue;
+import zcd.jellyfish.infra.metrics.MetricsRegistry;
+import zcd.jellyfish.infra.shell.ShellIngress;
 import zcd.jellyfish.infra.event.EventChannel;
 import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
 import zcd.jellyfish.infra.plugin.PF4JPluginManager;
 import zcd.jellyfish.infra.plugin.PluginContextFactory;
 import zcd.jellyfish.infra.plugin.PluginRuntimeConfig;
+import zcd.jellyfish.infra.plugin.RuntimeInfoHolder;
 import zcd.jellyfish.infra.registry.TypeRegistry;
-import zcd.jellyfish.script.ScriptBridgeConfig;
+import zcd.jellyfish.infra.session.SessionManager;
 import zcd.jellyfish.script.ScriptBridgeConfig;
 
 import java.io.IOException;
@@ -145,7 +150,7 @@ class NodePluginLoadingTest {
     void bootstrap_should_registerScriptCapabilities_when_manifestIsValid() throws IOException {
         installPlugin();
         writeScript("jira", "{\"entry\":\"main.js\","
-                + "\"tools\":[{\"name\":\"jira_issue\",\"description\":\"读或改\",\"readOnly\":true}],"
+                + "\"tools\":[{\"name\":\"jira_issue\",\"description\":\"读或改\"}],"
                 + "\"commands\":[{\"name\":\"jira\",\"descriptor\":{\"summary\":\"操作 Jira\"},\"hasOptions\":true}],"
                 + "\"contributions\":[\"prompt\"]}");
 
@@ -158,7 +163,6 @@ class NodePluginLoadingTest {
 
         ToolDescriptor descriptor = extensions.descriptors(ToolCallRequest.class, ToolDescriptor.class).get(0);
         assertEquals("jira_issue", descriptor.getName());
-        assertTrue(descriptor.isReadOnly());
 
         // 类型级贡献按类型注册
         assertEquals(1, extensions.handlers(
@@ -290,8 +294,9 @@ class NodePluginLoadingTest {
             node.put(ScriptBridgeConfig.KEY_SCRIPTS_ROOT, scriptsRootConfig);
         }
         configurations.put(PLUGIN_ID, node);
-        PluginContextFactory contexts = new PluginContextFactory(extensions, eventChannel, registry);
+        PluginContextFactory contexts = new PluginContextFactory(extensions, eventChannel, registry,
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry()));
         return new PF4JPluginManager(contexts, new PluginRuntimeConfig(
-                java.util.Collections.singletonList(pluginsRoot), null, null, configurations));
+                java.util.Collections.singletonList(pluginsRoot), null, null, configurations), eventChannel);
     }
 }

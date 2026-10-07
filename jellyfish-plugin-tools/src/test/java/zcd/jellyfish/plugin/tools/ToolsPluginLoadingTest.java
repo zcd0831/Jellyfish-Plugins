@@ -5,19 +5,25 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import org.pf4j.PluginState;
 import zcd.jellyfish.api.extension.InputReferenceDescriptor;
 import zcd.jellyfish.api.extension.InputReferenceRequest;
 import zcd.jellyfish.api.extension.PromptContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolDescriptor;
+import zcd.jellyfish.infra.action.ActionQueue;
+import zcd.jellyfish.infra.metrics.MetricsRegistry;
+import zcd.jellyfish.infra.shell.ShellIngress;
 import zcd.jellyfish.infra.event.EventChannel;
 import zcd.jellyfish.infra.event.EventChannelOptions;
 import zcd.jellyfish.infra.extension.ExtensionRegistry;
 import zcd.jellyfish.infra.plugin.PF4JPluginManager;
 import zcd.jellyfish.infra.plugin.PluginContextFactory;
 import zcd.jellyfish.infra.plugin.PluginRuntimeConfig;
+import zcd.jellyfish.infra.plugin.RuntimeInfoHolder;
 import zcd.jellyfish.infra.registry.TypeRegistry;
+import zcd.jellyfish.infra.session.SessionManager;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -47,7 +53,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ToolsPluginLoadingTest {
 
     /** 内核里本插件的标识，与 plugin.properties 保持一致。 */
-    private static final String PLUGIN_ID = "jellyfish-tools";
+    private static final String PLUGIN_ID = "jellyfish-plugin-tools";
 
     /** 插件根目录。 */
     @TempDir
@@ -93,8 +99,8 @@ class ToolsPluginLoadingTest {
     }
 
     @Test
-    @DisplayName("启动后五个工具都应可从注册表按名字路由")
-    void bootstrap_should_registerAllFiveTools() throws IOException {
+    @DisplayName("启动后六个工具都应可从注册表按名字路由")
+    void bootstrap_should_registerAllSixTools() throws IOException {
         installPlugin();
 
         manager = newManager();
@@ -104,9 +110,9 @@ class ToolsPluginLoadingTest {
         for (ToolDescriptor descriptor : extensions.descriptors(ToolCallRequest.class, ToolDescriptor.class)) {
             names.add(descriptor.getName());
         }
-        assertEquals(5, names.size(), names.toString());
+        assertEquals(6, names.size(), names.toString());
         assertTrue(names.containsAll(Arrays.asList(
-                "read_file", "write_file", "edit_file", "list_dir", "grep_files")), names.toString());
+                "read_file", "write_file", "edit_file", "list_dir", "grep_files", "ask_user")), names.toString());
     }
 
     @Test
@@ -159,7 +165,8 @@ class ToolsPluginLoadingTest {
      * @return 插件管理器
      */
     private PF4JPluginManager newManager() {
-        PluginContextFactory contexts = new PluginContextFactory(extensions, eventChannel, registry);
-        return new PF4JPluginManager(contexts, PluginRuntimeConfig.ofRoots(pluginsRoot));
+        PluginContextFactory contexts = new PluginContextFactory(extensions, eventChannel, registry,
+                new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry()));
+        return new PF4JPluginManager(contexts, PluginRuntimeConfig.ofRoots(pluginsRoot), eventChannel);
     }
 }

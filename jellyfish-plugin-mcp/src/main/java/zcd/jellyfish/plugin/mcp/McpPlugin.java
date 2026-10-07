@@ -94,7 +94,7 @@ public final class McpPlugin implements JellyfishPlugin {
         }
         if (parsed.enabledServers().isEmpty()) {
             LOG.warn("mcp 插件已启动但没有任何启用的 server：在 "
-                    + "plugins.configurations.jellyfish-mcp.servers 里配置");
+                    + "plugins.configurations.jellyfish-plugin-mcp.servers 里配置");
             return;
         }
         startConnector(parsed, parsedRegistry);

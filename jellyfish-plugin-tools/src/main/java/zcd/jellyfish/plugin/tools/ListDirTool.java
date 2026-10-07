@@ -44,8 +44,7 @@ public final class ListDirTool implements PluginTool {
                     "path", ToolSchema.string("目录路径，相对路径按进程工作目录解析；缺省为当前工作目录"),
                     "offset", ToolSchema.integer("起始条目序号，从 1 开始；缺省从第一项开始"),
                     "limit", ToolSchema.integer("每页最多返回多少项，缺省 " + DEFAULT_LIMIT)),
-            Arrays.<String>asList(),
-            true);
+            Arrays.<String>asList());
 
     @Override
     public ToolDescriptor descriptor() {
@@ -72,7 +71,8 @@ public final class ListDirTool implements PluginTool {
         }
         List<Path> entries = listEntries(directory);
         if (entries.isEmpty()) {
-            return new ToolCallResult(name(), "目录 " + ToolPaths.display(directory) + " 是空目录");
+            return new ToolCallResult(name(), "目录 " + ToolPaths.display(directory) + " 是空目录",
+                    ToolSummaries.of(ToolPaths.display(directory) + "（空目录）"));
         }
         // 目录优先、同类按名字排序：让「该往下走」这件事在输出里一眼可见
         entries.sort(Comparator.comparing((Path path) -> !Files.isDirectory(path))
@@ -94,7 +94,8 @@ public final class ListDirTool implements PluginTool {
                     .append(" 项未显示，可用 offset=").append(to + 1).append(" 继续（limit=").append(limit)
                     .append("）]");
         }
-        return new ToolCallResult(name(), text.toString());
+        return new ToolCallResult(name(), text.toString(), ToolSummaries.of(ToolPaths.display(directory)
+                + " · 第 " + (from + 1) + '-' + to + " 项，共 " + entries.size() + " 项"));
     }
 
     /**

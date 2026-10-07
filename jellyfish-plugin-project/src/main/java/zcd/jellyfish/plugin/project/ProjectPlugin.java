@@ -19,7 +19,7 @@ import zcd.jellyfish.api.plugin.PluginContext;
  * 写进 {@code jellyfish.md} 只能覆盖内置默认 agent，用户一旦用 {@code /agent} 换成自定义 agent 就失效；
  * 走插件则对所有 agent 生效，内核也不必开始处理「读工作目录里的文件」这类它本不该管的事。
  * <p>
- * <b>配置段可选</b>：{@code plugins.configurations.jellyfish-project} 只有一项
+ * <b>配置段可选</b>：{@code plugins.configurations.jellyfish-plugin-project} 只有一项
  * {@link PluginConfig#KEY_MAX_INLINE_BYTES}；整段留空则用缺省的 32 KiB。
  * <p>
  * <b>查找基准固定为进程工作目录</b>，因此须从仓库根目录启动——{@code AGENTS.md} 的行业位置是仓库根。

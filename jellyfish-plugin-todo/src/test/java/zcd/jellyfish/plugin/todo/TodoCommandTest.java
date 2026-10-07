@@ -42,13 +42,24 @@ class TodoCommandTest {
     @Test
     @DisplayName("无参时列出当前会话待办")
     void handle_should_listSessionTodos() {
-        store.replace("s-1", Arrays.asList(new TodoItem("写文档", false), new TodoItem("跑测试", true)));
+        store.replace("s-1", Arrays.asList(new TodoItem("写文档", TodoStatus.PENDING),
+                new TodoItem("跑测试", TodoStatus.COMPLETED)));
 
         CommandResult result = command.handle(new CommandRequest("todo", CommandArguments.EMPTY, "s-1"));
 
         assertEquals(CommandResult.Kind.OK, result.getKind());
         assertTrue(result.getOutput().contains("[ ] 1. 写文档"));
         assertTrue(result.getOutput().contains("[x] 2. 跑测试"));
+    }
+
+    @Test
+    @DisplayName("进行中的项在清单里画 [~]：人看到的与模型写的是同一个词")
+    void handle_should_markInProgress() {
+        store.replace("s-1", Collections.singletonList(new TodoItem("跑测试", TodoStatus.IN_PROGRESS)));
+
+        CommandResult result = command.handle(new CommandRequest("todo", CommandArguments.EMPTY, "s-1"));
+
+        assertTrue(result.getOutput().contains("[~] 1. 跑测试"));
     }
 
     @Test

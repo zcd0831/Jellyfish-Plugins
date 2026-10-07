@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.extension.ToolCallResult;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -15,6 +16,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.args;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.expectFailure;
 import static zcd.jellyfish.plugin.tools.ToolTestSupport.invoke;
+import static zcd.jellyfish.plugin.tools.ToolTestSupport.invokeResult;
+import static zcd.jellyfish.plugin.tools.ToolTestSupport.summaryOf;
 
 /**
  * {@link EditFileTool} 的单元测试。
@@ -153,6 +156,17 @@ class EditFileToolTest {
         invoke(tool, args("path", file.toString(), "old_text", "x", "new_text", "y", "replace_all", "true"));
 
         assertEquals("y y", read(file));
+    }
+
+    @Test
+    @DisplayName("摘要给出文件与替换处数")
+    void handle_should_summarizeReplacement() throws Exception {
+        Path file = write("a.txt", "a a");
+
+        ToolCallResult result = invokeResult(tool, args("path", file.toString(),
+                "old_text", "a", "new_text", "b", "replace_all", Boolean.TRUE));
+
+        assertTrue(summaryOf(result).endsWith(" · 替换 2 处"), summaryOf(result));
     }
 
     /**

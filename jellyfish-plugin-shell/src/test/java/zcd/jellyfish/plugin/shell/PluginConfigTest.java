@@ -125,7 +125,7 @@ class PluginConfigTest {
     }
 
     @Test
-    @DisplayName("白名单与追加脱敏模式被读出，多余项被丢弃")
+    @DisplayName("白名单与追加剔除模式被读出，多余项被丢弃")
     void from_should_parseLists() {
         Map<String, Object> values = new HashMap<String, Object>();
         values.put("allowedCommands", Arrays.asList("git status", "  ", "ls"));
@@ -162,6 +162,25 @@ class PluginConfigTest {
         assertTrue(config.commandPolicy().verdict("ls -la").isAbstain());
         assertTrue(config.commandPolicy().verdict("pwd").isDenied());
         assertTrue(config.commandPolicy().verdict("curl x").isDenied());
+    }
+
+    @Test
+    @DisplayName("可信表随命令策略段一起被读出，命中即免审批")
+    void from_should_parseTrustedCommands() {
+        Map<String, Object> policy = new HashMap<String, Object>();
+        policy.put("trustedCommands", Arrays.asList("mvn", "  ", "git commit"));
+        Map<String, Object> values = new HashMap<String, Object>();
+        values.put("allowedCommands", Arrays.asList("mvn", "git"));
+        values.put("commandPolicy", policy);
+
+        PluginConfig config = PluginConfig.from(context(values));
+
+        // 空白项与白名单一样被丢弃
+        assertEquals(2, config.commandPolicy().trustedCommandCount());
+        assertTrue(config.commandPolicy().verdict("mvn test").isAbstain());
+        assertTrue(config.commandPolicy().verdict("git commit -m x").isAbstain());
+        // 未列入可信表的写类命令仍然问人
+        assertTrue(config.commandPolicy().verdict("git push").isAsk());
     }
 
     /**

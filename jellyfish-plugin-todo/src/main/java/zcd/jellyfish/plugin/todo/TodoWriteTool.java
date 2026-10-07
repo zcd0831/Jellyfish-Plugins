@@ -5,6 +5,7 @@ import zcd.jellyfish.api.extension.ExtensionHandler;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
 import zcd.jellyfish.api.extension.ToolDescriptor;
+import zcd.jellyfish.api.extension.ToolMetadata;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -17,13 +18,21 @@ import java.util.Map;
 /**
  * {@code todo_write} 工具：模型写待办的唯一入口。
  * <p>
+ * <b>写的是「协作键」那一份清单</b>：子代理有独立会话，直接按 {@code sessionId} 写就会写到它自己那一份里
+ * （父回合看不见，盘上还多一个文件）。父回合调用时协作键与自己的会话标识相同，行为与从前一致。
+ * <p>
  * <b>整表覆盖而不是增量</b>：模型手上没有稳定的编号，让它 {@code add 1} / {@code done 2} 就得先把编号读回来，
  * 多一轮往返且容易记错；传一整份列表则「增、删、改、重排」共用同一种表达，也不会出现两份互相打架的状态。
  * 编号只在渲染给人看时按位置生成。
  * <p>
  * <b>参数是不可信输入</b>：模型可能传错类型、漏字段、写错枚举值。这里一律当场抛
  * {@link JellyfishException}——ReAct 会把工具异常转成 tool 结果回灌，模型因此能看着错误信息自己改，
- * 而不是让一份坏数据静默落盘。
+ * 而不是让一份坏数据静默落盘。报错消息因此必须<b>带上实际收到的值</b>：只说「实际为 String」时
+ * 模型改不动（它以为自己传的就是对的），会原样重试。
+ * <p>
+ * <b>状态取值与模型的语言对齐</b>：见 {@link TodoStatus}。曾经只认 {@code pending} / {@code completed}，
+ * 而模型习惯写 {@code in_progress}，于是一次写入被整批拒掉——整表覆盖是原子操作，同一批里已经标成
+ * {@code completed} 的项跟着一起丢。三态是为了让模型能如实表达「正在做」，不是为了放宽校验。
  * <p>
  * 无状态，可安全跨线程传递。
  *
@@ -34,11 +43,8 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
     /** 工具名，同时是路由键。 */
     static final String NAME = "todo_write";
 
-    /** 状态取值：未完成。 */
-    private static final String STATUS_PENDING = "pending";
-
-    /** 状态取值：已完成。 */
-    private static final String STATUS_COMPLETED = "completed";
+    /** 报错消息里回显参数值时的长度上限：消息首行会显示在轨迹行上，不能让它变成一整段内容。 */
+    private static final int MAX_DESCRIBE_CHARS = 40;
 
     /** 待办仓库。 */
     private final TodoStore store;
@@ -60,9 +66,15 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
     static ToolDescriptor descriptor() {
         Map<String, Object> itemProperties = new LinkedHashMap<String, Object>();
         itemProperties.put("content", property("string", "待办内容，一句话说清要做什么"));
-        Map<String, Object> status = property("string", "pending 表示未完成，completed 表示已完成");
-        status.put("enum", Arrays.asList(STATUS_PENDING, STATUS_COMPLETED));
+        Map<String, Object> status = property("string",
+                "pending 表示还没轮到它，in_progress 表示此刻正在做的就是这一项，completed 表示已完成，"
+                        + "blocked 表示认领过它的人试过、做不了（这时应在 reason 里写明为什么）");
+        status.put("enum", wiredNames());
         itemProperties.put("status", status);
+        Map<String, Object> reason = property("string",
+                "只有 status 为 blocked 时才有意义：它为什么做不了。写具体一点，"
+                        + "人和父回合要靠它决定下一步");
+        itemProperties.put("reason", reason);
 
         Map<String, Object> itemSchema = new LinkedHashMap<String, Object>();
         itemSchema.put("type", "object");
@@ -79,19 +91,25 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
 
         return new ToolDescriptor(NAME,
                 "创建或更新本会话的待办清单。开始一项需要多步的工作时，先把计划写成待办，"
-                        + "并在推进过程中把完成的项标记为 completed，让用户能看到进度。"
-                        + "内容要简短、可执行；同一时间只应有一项是当前正在做的。",
-                properties, Collections.singletonList("todos"), true);
+                        + "并在推进过程中把当前在做的那一项标成 in_progress、做完的标成 completed，"
+                        + "让用户能看到进度。内容要简短、可执行；同一时间只应有一项是 in_progress。",
+                properties, Collections.singletonList("todos"));
     }
 
     @Override
     public ToolCallResult handle(ToolCallRequest request) {
-        String sessionId = request.getSessionId();
-        if (sessionId == null || sessionId.trim().isEmpty()) {
+        // 协作键而不是 getSessionId()：子代理写的是父会话那一份清单（见 TodoScope）。
+        // 父回合自己调用时两者相同，因此这条规则对它没有任何行为变化。
+        String sessionId = TodoScope.collaborationKeyOf(request);
+        if (sessionId == null) {
             throw new JellyfishException("todo_write 需要会话上下文，当前没有会话");
         }
         List<TodoItem> stored = store.replace(sessionId, parse(request.getArguments().get("todos")));
-        return new ToolCallResult(NAME, TodoText.confirmation(stored));
+        // 摘要在轨迹行上回答「现在有几项待办、完成了几项」，与状态栏同一口径
+        String status = TodoText.statusLine(stored);
+        return new ToolCallResult(NAME, TodoText.confirmation(stored),
+                Collections.<String, Object>singletonMap(ToolMetadata.KEY_SUMMARY,
+                        status == null ? "待办已清空" : status));
     }
 
     /**
@@ -115,7 +133,8 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
             if (!(content instanceof String) || ((String) content).trim().isEmpty()) {
                 throw new JellyfishException("todos 每一项的 content 必须是非空字符串，实际为 " + describe(content));
             }
-            items.add(new TodoItem((String) content, isDone(item.get("status"))));
+            items.add(new TodoItem((String) content, status(item.get("status")),
+                    null, reason(item.get("reason"))));
         }
         return items;
     }
@@ -123,26 +142,52 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
     /**
      * 解析状态取值。
      *
-     * @param status {@code status} 参数原值，可为 {@code null}（按未完成处理）
-     * @return 已完成返回 {@code true}
+     * @param raw {@code status} 参数原值，可为 {@code null}（按未开始处理）
+     * @return 待办状态，保证非 {@code null}
      * @throws JellyfishException 取值不在允许集合内时抛出
      */
-    private static boolean isDone(Object status) {
+    private static TodoStatus status(Object raw) {
+        if (raw == null) {
+            // 少写状态时按「未开始」处理：这是更容易改对的一侧，且不会把计划项当成已完成
+            return TodoStatus.PENDING;
+        }
+        TodoStatus status = raw instanceof String ? TodoStatus.ofWireName((String) raw) : null;
         if (status == null) {
-            // 少写状态时按「未完成」处理：这是更容易改对的一侧，且不会把计划项当成已完成
-            return false;
+            throw new JellyfishException("todos 的 status 只能是 " + TodoStatus.allowedNames()
+                    + "，实际为 " + describe(raw));
         }
-        if (status instanceof String) {
-            String text = ((String) status).trim();
-            if (STATUS_PENDING.equals(text)) {
-                return false;
-            }
-            if (STATUS_COMPLETED.equals(text)) {
-                return true;
-            }
+        return status;
+    }
+
+    /**
+     * 解析卡住原因。
+     * <p>
+     * 与状态取值不同，它<b>不做枚举校验</b>：只有卡住时才有意义，写在别的状态上只是冗余，
+     * 为它报错会把一次本来正确的整表写入整批拒掉——那正是 state 那条路踩过的坑。
+     * 空白按「没写」处理。
+     *
+     * @param raw {@code reason} 参数原值，可为 {@code null}
+     * @return 原因文本；没写时返回 {@code null}
+     */
+    private static String reason(Object raw) {
+        if (!(raw instanceof String)) {
+            return null;
         }
-        throw new JellyfishException("todos 的 status 只能是 " + STATUS_PENDING + " 或 "
-                + STATUS_COMPLETED + "，实际为 " + describe(status));
+        String text = ((String) raw).trim();
+        return text.isEmpty() ? null : text;
+    }
+
+    /**
+     * 拼出允许的状态取值列表，供工具名片使用。
+     *
+     * @return 取值列表
+     */
+    private static List<String> wiredNames() {
+        List<String> names = new ArrayList<String>(TodoStatus.values().length);
+        for (TodoStatus status : TodoStatus.values()) {
+            names.add(status.wireName());
+        }
+        return names;
     }
 
     /**
@@ -161,11 +206,26 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
 
     /**
      * 生成便于排错的参数描述。
+     * <p>
+     * 字符串要打出<b>原文</b>而不是类名：模型最常犯的错是把 {@code status} 写成别的词，
+     * 而「实际为 String」对它是零信息——那句话与「实际为 pending」长得一模一样，于是它只会原样重试
+     * （实测如此：同一份 {@code in_progress} 参数被连续重试了两次）。长度与换行都做了限制，
+     * 因为这条消息的首行会显示在轨迹行上。
      *
      * @param value 参数值，可为 {@code null}
      * @return 描述文本
      */
     private static String describe(Object value) {
-        return value == null ? "null" : value.getClass().getSimpleName();
+        if (value == null) {
+            return "null";
+        }
+        if (value instanceof String) {
+            String text = ((String) value).replace('\n', ' ').trim();
+            if (text.length() <= MAX_DESCRIBE_CHARS) {
+                return '"' + text + '"';
+            }
+            return '"' + text.substring(0, MAX_DESCRIBE_CHARS) + "…\"";
+        }
+        return value.getClass().getSimpleName();
     }
 }

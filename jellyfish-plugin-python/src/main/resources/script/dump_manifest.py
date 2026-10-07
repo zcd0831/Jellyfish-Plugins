@@ -88,7 +88,6 @@ def _normalize_tool(tool):
         "description": tool.get("description") or "",
         "parameters": tool.get("parameters") or {},
         "required": tool.get("required") or [],
-        "readOnly": bool(tool.get("readOnly")),
     }
 
 
@@ -122,6 +121,13 @@ def _normalize(manifest):
         option.get("name") for option in manifest.get("commandOptions") or [])
     normalized["contributions"] = sorted(manifest.get("contributions") or [])
     normalized["events"] = sorted(manifest.get("events") or [])
+    # 周期任务连间隔一起比：漏掉间隔的表现是「任务在跑、只是节奏不对」，它不报任何错
+    normalized["schedules"] = sorted(
+        (
+            {"name": item.get("name"), "intervalSeconds": item.get("intervalSeconds")}
+            for item in manifest.get("schedules") or []
+        ),
+        key=lambda entry: entry["name"] or "")
     return normalized
 
 

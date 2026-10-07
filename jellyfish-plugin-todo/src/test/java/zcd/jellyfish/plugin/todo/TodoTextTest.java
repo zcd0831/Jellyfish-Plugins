@@ -20,13 +20,28 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class TodoTextTest {
 
     @Test
-    @DisplayName("注入 system prompt 的形态要与内核原先一致")
+    @DisplayName("注入 system prompt 的形态要与内核原先一致（没有进行中项时不带图例）")
     void promptBlock_should_renderKernelCompatibleBlock() {
-        List<TodoItem> items = Arrays.asList(new TodoItem("写文档", false), new TodoItem("跑测试", true));
+        List<TodoItem> items = Arrays.asList(new TodoItem("写文档", TodoStatus.PENDING),
+                new TodoItem("跑测试", TodoStatus.COMPLETED));
 
         String block = TodoText.promptBlock(items);
 
-        assertEquals("[待办]\n- [ ] 写文档\n- [x] 跑测试", block);
+        assertEquals("[待办]\n- [ ] 写文档\n- [x] 跑测试\n- 提示：还有 1 条没人做，"
+                + "可以派子代理用 todo_claim 认领它们。", block);
+    }
+
+    @Test
+    @DisplayName("有进行中项时补一句图例：[~] 不像 [ ] / [x] 那样自明")
+    void promptBlock_should_addLegend_when_inProgress() {
+        List<TodoItem> items = Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED),
+                new TodoItem("跑测试", TodoStatus.IN_PROGRESS), new TodoItem("提交", TodoStatus.PENDING));
+
+        String block = TodoText.promptBlock(items);
+
+        assertEquals("[待办]（[ ] 未开始，[~] 进行中，[x] 已完成，[!] 卡住）"
+                + "\n- [x] 写文档\n- [~] 跑测试\n- [ ] 提交\n- 提示：还有 1 条没人做，"
+                + "可以派子代理用 todo_claim 认领它们；1 条已经在做，别再派一遍。", block);
     }
 
     @Test
@@ -36,18 +51,39 @@ class TodoTextTest {
     }
 
     @Test
+    @DisplayName("全部已完成时返回 null：没有活要干就不再每轮重申，但仍要有未完成项时才送全量")
+    void promptBlock_should_returnNull_when_allCompleted() {
+        assertNull(TodoText.promptBlock(Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED),
+                new TodoItem("跑测试", TodoStatus.COMPLETED))));
+    }
+
+    @Test
+    @DisplayName("还剩一件未完成就照发全量：已完成项也在内，模型据此不必重读一遍")
+    void promptBlock_should_keepAllItems_when_anyOpen() {
+        List<TodoItem> items = Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED),
+                new TodoItem("跑测试", TodoStatus.COMPLETED), new TodoItem("提交", TodoStatus.PENDING));
+
+        String block = TodoText.promptBlock(items);
+
+        assertEquals("[待办]\n- [x] 写文档\n- [x] 跑测试\n- [ ] 提交\n- 提示：还有 1 条没人做，"
+                + "可以派子代理用 todo_claim 认领它们。", block);
+    }
+
+    @Test
     @DisplayName("给人看的清单带位置编号，并明确说明为空")
     void list_should_renderNumberedLines() {
         assertEquals("当前没有待办。", TodoText.list(Collections.<TodoItem>emptyList()));
-        assertEquals("待办：\n  [ ] 1. 写文档\n  [x] 2. 跑测试",
-                TodoText.list(Arrays.asList(new TodoItem("写文档", false), new TodoItem("跑测试", true))));
+        assertEquals("待办：\n  [ ] 1. 写文档\n  [~] 2. 跑测试\n  [x] 3. 提交",
+                TodoText.list(Arrays.asList(new TodoItem("写文档", TodoStatus.PENDING),
+                        new TodoItem("跑测试", TodoStatus.IN_PROGRESS),
+                        new TodoItem("提交", TodoStatus.COMPLETED))));
     }
 
     @Test
     @DisplayName("工具确认文本在清单为空时说清「已清空」")
     void confirmation_should_describeBothOutcomes() {
         assertTrue(TodoText.confirmation(Collections.<TodoItem>emptyList()).contains("清空"));
-        assertTrue(TodoText.confirmation(Collections.singletonList(new TodoItem("写文档", false)))
+        assertTrue(TodoText.confirmation(Collections.singletonList(new TodoItem("写文档", TodoStatus.PENDING)))
                 .contains("[ ] 1. 写文档"));
     }
 
@@ -55,14 +91,76 @@ class TodoTextTest {
     @DisplayName("状态栏片段只给进度：一行宽度放不下清单")
     void statusLine_should_renderProgressOnly() {
         assertEquals("待办 1/2", TodoText.statusLine(
-                Arrays.asList(new TodoItem("写文档", true), new TodoItem("跑测试", false))));
+                Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED), new TodoItem("跑测试", TodoStatus.PENDING))));
         assertEquals("待办 0/1", TodoText.statusLine(
-                Collections.singletonList(new TodoItem("写文档", false))));
+                Collections.singletonList(new TodoItem("写文档", TodoStatus.PENDING))));
+    }
+
+    @Test
+    @DisplayName("有进行中项时状态栏补一段：进行中不算完成，但要让人看到在做哪一件")
+    void statusLine_should_appendInProgressCount() {
+        assertEquals("待办 1/3 · 进行中 1", TodoText.statusLine(
+                Arrays.asList(new TodoItem("写文档", TodoStatus.COMPLETED),
+                        new TodoItem("跑测试", TodoStatus.IN_PROGRESS),
+                        new TodoItem("提交", TodoStatus.PENDING))));
+        assertEquals("待办 0/2 · 进行中 2", TodoText.statusLine(
+                Arrays.asList(new TodoItem("写文档", TodoStatus.IN_PROGRESS),
+                        new TodoItem("跑测试", TodoStatus.IN_PROGRESS))));
     }
 
     @Test
     @DisplayName("没有待办时状态栏片段为 null，让调用点表达「不显示」")
     void statusLine_should_returnNull_when_empty() {
         assertNull(TodoText.statusLine(Collections.<TodoItem>emptyList()));
+    }
+    @Test
+    @DisplayName("卡住的条目在图例、注入块与编号清单里都带原因")
+    void blocked_should_alwaysCarryReason() {
+        List<TodoItem> items = Arrays.asList(new TodoItem("核对缓存策略", TodoStatus.BLOCKED, "run-1", "缺写权限"));
+
+        String block = TodoText.promptBlock(items);
+        assertTrue(block.contains("[!] 卡住"), block);
+        assertTrue(block.contains("- [!] 核对缓存策略 —— 缺写权限"), block);
+
+        String list = TodoText.list(items);
+        assertTrue(list.contains("[!] 1. 核对缓存策略 —— 缺写权限"), list);
+    }
+
+    @Test
+    @DisplayName("只有卡住项时也要补图例：[!] 同样不自明")
+    void promptBlock_should_addLegend_when_blocked() {
+        String block = TodoText.promptBlock(
+                Arrays.asList(new TodoItem("核对缓存策略", TodoStatus.BLOCKED, null, "缺写权限")));
+
+        assertTrue(block.startsWith("[待办]（[ ] 未开始，[~] 进行中，[x] 已完成，[!] 卡住）"), block);
+    }
+
+    @Test
+    @DisplayName("批间引导按状态现算：卡住的那句说的是「需要你或用户决定」")
+    void promptBlock_should_guideByState() {
+        String onlyBlocked = TodoText.promptBlock(
+                Arrays.asList(new TodoItem("甲", TodoStatus.BLOCKED, null, "缺权限")));
+        String mixed = TodoText.promptBlock(Arrays.asList(
+                new TodoItem("甲", TodoStatus.PENDING),
+                new TodoItem("乙", TodoStatus.IN_PROGRESS),
+                new TodoItem("丙", TodoStatus.BLOCKED, null, "缺权限")));
+
+        assertEquals("[待办]（[ ] 未开始，[~] 进行中，[x] 已完成，[!] 卡住）\n- [!] 甲 —— 缺权限"
+                + "\n- 提示：1 条卡住了，需要你或用户决定怎么做。", onlyBlocked);
+        assertTrue(mixed.endsWith("还有 1 条没人做，可以派子代理用 todo_claim 认领它们；1 条已经在做，"
+                + "别再派一遍；1 条卡住了，需要你或用户决定怎么做。"), mixed);
+    }
+
+    @Test
+    @DisplayName("状态行把「还在做」与「做不了」分开：进度涨不上去的两种原因不一样")
+    void statusLine_should_countBlocked() {
+        assertEquals("待办 0/3 · 进行中 1 · 卡住 1", TodoText.statusLine(Arrays.asList(
+                new TodoItem("甲", TodoStatus.IN_PROGRESS),
+                new TodoItem("乙", TodoStatus.BLOCKED, null, "缺权限"),
+                new TodoItem("丙", TodoStatus.PENDING))));
+        assertEquals("待办 2/3 · 卡住 1", TodoText.statusLine(Arrays.asList(
+                new TodoItem("甲", TodoStatus.COMPLETED),
+                new TodoItem("乙", TodoStatus.COMPLETED),
+                new TodoItem("丙", TodoStatus.BLOCKED, null, "缺权限"))));
     }
 }
