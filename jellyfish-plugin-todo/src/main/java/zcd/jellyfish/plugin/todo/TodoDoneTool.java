@@ -38,13 +38,18 @@ final class TodoDoneTool implements ExtensionHandler<ToolCallRequest, ToolCallRe
     /** 待办仓库。 */
     private final TodoStore store;
 
+    /** 协作键解析。 */
+    private final TodoScope scope;
+
     /**
      * 构造工具。
      *
      * @param store 待办仓库，不可为 {@code null}
+     * @param scope 协作键解析，不可为 {@code null}
      */
-    TodoDoneTool(TodoStore store) {
+    TodoDoneTool(TodoStore store, TodoScope scope) {
         this.store = store;
+        this.scope = scope;
     }
 
     /**
@@ -66,7 +71,7 @@ final class TodoDoneTool implements ExtensionHandler<ToolCallRequest, ToolCallRe
 
     @Override
     public ToolCallResult handle(ToolCallRequest request) {
-        String key = TodoScope.collaborationKeyOf(request);
+        String key = scope.collaborationKeyOf(request);
         if (key == null) {
             throw new JellyfishException("todo_done 需要会话上下文，当前没有会话");
         }

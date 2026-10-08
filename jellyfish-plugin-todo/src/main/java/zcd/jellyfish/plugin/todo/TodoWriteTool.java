@@ -49,13 +49,18 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
     /** 待办仓库。 */
     private final TodoStore store;
 
+    /** 协作键解析。 */
+    private final TodoScope scope;
+
     /**
      * 构造工具。
      *
      * @param store 待办仓库，不可为 {@code null}
+     * @param scope 协作键解析，不可为 {@code null}
      */
-    TodoWriteTool(TodoStore store) {
+    TodoWriteTool(TodoStore store, TodoScope scope) {
         this.store = store;
+        this.scope = scope;
     }
 
     /**
@@ -98,9 +103,9 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
 
     @Override
     public ToolCallResult handle(ToolCallRequest request) {
-        // 协作键而不是 getSessionId()：子代理写的是父会话那一份清单（见 TodoScope）。
+        // 协作键而不是 getSessionId()：子代理写的是它归属的那一份清单（见 TodoScope）。
         // 父回合自己调用时两者相同，因此这条规则对它没有任何行为变化。
-        String sessionId = TodoScope.collaborationKeyOf(request);
+        String sessionId = scope.collaborationKeyOf(request);
         if (sessionId == null) {
             throw new JellyfishException("todo_write 需要会话上下文，当前没有会话");
         }

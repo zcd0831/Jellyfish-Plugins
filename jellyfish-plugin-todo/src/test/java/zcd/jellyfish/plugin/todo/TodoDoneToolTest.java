@@ -39,7 +39,7 @@ class TodoDoneToolTest {
     @BeforeEach
     void setUp() {
         store = new TodoStore(directory);
-        tool = new TodoDoneTool(store);
+        tool = new TodoDoneTool(store, TodoTestScope.self());
     }
 
     @Test
@@ -48,7 +48,7 @@ class TodoDoneToolTest {
         store.replace("s-1", Collections.singletonList(new TodoItem("甲", TodoStatus.PENDING)));
         store.claim("s-1", "run-1");
 
-        ToolCallResult result = tool.handle(request("child-1", "s-1", "run-1", "甲"));
+        ToolCallResult result = tool.handle(request("s-1", null, "run-1", "甲"));
 
         assertEquals("已完成：甲", String.valueOf(result.getOutput()));
         assertEquals(TodoStatus.COMPLETED, store.itemsOf("s-1").get(0).status());
@@ -60,7 +60,7 @@ class TodoDoneToolTest {
     void handle_should_reportNotFound() {
         store.replace("s-1", Collections.singletonList(new TodoItem("甲", TodoStatus.PENDING)));
 
-        ToolCallResult result = tool.handle(request("child-1", "s-1", "run-1", "假"));
+        ToolCallResult result = tool.handle(request("s-1", null, "run-1", "假"));
 
         assertTrue(String.valueOf(result.getOutput()).contains("没有内容为 \"假\" 的那一条"),
                 String.valueOf(result.getOutput()));
@@ -75,7 +75,7 @@ class TodoDoneToolTest {
         store.replace("s-1", Collections.singletonList(new TodoItem("甲", TodoStatus.PENDING)));
         store.claim("s-1", "run-9");
 
-        ToolCallResult result = tool.handle(request("child-1", "s-1", "run-1", "甲"));
+        ToolCallResult result = tool.handle(request("s-1", null, "run-1", "甲"));
 
         assertTrue(String.valueOf(result.getOutput()).contains("正被另一个子代理认领"),
                 String.valueOf(result.getOutput()));
@@ -83,10 +83,11 @@ class TodoDoneToolTest {
     }
 
     @Test
-    @DisplayName("子代理完成的是父会话那一份：父回合立刻看得见")
+    @DisplayName("子代理完成的是它归属的那一份：父回合立刻看得见")
     void handle_should_completeInParentList() {
         store.replace("parent-1", Collections.singletonList(new TodoItem("甲", TodoStatus.PENDING)));
         store.claim("parent-1", "run-1");
+        tool = new TodoDoneTool(store, TodoTestScope.nested("child-1", "parent-1"));
 
         tool.handle(request("child-1", "parent-1", "run-1", "甲"));
 
@@ -103,7 +104,7 @@ class TodoDoneToolTest {
         assertTrue(missing.getMessage().contains("content 必须是非空字符串"), missing.getMessage());
 
         JellyfishException blank = assertThrows(JellyfishException.class,
-                () -> tool.handle(request("child-1", "s-1", "run-1", "   ")));
+                () -> tool.handle(request("s-1", null, "run-1", "   ")));
         assertTrue(blank.getMessage().contains("content 必须是非空字符串"), blank.getMessage());
     }
 

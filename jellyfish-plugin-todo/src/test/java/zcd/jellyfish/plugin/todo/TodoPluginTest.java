@@ -70,9 +70,12 @@ class TodoPluginTest {
         events.start();
         Map<String, Object> configuration = new LinkedHashMap<String, Object>();
         configuration.put("todoDir", directory.toString());
+        // 会话域只用来回答「归属会话」：本类里的会话都归自己（委派场景由 TodoScopeTest 与工具用例覆盖）
+        SessionManager sessions = Mockito.mock(SessionManager.class);
+        Mockito.lenient().when(sessions.ownerSessionId(Mockito.anyString()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
         PluginContext context = new PluginContextImpl(
-                PluginDeclaration.of("jellyfish-plugin-todo", configuration), extensions, events,
-                Mockito.mock(SessionManager.class));
+                PluginDeclaration.of("jellyfish-plugin-todo", configuration), extensions, events, sessions);
         new TodoPlugin().start(context);
     }
 

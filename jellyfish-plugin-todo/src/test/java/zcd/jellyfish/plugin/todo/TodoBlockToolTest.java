@@ -41,7 +41,7 @@ class TodoBlockToolTest {
     @BeforeEach
     void setUp() {
         store = new TodoStore(directory);
-        tool = new TodoBlockTool(store);
+        tool = new TodoBlockTool(store, TodoTestScope.self());
     }
 
     @Test
@@ -51,7 +51,7 @@ class TodoBlockToolTest {
                 new TodoItem("乙", TodoStatus.PENDING)));
         store.claim("s-1", "run-1");
 
-        ToolCallResult result = tool.handle(request("child-1", "s-1", "run-1", "甲", "需要写权限"));
+        ToolCallResult result = tool.handle(request("s-1", null, "run-1", "甲", "需要写权限"));
 
         String text = String.valueOf(result.getOutput());
         assertTrue(text.contains("已记下卡住：甲"), text);
@@ -72,7 +72,7 @@ class TodoBlockToolTest {
         assertTrue(missing.getMessage().contains("参数必须是非空字符串"), missing.getMessage());
 
         JellyfishException blank = assertThrows(JellyfishException.class,
-                () -> tool.handle(request("child-1", "s-1", "run-1", "甲", "  ")));
+                () -> tool.handle(request("s-1", null, "run-1", "甲", "  ")));
         assertTrue(blank.getMessage().contains("参数必须是非空字符串"), blank.getMessage());
     }
 
@@ -81,7 +81,7 @@ class TodoBlockToolTest {
     void handle_should_reportNotFound() {
         store.replace("s-1", Collections.singletonList(new TodoItem("甲", TodoStatus.PENDING)));
 
-        ToolCallResult result = tool.handle(request("child-1", "s-1", "run-1", "假", "原因"));
+        ToolCallResult result = tool.handle(request("s-1", null, "run-1", "假", "原因"));
 
         assertTrue(String.valueOf(result.getOutput()).contains("没有内容为 \"假\" 的那一条"),
                 String.valueOf(result.getOutput()));
@@ -96,7 +96,7 @@ class TodoBlockToolTest {
         store.replace("s-1", Collections.singletonList(new TodoItem("甲", TodoStatus.PENDING)));
         store.claim("s-1", "run-9");
 
-        ToolCallResult result = tool.handle(request("child-1", "s-1", "run-1", "甲", "做不了"));
+        ToolCallResult result = tool.handle(request("s-1", null, "run-1", "甲", "做不了"));
 
         assertTrue(String.valueOf(result.getOutput()).contains("正被另一个子代理认领"),
                 String.valueOf(result.getOutput()));
@@ -104,10 +104,11 @@ class TodoBlockToolTest {
     }
 
     @Test
-    @DisplayName("子代理卡住的是父会话那一份：父回合立刻看得见")
+    @DisplayName("子代理卡住的是它归属的那一份：父回合立刻看得见")
     void handle_should_blockInParentList() {
         store.replace("parent-1", Collections.singletonList(new TodoItem("甲", TodoStatus.PENDING)));
         store.claim("parent-1", "run-1");
+        tool = new TodoBlockTool(store, TodoTestScope.nested("child-1", "parent-1"));
 
         tool.handle(request("child-1", "parent-1", "run-1", "甲", "环境不通"));
 

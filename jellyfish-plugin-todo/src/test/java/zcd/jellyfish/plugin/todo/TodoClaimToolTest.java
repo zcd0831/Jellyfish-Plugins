@@ -44,7 +44,7 @@ class TodoClaimToolTest {
     @BeforeEach
     void setUp() {
         store = new TodoStore(directory);
-        tool = new TodoClaimTool(store);
+        tool = new TodoClaimTool(store, TodoTestScope.self());
     }
 
     @Test
@@ -52,7 +52,7 @@ class TodoClaimToolTest {
     void handle_should_claimAndReport() {
         store.replace("s-1", items("甲", "乙"));
 
-        ToolCallResult result = tool.handle(child("child-1", "s-1", "run-1"));
+        ToolCallResult result = tool.handle(child("s-1", null, "run-1"));
 
         assertTrue(String.valueOf(result.getOutput()).contains("已认领：甲"), String.valueOf(result.getOutput()));
         assertTrue(String.valueOf(result.getOutput()).contains(TodoDoneTool.NAME),
@@ -92,9 +92,10 @@ class TodoClaimToolTest {
     }
 
     @Test
-    @DisplayName("子代理认领的是**父会话**那一份：自己的会话里不留东西，也不产生文件")
+    @DisplayName("子代理认领的是它归属的那一份：自己的会话里不留东西，也不产生文件")
     void handle_should_claimInParentList() {
         store.replace("parent-1", items("甲"));
+        tool = new TodoClaimTool(store, TodoTestScope.nested("child-1", "parent-1"));
 
         tool.handle(child("child-1", "parent-1", "run-1"));
 

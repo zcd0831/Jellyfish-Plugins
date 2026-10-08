@@ -45,7 +45,7 @@ class TodoWriteToolTest {
     @BeforeEach
     void setUp() {
         store = new TodoStore(directory);
-        tool = new TodoWriteTool(store);
+        tool = new TodoWriteTool(store, TodoTestScope.self());
     }
 
     @Test
@@ -219,6 +219,23 @@ class TodoWriteToolTest {
         Map<String, Object> arguments = arguments(Arrays.<Object>asList(item("写文档", "pending")));
 
         assertThrows(JellyfishException.class, () -> tool.handle(new ToolCallRequest(TodoWriteTool.NAME, arguments)));
+    }
+
+    @Test
+    @DisplayName("子代理写的是它归属的那份清单：父回合的文件被改，而不是多出一个只属于那个 run 的文件")
+    void handle_should_writeOwnerList_when_subAgent() {
+        // Given：子代理的临时会话归用户会话（归属由内核算，这里显式给出）
+        tool = new TodoWriteTool(store, TodoTestScope.of(Collections.singletonMap("child", "root")));
+
+        // When
+        ToolCallResult result = tool.handle(new ToolCallRequest(TodoWriteTool.NAME,
+                arguments(Arrays.<Object>asList(item("写文档", "pending"))), "child", null, null,
+                "root", "run-1", "root-run-1"));
+
+        // Then：写进父回合那份，子代理自己的会话里什么都不该留下
+        assertEquals(1, store.itemsOf("root").size());
+        assertTrue(store.itemsOf("child").isEmpty(), "不该给子代理会话留下孤儿清单");
+        assertTrue(result.getOutput().toString().contains("写文档"), result.getOutput().toString());
     }
 
     /**

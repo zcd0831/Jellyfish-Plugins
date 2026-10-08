@@ -17,6 +17,10 @@ import zcd.jellyfish.api.extension.TurnContextRequest;
  * 用户消息原样下发。判据为何是「还有没有未完成项」而不是「内容变没变」，见
  * {@link TodoText#promptBlock(java.util.List)}。
  * <p>
+ * <b>清单取自「归属会话」而不是请求里的会话标识</b>：嵌套回合的请求带的是子代理自己的临时会话，
+ * 而它要送达的是用户那一份清单——照原样取的话，子代理每轮看到的都是一份空清单，
+ * 而它写进去的活却在父回合那份里（见 {@link TodoScope}）。
+ * <p>
  * <b>刻意不做「状态没变就不送」的去重</b>：那看起来更省，却引入一个难查的失败模式——上一次送的
  * 内容可能已经落进被压缩掉的那一段，于是模型从此再也看不到自己的计划，表现是「它突然忘了自己
  * 在做什么」，而日志里什么都看不出来。而待办块只有几行、又落在已缓存的前缀之后，
@@ -31,19 +35,24 @@ final class TodoTurnContext implements ExtensionHandler<TurnContextRequest, Turn
     /** 待办仓库。 */
     private final TodoStore store;
 
+    /** 协作键解析。 */
+    private final TodoScope scope;
+
     /**
      * 构造处理器。
      *
      * @param store 待办仓库，不可为 {@code null}
+     * @param scope 协作键解析，不可为 {@code null}
      */
-    TodoTurnContext(TodoStore store) {
+    TodoTurnContext(TodoStore store, TodoScope scope) {
         this.store = store;
+        this.scope = scope;
     }
 
     @Override
     public TurnContext handle(TurnContextRequest request) {
-        String sessionId = request.getSessionId();
-        if (sessionId == null || sessionId.trim().isEmpty()) {
+        String sessionId = scope.collaborationKeyOf(request.getSessionId());
+        if (sessionId == null) {
             return TurnContext.empty();
         }
         return TurnContext.of(TodoText.promptBlock(store.itemsOf(sessionId)));

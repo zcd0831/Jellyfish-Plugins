@@ -27,7 +27,7 @@ import java.nio.file.Path;
  *     <li>{@code todo_write} 工具 → {@link ToolCallRequest}，模型写待办的唯一入口；</li>
  *     <li>{@code todo_claim} / {@code todo_done} / {@code todo_release} / {@code todo_block} 工具 →
  *     {@link ToolCallRequest}，子代理认领、完成、放回与记成卡住；它们与父回合读写的是<b>同一份</b>清单
- *     （子代理落在父会话上，见 {@code TodoScope}）；</li>
+ *     （键是「归属会话」，见 {@link TodoScope}）；</li>
  *     <li>{@code /todo} 命令 → {@link CommandRequest}，给人看的只读清单；</li>
  *     <li>选型规则 → {@link PromptContributionRequest}（{@code STATIC}）：什么时候把活写进待办让子代理认领，
  *     而不是写进 system prompt 的状态部分——那部分每变一次就要重新计费整段历史；</li>
@@ -64,10 +64,12 @@ public final class TodoPlugin implements JellyfishPlugin {
         Path directory = config.todoDirectory();
         // 先装配仓库再注册：处理器一旦注册就可能被调用，依赖必须已经就绪
         TodoStore store = new TodoStore(directory);
+        // 协作键解析：工具与回合上下文共用同一份规则（归属会话，见 TodoScope）
+        TodoScope scope = new TodoScope(context);
         context.handle(CommandRequest.class, "todo",
                 // 末尾显式声明 sessionRequired=true：待办是按会话归属的，没有会话就没有待办可看
                 new CommandDescriptor("查看当前会话待办", null, null, true), new TodoCommand(store));
-        context.contribute(TurnContextRequest.class, new TodoTurnContext(store));
+        context.contribute(TurnContextRequest.class, new TodoTurnContext(store, scope));
         // 选型规则走 STATIC（编译期固定、进可缓存前缀）；「还剩几条」那类状态随回合块走
         context.contribute(PromptContributionRequest.class, new TodoGuidance());
         context.contribute(StatusLineContributionRequest.class, new TodoStatusLine(store));
@@ -82,15 +84,15 @@ public final class TodoPlugin implements JellyfishPlugin {
             return null;
         });
         registerStateChangingTool(context, TodoWriteTool.NAME, TodoWriteTool.descriptor(),
-                new TodoWriteTool(store));
+                new TodoWriteTool(store, scope));
         registerStateChangingTool(context, TodoClaimTool.NAME, TodoClaimTool.descriptor(),
-                new TodoClaimTool(store));
+                new TodoClaimTool(store, scope));
         registerStateChangingTool(context, TodoDoneTool.NAME, TodoDoneTool.descriptor(),
-                new TodoDoneTool(store));
+                new TodoDoneTool(store, scope));
         registerStateChangingTool(context, TodoReleaseTool.NAME, TodoReleaseTool.descriptor(),
-                new TodoReleaseTool(store));
+                new TodoReleaseTool(store, scope));
         registerStateChangingTool(context, TodoBlockTool.NAME, TodoBlockTool.descriptor(),
-                new TodoBlockTool(store));
+                new TodoBlockTool(store, scope));
         LOG.info("待办插件已启动: dir={}", directory);
     }
 

@@ -9,6 +9,7 @@ import zcd.jellyfish.api.extension.TurnContextRequest;
 
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -34,7 +35,23 @@ class TodoTurnContextTest {
     @BeforeEach
     void setUp() {
         store = new TodoStore(directory);
-        turnContext = new TodoTurnContext(store);
+        turnContext = new TodoTurnContext(store, TodoTestScope.self());
+    }
+
+    @Test
+    @DisplayName("嵌套回合送达的是「归属会话」那份清单，不是子代理自己那份空的")
+    void handle_should_renderOwnerList_when_nestedTurn() {
+        // Given：用户会话有一份计划，而请求带的是子代理自己的临时会话
+        store.replace("root", Collections.singletonList(new TodoItem("写文档", TodoStatus.PENDING)));
+        turnContext = new TodoTurnContext(store,
+                TodoTestScope.of(Collections.singletonMap("child", "root")));
+
+        // When
+        TurnContext result = turnContext.handle(new TurnContextRequest("child", "任务原文", true));
+
+        // Then：照原样取请求里的会话，子代理每轮都会看到一份空清单，而它写进去的活却在父回合那份里
+        assertTrue(!result.isEmpty(), "子代理必须看得见父回合的计划");
+        assertTrue(result.getText().contains("写文档"), result.getText());
     }
 
     @Test
