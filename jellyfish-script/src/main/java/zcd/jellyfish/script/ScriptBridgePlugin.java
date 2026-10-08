@@ -128,10 +128,15 @@ public abstract class ScriptBridgePlugin implements JellyfishPlugin {
     }
 
     /**
-     * 停止插件：关闭脚本运行时并释放全部状态。
+     * 停止插件：关闭事件桥、周期任务与脚本运行时，并释放全部状态。
      * <p>
-     * 注册由框架按 owner 命名空间回收，这里只释放自己的引用；顺序上必须先关运行时，
-     * 它负责把子进程（网关与全部 worker）请走。
+     * 注册由框架按 owner 命名空间回收，但<b>事件桥不在其列</b>：它由本插件自己创建、
+     * 自己持有推送线程，框架只回收注册出去的订阅。因此必须显式 {@code events.close()}——
+     * 推送线程阻塞在队列的 {@code take()} 上，唯一的唤醒方式就是关掉事件桥本身；
+     * 漏掉它会让每次停止（含 {@code /reload}）留下一条常驻线程与一整份对象图。
+     * <p>
+     * <b>事件桥排在网关之前</b>：它唯一的出口就是网关，网关关掉之后它推什么都是白费，
+     * 早关一步就少一次无意义的写。
      * <p>
      * <b>周期任务必须排在网关之前关</b>：任务体会走一次脚本调用，网关先关的话每一次触发
      * 都变成一条「调用失败」的噪声日志，而那是预期内的关闭，不是故障。
@@ -142,6 +147,9 @@ public abstract class ScriptBridgePlugin implements JellyfishPlugin {
             return;
         }
         LOG.info("{} 桥接插件已停止: {} {}", language.displayName(), language, ledger.summary());
+        if (events != null) {
+            events.close();
+        }
         if (scheduler != null) {
             scheduler.close();
         }

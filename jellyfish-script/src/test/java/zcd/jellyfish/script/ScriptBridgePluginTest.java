@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -180,6 +181,47 @@ class ScriptBridgePluginTest {
         // 注册动作本身由 PluginContext 承担，这里只钉住路由键用的是语言标识：
         // 用别的键会让 /<语言> 命令在真实内核里查不到
         assertEquals("demo", plugin.language().id());
+    }
+
+    @Test
+    @DisplayName("stop 应关闭事件桥，不留下推送线程")
+    void stop_should_closeEventBridge_when_calledAfterStart() throws InterruptedException {
+        when(context.configuration()).thenReturn(null);
+        when(context.pluginId()).thenReturn(PLUGIN_ID);
+        DemoPlugin plugin = new DemoPlugin();
+        int before = eventPushThreadCount();
+
+        plugin.start(context);
+        assertEquals(before + 1, eventPushThreadCount(), "start 应当只多出一条事件推送线程");
+
+        plugin.stop();
+
+        // 推送线程阻塞在队列的 take() 上，唯一的唤醒方式就是 close()；给它一点收敛时间再断言
+        for (int i = 0; i < 50 && eventPushThreadCount() > before; i++) {
+            Thread.sleep(20L);
+        }
+        assertEquals(before, eventPushThreadCount(),
+                "stop 之后推送线程必须已经退出，否则每次 /reload 都会漏一条线程");
+    }
+
+    /**
+     * 统计当前进程里本用例这条事件桥的推送线程数。
+     * <p>
+     * 线程名带上 {@link DemoLanguage#displayName()}，且用「前后差分」而不是「有没有」：
+     * 同一个 JVM 里还跑着其它用例的事件桥（本类里只 start 不 stop 的、以及
+     * {@code ScriptEventBridgeTest} 各自的 label），按公共前缀找会把它们算进来。
+     *
+     * @return 存活的推送线程数
+     */
+    private static int eventPushThreadCount() {
+        String name = "jellyfish-script-events-" + new DemoLanguage("demo").displayName();
+        int count = 0;
+        for (Thread thread : Thread.getAllStackTraces().keySet()) {
+            if (thread.isAlive() && name.equals(thread.getName())) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**

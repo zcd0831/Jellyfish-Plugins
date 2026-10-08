@@ -50,6 +50,9 @@ public final class ScriptEventBridge implements ScriptEventSink, AutoCloseable {
     /** 推送队列容量：够吸收一次突发，又不至于让积压的事件比新事件还旧。 */
     private static final int QUEUE_CAPACITY = 256;
 
+    /** 等待推送线程退出的毫秒数。 */
+    private static final long JOIN_TIMEOUT_MILLIS = 1000L;
+
     /** 待推送队列：元素是已投影好的字段表。 */
     private final BlockingQueue<Map<String, Object>> queue =
             new ArrayBlockingQueue<Map<String, Object>>(QUEUE_CAPACITY);
@@ -273,9 +276,14 @@ public final class ScriptEventBridge implements ScriptEventSink, AutoCloseable {
         if (current != null) {
             current.interrupt();
             try {
-                current.join(1000L);
+                current.join(JOIN_TIMEOUT_MILLIS);
             } catch (InterruptedException error) {
                 Thread.currentThread().interrupt();
+            }
+            // 线程没停就说明它还卡在某处（例如正阻塞在网关的写调用上）：
+            // 记一条告警，否则「停止之后仍有线程在跑」这件事在日志里完全看不见
+            if (current.isAlive()) {
+                LOG.warn("{} 事件推送线程未在 {} ms 内退出，已放弃等待", label, JOIN_TIMEOUT_MILLIS);
             }
         }
         queue.clear();
