@@ -316,7 +316,7 @@ final class ResmonSampler implements AutoCloseable {
                 }
                 for (Path child : children) {
                     String name = child.getFileName().toString();
-                    if (isSiblingOfAnother(children, name)) {
+                    if (isSiblingOfAnother(children, name, Files.isRegularFile(child))) {
                         continue;
                     }
                     usages.add(sizer.child(name, child));
@@ -339,16 +339,32 @@ final class ResmonSampler implements AutoCloseable {
     }
 
     /**
-     * 判断一个名字是不是「另一个同级子项的点号后缀」。
+     * 判断一个条目是不是「另一个同级子项的点号后缀」，因而会被那个子项折进去。
+     * <p>
+     * <b>只有「同名同级项是普通文件」时才会真的折进去</b>：把轮换档算进主文件的是
+     * {@link DirSizer#fileWithSiblings}，它只对普通文件生效（{@code isRegularFile}）。
+     * 因此这里必须收窄到同一种形状——否则 {@code stock.old} 在主项 {@code stock} 是个
+     * <b>目录</b>时既不成项、也没人算它，合计就少了一块；反向那一半（主项是文件、自己是目录）
+     * 同理：目录不会被 {@code fileWithSiblings} 求和。
+     * <p>
+     * <b>「跳过了多少」不值得单独报出来</b>：这些条目本来就该归在主项名下，而它们在磁盘上
+     * 属于同一件事——报一句「另有 3 个轮换档已并入」只会给面板加一行没人看的字。
      *
      * @param children 同级的全部子项路径，不可为 {@code null}
      * @param name     待判断的名字，不可为 {@code null}
-     * @return 是某个同级子项的后缀时返回 {@code true}
+     * @param isFile   待判断的条目是不是普通文件
+     * @return 会被某个同级子项折进去时返回 {@code true}
      */
-    private static boolean isSiblingOfAnother(List<Path> children, String name) {
+    private static boolean isSiblingOfAnother(List<Path> children, String name, boolean isFile) {
+        if (!isFile) {
+            return false;
+        }
         for (Path other : children) {
             String base = other.getFileName().toString();
-            if (!base.equals(name) && name.startsWith(base + ".")) {
+            if (base.equals(name) || !name.startsWith(base + ".")) {
+                continue;
+            }
+            if (Files.isRegularFile(other)) {
                 return true;
             }
         }

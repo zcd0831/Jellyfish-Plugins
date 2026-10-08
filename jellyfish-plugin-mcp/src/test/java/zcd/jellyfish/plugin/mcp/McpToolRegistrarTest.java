@@ -23,8 +23,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -232,6 +234,85 @@ class McpToolRegistrarTest {
 
         // Then
         assertEquals("ok", result.getOutput());
+    }
+
+    @Test
+    @DisplayName("两条线程同时换清单：最后留在注册表里的必须恰好是其中一份，不能是混合")
+    void apply_should_neverLeaveMixedRegistration_whenConcurrent() throws Exception {
+        // Given：两份完全不相交的清单（名字不同，因此「泄漏」在注册表里一眼可见）
+        List<McpToolDefinition> first = tools("a", 50);
+        List<McpToolDefinition> second = tools("b", 50);
+        Set<String> expectedFirst = namesOf(first);
+        Set<String> expectedSecond = namesOf(second);
+
+        // When / Then：反复并发换清单。这条用例是**压力型**的：它守的不变量很清楚
+        // （最后只该留一份），但能不能撞上交错取决于线程调度，因此多跑几轮提高命中率。
+        // 之所以要这条：apply 是「关旧 → 装标记 → 注册新 → 摘没注册成的」四步，
+        // 整段不是原子的，交错会让先注册的那批 Subscription 再没人关，
+        // 于是一批已经不在清单上的工具留在注册表里——而模型看得见它们。
+        for (int round = 0; round < 20; round++) {
+            Thread one = new Thread(() -> registrar.apply(invoker, server("fs"), first), "apply-a");
+            Thread two = new Thread(() -> registrar.apply(invoker, server("fs"), second), "apply-b");
+            one.start();
+            two.start();
+            one.join();
+            two.join();
+
+            Set<String> live = liveTools(expectedFirst, expectedSecond);
+            assertTrue(live.equals(expectedFirst) || live.equals(expectedSecond),
+                    "第 " + (round + 1) + " 轮出现了混合注册：活着的工具 " + live.size()
+                            + " 个（应为 50）");
+        }
+    }
+
+    /**
+     * 取此刻真正在注册表里的工具名。
+     *
+     * @param candidates 候选名字（两份清单的并集）
+     * @return 活着的名字集合
+     */
+    private Set<String> liveTools(Set<String>... candidates) {
+        Set<String> live = new LinkedHashSet<String>();
+        for (Set<String> group : candidates) {
+            for (String name : group) {
+                if (!extensions.handlers(ToolCallRequest.class, name).isEmpty()) {
+                    live.add(name);
+                }
+            }
+        }
+        return live;
+    }
+
+    /**
+     * 构造一批工具名（展开名形式）。
+     *
+     * @param prefix 名字前缀
+     * @param count  个数
+     * @return 名字集合
+     */
+    private static Set<String> namesOf(List<McpToolDefinition> tools) {
+        Set<String> names = new LinkedHashSet<String>();
+        for (McpToolDefinition definition : tools) {
+            names.add(definition.qualifiedName());
+        }
+        return names;
+    }
+
+    /**
+     * 构造一批工具定义。
+     *
+     * @param prefix 原始名前缀
+     * @param count  个数
+     * @return 定义列表
+     */
+    private static List<McpToolDefinition> tools(String prefix, int count) {
+        List<McpToolDefinition> definitions = new ArrayList<McpToolDefinition>(count);
+        for (int index = 0; index < count; index++) {
+            String name = prefix + index;
+            definitions.add(new McpToolDefinition("fs", name, "mcp__fs__" + name, "d",
+                    Collections.<String, Object>emptyMap(), Collections.<String>emptyList(), true));
+        }
+        return definitions;
     }
 
     /**

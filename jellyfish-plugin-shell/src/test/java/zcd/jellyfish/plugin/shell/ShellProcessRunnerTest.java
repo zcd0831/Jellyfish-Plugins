@@ -353,6 +353,72 @@ class ShellProcessRunnerTest {
         assertEquals(1, process.destroys());
     }
 
+    @Test
+    @DisplayName("静默终止报的是「真的静默了多久」，不是总耗时——先跑了 1.4 秒再卡住的命令不该被说成卡了 2 秒")
+    void run_should_reportRealSilence_whenIdleTimeout() {
+        ShellTestSupport.FakeProcess process = new ShellTestSupport.FakeProcess();
+        ShellTestSupport.RecordingSink sink = new ShellTestSupport.RecordingSink();
+        ShellProcessRunner runner = new ShellProcessRunner(new ShellTestSupport.FakeLauncher(process));
+        // 先连续输出约 1.4 秒，然后彻底安静下来
+        startWriter(process, 15);
+
+        ShellResult result = runner.run(invocation(30_000L, 1_000L), sink, CancellationToken.NONE);
+
+        assertEquals(ShellResult.Termination.IDLE_TIMEOUT, result.termination());
+        String summary = result.summary(CWD.toString());
+        // 1 秒的门槛在 2.4 秒左右触发：静默约 1 秒、总耗时约 2.4 秒——两个数落在不同的整秒里。
+        // 用耗时冒充静默时长的话，这里会是「连续 2 秒无输出」
+        assertTrue(summary.contains("连续 1 秒无输出"), summary);
+        assertFalse(summary.contains("连续 2 秒"), summary);
+        Object idle = result.metadata().get("idleMs");
+        assertTrue(idle instanceof Long, String.valueOf(idle));
+        assertTrue(((Long) idle).longValue() >= 1_000L, String.valueOf(idle));
+    }
+
+    @Test
+    @DisplayName("静默时长必须严格小于总耗时（否则两个数里有一个是假的）")
+    void run_should_keepIdleSmallerThanTotal() {
+        ShellTestSupport.FakeProcess process = new ShellTestSupport.FakeProcess();
+        ShellProcessRunner runner = new ShellProcessRunner(new ShellTestSupport.FakeLauncher(process));
+        startWriter(process, 15);
+
+        ShellResult result = runner.run(invocation(30_000L, 1_000L),
+                new ShellTestSupport.RecordingSink(), CancellationToken.NONE);
+
+        long idle = ((Long) result.metadata().get("idleMs")).longValue();
+        long total = ((Long) result.metadata().get("durationMs")).longValue();
+        assertTrue(idle < total, "静默 " + idle + "ms 不该大等于总耗时 " + total + "ms");
+    }
+
+    /**
+     * 起一条后台线程，持续写出一点输出后停下。
+     *
+     * @param process 假进程
+     * @param rounds  写出多少轮（每轮 100 毫秒）
+     */
+    private static void startWriter(ShellTestSupport.FakeProcess process, int rounds) {
+        Thread writer = new Thread(() -> {
+            for (int index = 0; index < rounds; index++) {
+                process.write("还在跑\n");
+                sleep(100L);
+            }
+        }, "fake-writer");
+        writer.setDaemon(true);
+        writer.start();
+    }
+
+    @Test
+    @DisplayName("非静默终止不带 idleMs 字段")
+    void run_should_omitIdleMetadata_whenNotIdleTimeout() {
+        ShellTestSupport.FakeProcess process = new ShellTestSupport.FakeProcess();
+        process.exitNow(0);
+
+        ShellResult result = new ShellProcessRunner(new ShellTestSupport.FakeLauncher(process))
+                .run(invocation(5_000L, 0L), new ShellTestSupport.RecordingSink(), CancellationToken.NONE);
+
+        assertFalse(result.metadata().containsKey("idleMs"));
+    }
+
     /**
      * 构造调用参数。
      *

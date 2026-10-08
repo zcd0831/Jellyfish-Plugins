@@ -266,16 +266,20 @@ final class McpRegistry {
 
     /**
      * 记录一次失败。
+     * <p>
+     * 原因压成单行：它会显示在 {@code /mcp} 台账的一行里，而其中往往嵌着对面给的文本
+     * （错误 message、工具名、方法名）——一条带换行的文本就能把台账的版式撑散。
      *
      * @param serverId 服务标识
      * @param message  失败原因
      */
     void noteFailure(String serverId, String message) {
+        String reason = McpJson.singleLine(message);
         ServerStatus status = statuses.get(serverId);
         if (status != null) {
-            status.lastError = message;
+            status.lastError = reason;
         }
-        noteState(serverId, State.FAILED, message);
+        noteState(serverId, State.FAILED, reason);
     }
 
     /**
@@ -291,7 +295,9 @@ final class McpRegistry {
     }
 
     /**
-     * 记一条告警（例如清单被上限截断）。
+     * 记一条告警（例如清单被上限截断、工具名撞车）。
+     * <p>
+     * 与 {@link #noteFailure} 同理压成单行：告警文本里嵌着对面给的工具名与方法名。
      *
      * @param serverId 服务标识
      * @param message  告警文本
@@ -299,7 +305,7 @@ final class McpRegistry {
     void noteWarning(String serverId, String message) {
         ServerStatus status = statuses.get(serverId);
         if (status != null) {
-            status.lastWarning = message;
+            status.lastWarning = McpJson.singleLine(message);
         }
     }
 

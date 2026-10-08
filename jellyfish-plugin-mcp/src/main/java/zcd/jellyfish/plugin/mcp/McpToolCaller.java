@@ -72,16 +72,23 @@ final class McpToolCaller implements ExtensionHandler<ToolCallRequest, ToolCallR
      * 三个约定键里用两个：{@code summary} 说明「刚才那一行是什么事」，{@code terminal} 在 server
      * 报告失败时取一个不等于 {@code COMPLETED} 的取值，让界面渲染警示标记。另外三个自定键
      * （server / tool / 往返耗时）由界面按需读取——内核只透传。
+     * <p>
+     * <b>工具名要压成单行再进元数据</b>：它是 server 给的文本，只做过 {@code trim}，内部换行照旧留着，
+     * 而摘要按契约必须是一行（内核把它接在工具名后面渲染成一条轨迹行）——一条带换行的工具名
+     * 就能凭空多出几行，读的人会以为那几行也是内核说的。{@link #handle} 里送给 server 的仍是
+     * <b>原名</b>：协议要求原样回传，清洗过的名字对面不认识。
      *
      * @param outcome 调用结果
      * @return 元数据，保证非 {@code null}
      */
     private Map<String, Object> metadata(McpInvoker.McpCallOutcome outcome) {
+        String server = McpJson.singleLine(definition.serverId());
+        String tool = McpJson.abbreviate(definition.originalName());
         Map<String, Object> metadata = new LinkedHashMap<String, Object>();
-        metadata.put(ToolMetadata.KEY_SUMMARY, "mcp " + definition.serverId() + " · "
-                + definition.originalName() + " · " + outcome.durationMillis() + " ms");
-        metadata.put("mcpServer", definition.serverId());
-        metadata.put("mcpTool", definition.originalName());
+        metadata.put(ToolMetadata.KEY_SUMMARY, "mcp " + server + " · " + tool + " · "
+                + outcome.durationMillis() + " ms");
+        metadata.put("mcpServer", server);
+        metadata.put("mcpTool", tool);
         metadata.put("durationMs", Long.valueOf(outcome.durationMillis()));
         if (outcome.error()) {
             metadata.put(ToolMetadata.KEY_TERMINAL, "FAILED");

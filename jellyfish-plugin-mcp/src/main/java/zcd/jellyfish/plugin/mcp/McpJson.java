@@ -237,16 +237,31 @@ final class McpJson {
     }
 
     /**
+     * 把文本压成单行（不截断）。
+     * <p>
+     * <b>为什么这算一件正经事</b>：本插件有几处「一行一件事」的展示面——内核的轨迹行
+     * （工具摘要、异常首行）与 {@code /mcp} 台账。它们的输入里混着<b>对面给的文本</b>
+     * （工具名、错误 message、方法名），而一条带换行的文本就能凭空多出几行，读的人会以为
+     * 那几行也是我方说的。这与 {@code SEC-17}（{@code -cli} 输出面过滤控制字符）是同一条纪律。
+     *
+     * @param text 原始文本，可为 {@code null}
+     * @return 单行文本，保证非 {@code null}
+     */
+    static String singleLine(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.replaceAll("\\s+", " ").trim();
+    }
+
+    /**
      * 把文本压成单行并截断，只用于日志与错误信息。
      *
      * @param text 原始文本，可为 {@code null}
      * @return 截断后的文本
      */
     static String abbreviate(String text) {
-        if (text == null) {
-            return "";
-        }
-        String collapsed = text.replaceAll("\\s+", " ").trim();
+        String collapsed = singleLine(text);
         return collapsed.length() <= 200 ? collapsed : collapsed.substring(0, 200) + "…";
     }
 }

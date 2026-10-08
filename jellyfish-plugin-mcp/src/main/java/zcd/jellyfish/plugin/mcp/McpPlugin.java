@@ -433,7 +433,7 @@ public final class McpPlugin implements JellyfishPlugin {
         final McpServerConnection[] holder = new McpServerConnection[1];
         Consumer<List<McpToolDefinition>> sink = tools -> {
             McpServerConnection connection = holder[0];
-            if (connection == null || stopping) {
+            if (connection == null || stopping || !isCurrent(server.id(), connection)) {
                 return;
             }
             try {
@@ -497,6 +497,24 @@ public final class McpPlugin implements JellyfishPlugin {
             return;
         }
         scheduleReconnect(server);
+    }
+
+    /**
+     * 判断一条连接是不是某个 server 当前的那条。
+     * <p>
+     * <b>取清单的一方必须自己确认「我这条还作数吗」</b>：一次清单拉取是「发请求、等应答」，
+     * 而在这段时间里连接完全可能已经断开、被重连换掉、或者插件已经停了。不确认的后果是
+     * 把一批工具重新注册回一条已经死掉的连接上——那正是 {@code G-14} 要消掉的那种「撒谎的清单」，
+     * 只不过这次是拆掉之后又自己装回去。
+     *
+     * @param serverId   服务标识，不可为 {@code null}
+     * @param connection 连接，不可为 {@code null}
+     * @return 仍是当前那条返回 {@code true}
+     */
+    private boolean isCurrent(String serverId, McpServerConnection connection) {
+        synchronized (connectionLock) {
+            return connections.get(serverId) == connection;
+        }
     }
 
     /**

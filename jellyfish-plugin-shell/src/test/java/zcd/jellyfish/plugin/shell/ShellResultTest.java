@@ -25,8 +25,7 @@ class ShellResultTest {
     @Test
     @DisplayName("正常结束后元数据行给出工作目录、退出码与耗时")
     void summary_should_reportExitCode_when_completed() {
-        ShellResult result = ShellResult.of(ShellResult.Termination.COMPLETED, Integer.valueOf(0), 1234L,
-                false, 0L);
+        ShellResult result = result(ShellResult.Termination.COMPLETED, Integer.valueOf(0), 1234L);
 
         String summary = result.summary("/work");
 
@@ -39,8 +38,7 @@ class ShellResultTest {
     @Test
     @DisplayName("非零退出码不是成功，但仍是「命令自己跑完了」")
     void isSuccess_should_beFalse_when_exitCodeNonZero() {
-        ShellResult result = ShellResult.of(ShellResult.Termination.COMPLETED, Integer.valueOf(2), 10L,
-                false, 0L);
+        ShellResult result = result(ShellResult.Termination.COMPLETED, Integer.valueOf(2), 10L);
 
         assertFalse(result.isSuccess());
         assertTrue(result.summary("/work").contains("exit: 2"), result.summary("/work"));
@@ -49,7 +47,7 @@ class ShellResultTest {
     @Test
     @DisplayName("超时终止时说清是超时，不报退出码——退出码只反映我们发的信号")
     void summary_should_reportTimeout_withoutExitCode() {
-        ShellResult result = ShellResult.of(ShellResult.Termination.TIMEOUT, null, 120_000L, false, 0L);
+        ShellResult result = result(ShellResult.Termination.TIMEOUT, null, 120_000L);
 
         String summary = result.summary("/work");
 
@@ -60,7 +58,8 @@ class ShellResultTest {
     @Test
     @DisplayName("静默终止与超时是两句话——它们要人做的处置完全不同")
     void summary_should_reportIdleTimeout_differently() {
-        ShellResult result = ShellResult.of(ShellResult.Termination.IDLE_TIMEOUT, null, 300_000L, false, 0L);
+        ShellResult result = ShellResult.of(ShellResult.Termination.IDLE_TIMEOUT, null, 300_000L, 120_000L,
+                false, 0L);
 
         String summary = result.summary("/work");
 
@@ -69,9 +68,44 @@ class ShellResultTest {
     }
 
     @Test
+    @DisplayName("静默时长报的是真的静默了多久，不是总耗时")
+    void summary_should_reportRealSilence_not_totalDuration() {
+        // 先打印了 10 分钟、又卡了 2 分钟：说成「连续 720 秒无输出」是编造
+        ShellResult result = ShellResult.of(ShellResult.Termination.IDLE_TIMEOUT, null, 720_000L,
+                120_000L, false, 0L);
+
+        String summary = result.summary(null);
+
+        assertTrue(summary.contains("连续 120 秒无输出"), summary);
+        assertFalse(summary.contains("连续 720 秒"), summary);
+        // 总耗时照旧报出来，两者分开说：一个是「卡了多久」，一个是「一共跑了多久」
+        assertTrue(summary.contains("耗时: 720.0 秒"), summary);
+    }
+
+    @Test
+    @DisplayName("静默时长也进字段，界面与审计不必再去猜")
+    void metadata_should_carryIdleMillis_when_idleTimeout() {
+        ShellResult result = ShellResult.of(ShellResult.Termination.IDLE_TIMEOUT, null, 720_000L,
+                120_000L, false, 0L);
+
+        Map<String, Object> metadata = result.metadata();
+
+        assertEquals(Long.valueOf(120_000L), metadata.get("idleMs"));
+        assertEquals(Long.valueOf(720_000L), metadata.get("durationMs"));
+    }
+
+    @Test
+    @DisplayName("非静默终止不带静默字段：一个恒为 0 的字段只会让读的人以为它有意义")
+    void metadata_should_omitIdleMillis_when_notIdleTimeout() {
+        ShellResult result = result(ShellResult.Termination.TIMEOUT, null, 120_000L);
+
+        assertFalse(result.metadata().containsKey("idleMs"));
+    }
+
+    @Test
     @DisplayName("取消终止时如实说明是用户取消")
     void summary_should_reportCancellation() {
-        ShellResult result = ShellResult.of(ShellResult.Termination.CANCELLED, null, 3_000L, false, 0L);
+        ShellResult result = result(ShellResult.Termination.CANCELLED, null, 3_000L);
 
         assertTrue(result.summary("/work").contains("已取消"), result.summary("/work"));
     }
@@ -79,7 +113,7 @@ class ShellResultTest {
     @Test
     @DisplayName("插件停止终止时说的是插件停止，不是「已取消」——取消是用户按了 Esc，两件事不一样")
     void summary_should_reportStopped_differentlyFromCancellation() {
-        ShellResult result = ShellResult.of(ShellResult.Termination.STOPPED, null, 800L, false, 0L);
+        ShellResult result = result(ShellResult.Termination.STOPPED, null, 800L);
 
         String summary = result.summary("/work");
 
@@ -91,7 +125,7 @@ class ShellResultTest {
     @Test
     @DisplayName("插件停止的终止原因也进字段，且算失败")
     void metadata_should_carryStoppedTerminal() {
-        ShellResult result = ShellResult.of(ShellResult.Termination.STOPPED, null, 800L, false, 0L);
+        ShellResult result = result(ShellResult.Termination.STOPPED, null, 800L);
 
         Map<String, Object> metadata = result.metadata();
 
@@ -104,7 +138,7 @@ class ShellResultTest {
     @DisplayName("二进制输出在元数据行里说明丢了多少字节")
     void summary_should_reportBinaryOutput() {
         ShellResult result = ShellResult.of(ShellResult.Termination.COMPLETED, Integer.valueOf(0), 10L,
-                true, 4096L);
+                0L, true, 4096L);
 
         assertTrue(result.summary("/work").contains("4096 字节已省略"), result.summary("/work"));
     }
@@ -112,8 +146,7 @@ class ShellResultTest {
     @Test
     @DisplayName("元数据与首行结论同源：正常结束时带退出码与终止原因")
     void metadata_should_carryExitCodeAndTerminal_when_completed() {
-        ShellResult result = ShellResult.of(ShellResult.Termination.COMPLETED, Integer.valueOf(1), 1234L,
-                false, 0L);
+        ShellResult result = result(ShellResult.Termination.COMPLETED, Integer.valueOf(1), 1234L);
 
         Map<String, Object> metadata = result.metadata();
 
@@ -127,7 +160,7 @@ class ShellResultTest {
     @Test
     @DisplayName("被终止时不填退出码：那一档的退出码只反映我们发的信号")
     void metadata_should_omitExitCode_when_terminated() {
-        ShellResult result = ShellResult.of(ShellResult.Termination.TIMEOUT, null, 120_000L, false, 0L);
+        ShellResult result = result(ShellResult.Termination.TIMEOUT, null, 120_000L);
 
         Map<String, Object> metadata = result.metadata();
 
@@ -140,7 +173,7 @@ class ShellResultTest {
     @DisplayName("二进制输出把「省略了多少字节」也变成字段")
     void metadata_should_carryBinaryBytes_when_binaryOutput() {
         ShellResult result = ShellResult.of(ShellResult.Termination.COMPLETED, Integer.valueOf(0), 5L,
-                true, 512L);
+                0L, true, 512L);
 
         Map<String, Object> metadata = result.metadata();
 
@@ -152,8 +185,7 @@ class ShellResultTest {
     @Test
     @DisplayName("没有工作目录时元数据行不出现空的 cwd 段")
     void summary_should_skipCwd_when_absent() {
-        ShellResult result = ShellResult.of(ShellResult.Termination.COMPLETED, Integer.valueOf(0), 10L,
-                false, 0L);
+        ShellResult result = result(ShellResult.Termination.COMPLETED, Integer.valueOf(0), 10L);
 
         assertFalse(result.summary(null).contains("cwd:"), result.summary(null));
         assertFalse(result.summary("").contains("cwd:"), result.summary(""));
@@ -162,9 +194,24 @@ class ShellResultTest {
     @Test
     @DisplayName("耗时用点号小数点，不随区域设置变（否则会混进看似千位分隔的数字）")
     void summary_should_useDotDecimalSeparator() {
-        ShellResult result = ShellResult.of(ShellResult.Termination.COMPLETED, Integer.valueOf(0), 1500L,
-                false, 0L);
+        ShellResult result = result(ShellResult.Termination.COMPLETED, Integer.valueOf(0), 1500L);
 
         assertTrue(result.summary(null).contains("1.5 秒"), result.summary(null));
+    }
+
+    /**
+     * 构造结果的简写：只关心终止原因、退出码与耗时的用例用它。
+     * <p>
+     * 「无静默信息、非二进制输出」这两个 {@code 0} 在调用点上一模一样，逐处写出来只会让
+     * 真正重要的那几个数字更难找；需要它们的用例仍写全参数。
+     *
+     * @param termination    终止原因
+     * @param exitCode       退出码，可为 {@code null}
+     * @param durationMillis 耗时（毫秒）
+     * @return 结果
+     */
+    private static ShellResult result(ShellResult.Termination termination, Integer exitCode,
+                                      long durationMillis) {
+        return ShellResult.of(termination, exitCode, durationMillis, 0L, false, 0L);
     }
 }

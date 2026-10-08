@@ -113,11 +113,11 @@ final class ShellProcessRunner {
         try {
             process.closeStdin();
             token.onCancel(process::destroy);
-            ShellResult.Termination termination = awaitTermination(process, invocation, capture, token, start);
-            if (termination != ShellResult.Termination.COMPLETED) {
+            Verdict verdict = awaitTermination(process, invocation, capture, token, start);
+            if (verdict.termination() != ShellResult.Termination.COMPLETED) {
                 ProcessTrees.killTree(process, KILL_GRACE_MILLIS, KILL_WAIT_MILLIS);
             }
-            return result(process, capture, termination, start);
+            return result(process, capture, verdict, start);
         } finally {
             synchronized (lock) {
                 active.remove(process);
@@ -163,7 +163,7 @@ final class ShellProcessRunner {
         process.awaitOutput(PUMP_DRAIN_MILLIS);
         capture.close();
         return ShellResult.of(ShellResult.Termination.STOPPED, null,
-                System.currentTimeMillis() - start, capture.isBinary(), capture.bytes());
+                System.currentTimeMillis() - start, 0L, capture.isBinary(), capture.bytes());
     }
 
     /**
@@ -196,35 +196,36 @@ final class ShellProcessRunner {
      * @param capture    输出捕获流（读它的最近输出时刻）
      * @param token      取消令牌
      * @param start      起始时刻
-     * @return 终止原因
+     * @return 结论：终止原因，以及（仅静默超时时）实际静默了多久
      */
-    private static ShellResult.Termination awaitTermination(ShellProcess process, ShellInvocation invocation,
-                                                            ShellOutputCapture capture, CancellationToken token,
-                                                            long start) {
+    private static Verdict awaitTermination(ShellProcess process, ShellInvocation invocation,
+                                            ShellOutputCapture capture, CancellationToken token,
+                                            long start) {
         long deadline = start + invocation.timeoutMillis();
         while (true) {
             if (token.isCancelled()) {
-                return ShellResult.Termination.CANCELLED;
+                return Verdict.of(ShellResult.Termination.CANCELLED);
             }
             try {
                 if (process.waitFor(POLL_MILLIS)) {
                     // 进程退出之后要再确认一次取消：取消回调会直接给子进程发信号，
                     // 因此「进程退出了」在取消场景下同样成立，先判退出会把取消误报成正常完成
-                    return token.isCancelled() ? ShellResult.Termination.CANCELLED
-                            : ShellResult.Termination.COMPLETED;
+                    return Verdict.of(token.isCancelled() ? ShellResult.Termination.CANCELLED
+                            : ShellResult.Termination.COMPLETED);
                 }
             } catch (InterruptedException e) {
                 // 谁中断了我们：按取消处理最保守——进程还活着，必须要终止
                 Thread.currentThread().interrupt();
-                return ShellResult.Termination.CANCELLED;
+                return Verdict.of(ShellResult.Termination.CANCELLED);
             }
             long now = System.currentTimeMillis();
             if (now >= deadline) {
-                return ShellResult.Termination.TIMEOUT;
+                return Verdict.of(ShellResult.Termination.TIMEOUT);
             }
             long idle = invocation.idleTimeoutMillis();
             if (idle > 0 && now - capture.lastOutputAt() >= idle) {
-                return ShellResult.Termination.IDLE_TIMEOUT;
+                // 把「真的静默了多久」一路带出去：判定点知道这个数，判定之后就没别人知道了
+                return Verdict.idle(now - capture.lastOutputAt(), idle);
             }
         }
     }
@@ -233,18 +234,88 @@ final class ShellProcessRunner {
      * 组装执行结果。
      *
      * @param process     进程句柄
-     * @param capture     输出捕获流
-     * @param termination 终止原因
-     * @param start       起始时刻
+     * @param capture 输出捕获流
+     * @param verdict 等待循环的结论
+     * @param start   起始时刻
      * @return 结果
      */
     private static ShellResult result(ShellProcess process, ShellOutputCapture capture,
-                                      ShellResult.Termination termination, long start) {
+                                      Verdict verdict, long start) {
+        ShellResult.Termination termination = verdict.termination();
         Integer exitCode = null;
         if (termination == ShellResult.Termination.COMPLETED && !process.isAlive()) {
             exitCode = Integer.valueOf(process.exitValue());
         }
         return ShellResult.of(termination, exitCode, System.currentTimeMillis() - start,
-                capture.isBinary(), capture.bytes());
+                verdict.idleMillis(), capture.isBinary(), capture.bytes());
+    }
+
+    /**
+     * 等待循环的结论：终止原因，以及（仅静默超时时）实际静默了多久。
+     * <p>
+     * 单独立一个值对象而不是给 {@link ShellResult} 加一个再传一遍的参数：静默时长只在
+     * {@link #awaitTermination} 的判定点算得出来（那里才有「最近一次输出是什么时候」），
+     * 而结果对象是后来才组装的——中间隔着一整段终止链。让判定直接把话说完整，比让调用点
+     * 回头去猜这个数更不容易写错。
+     */
+    private static final class Verdict {
+
+        /** 终止原因。 */
+        private final ShellResult.Termination termination;
+
+        /** 静默时长（毫秒），非静默终止时为 {@code 0}。 */
+        private final long idleMillis;
+
+        /**
+         * 构造结论。
+         *
+         * @param termination 终止原因，不可为 {@code null}
+         * @param idleMillis  静默时长（毫秒）
+         */
+        private Verdict(ShellResult.Termination termination, long idleMillis) {
+            this.termination = termination;
+            this.idleMillis = idleMillis;
+        }
+
+        /**
+         * 构造一个不含静默信息的结论。
+         *
+         * @param termination 终止原因，不可为 {@code null}
+         * @return 结论
+         */
+        static Verdict of(ShellResult.Termination termination) {
+            return new Verdict(termination, 0L);
+        }
+
+        /**
+         * 构造静默超时的结论。
+         *
+         * @param idleMillis          实际静默毫秒数
+         * @param idleTimeoutMillis   判定用的静默门槛（用于日志，不参与展示）
+         * @return 结论
+         */
+        static Verdict idle(long idleMillis, long idleTimeoutMillis) {
+            LOG.warn("命令连续 {}ms 无输出（门槛 {}ms），判定为卡住", Long.valueOf(idleMillis),
+                    Long.valueOf(idleTimeoutMillis));
+            return new Verdict(ShellResult.Termination.IDLE_TIMEOUT, idleMillis);
+        }
+
+        /**
+         * 获取终止原因。
+         *
+         * @return 终止原因
+         */
+        ShellResult.Termination termination() {
+            return termination;
+        }
+
+        /**
+         * 获取静默时长。
+         *
+         * @return 静默毫秒数
+         */
+        long idleMillis() {
+            return idleMillis;
+        }
     }
 }

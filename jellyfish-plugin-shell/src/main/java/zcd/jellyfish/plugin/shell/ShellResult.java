@@ -50,6 +50,15 @@ final class ShellResult {
     /** 耗时（毫秒）。 */
     private final long durationMillis;
 
+    /**
+     * 静默时长（毫秒）：判定静默超时时<b>实际</b>连续多久没有输出。
+     * <p>
+     * <b>它不等于耗时</b>，而这一点正是它存在的理由：一条先打印了十分钟、再卡住的命令，
+     * 用耗时去说「连续 N 秒无输出」会把有输出的那十分钟也算进去——那个数字不真，
+     * 而读的人会拿它去判断「是不是命令本来就不爱说话」。其余终止原因下为 {@code 0}。
+     */
+    private final long idleMillis;
+
     /** 输出是否被判定为二进制。 */
     private final boolean binaryOutput;
 
@@ -62,14 +71,16 @@ final class ShellResult {
      * @param termination    终止原因
      * @param exitCode       退出码，可为 {@code null}
      * @param durationMillis 耗时（毫秒）
+     * @param idleMillis     静默时长（毫秒），非静默终止时传 {@code 0}
      * @param binaryOutput   是否二进制输出
      * @param binaryBytes    二进制输出时的字节数
      */
-    ShellResult(Termination termination, Integer exitCode, long durationMillis, boolean binaryOutput,
-                long binaryBytes) {
+    ShellResult(Termination termination, Integer exitCode, long durationMillis, long idleMillis,
+                boolean binaryOutput, long binaryBytes) {
         this.termination = termination;
         this.exitCode = exitCode;
         this.durationMillis = durationMillis;
+        this.idleMillis = idleMillis;
         this.binaryOutput = binaryOutput;
         this.binaryBytes = binaryBytes;
     }
@@ -80,13 +91,15 @@ final class ShellResult {
      * @param termination    终止原因，不可为 {@code null}
      * @param exitCode       退出码，被终止时传 {@code null}
      * @param durationMillis 耗时（毫秒）
+     * @param idleMillis     静默时长（毫秒），非静默终止时传 {@code 0}
      * @param binaryOutput   输出是否被判定为二进制
      * @param binaryBytes    二进制输出时的字节数
      * @return 结果
      */
     static ShellResult of(Termination termination, Integer exitCode, long durationMillis,
-                          boolean binaryOutput, long binaryBytes) {
-        return new ShellResult(termination, exitCode, durationMillis, binaryOutput, binaryBytes);
+                          long idleMillis, boolean binaryOutput, long binaryBytes) {
+        return new ShellResult(termination, exitCode, durationMillis, idleMillis, binaryOutput,
+                binaryBytes);
     }
 
     /**
@@ -135,6 +148,10 @@ final class ShellResult {
         }
         metadata.put(ToolMetadata.KEY_TERMINAL, termination.name());
         metadata.put("durationMs", durationMillis);
+        if (termination == Termination.IDLE_TIMEOUT) {
+            // 与首行结论同源：读文本的是模型，读字段的是界面与审计，两者不该各算一个数
+            metadata.put("idleMs", idleMillis);
+        }
         if (binaryOutput) {
             metadata.put("binary", Boolean.TRUE);
             metadata.put("binaryBytes", binaryBytes);
@@ -155,7 +172,9 @@ final class ShellResult {
                 text.append("已超时（超过 ").append(seconds(durationMillis)).append(" 秒），已终止");
                 break;
             case IDLE_TIMEOUT:
-                text.append("连续 ").append(seconds(durationMillis)).append(" 秒无输出，判定为卡住并终止");
+                // 报「实际静默了多久」而不是耗时：一条先跑了 1.4 秒才安静下来的命令，
+                // 用耗时说「连续 N 秒无输出」会把有输出的那一段也算进去——那个数字不真
+                text.append("连续 ").append(seconds(idleMillis)).append(" 秒无输出，判定为卡住并终止");
                 break;
             case CANCELLED:
                 text.append("已取消，进程已终止");

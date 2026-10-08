@@ -174,6 +174,43 @@ class ResmonPanelTest {
     }
 
     @Test
+    @DisplayName("主项是目录时，同名的点号后缀文件必须自己成项——否则它既不被列出也不进合计")
+    void handle_should_countDotSuffixedFile_whenSiblingIsDirectory() throws IOException {
+        // Given：stock 是目录、stock.old 是普通文件。轮换档的折叠只对「主项是普通文件」生效，
+        // 因此 stock.old 不会被算进 stock——它必须自己成项
+        Files.createDirectory(root.resolve("stock"));
+        Files.write(root.resolve("stock").resolve("inner.txt"), new byte[1024]);
+        Files.write(root.resolve("stock.old"), new byte[4096]);
+        prepareSample();
+        sampler.sampleNow();
+
+        // When
+        String text = text(panel.handle(new PanelContributionRequest("s-1")).getLines());
+
+        // Then：合计要把 stock.old 算进去（1K + 4K = 5K），且它自己出现在列表里
+        assertTrue(text.contains("合计 5K"), text);
+        assertTrue(text.contains("stock.old"), text);
+    }
+
+    @Test
+    @DisplayName("主项是文件、后缀项是目录时，那个目录也必须自己成项")
+    void handle_should_countDotSuffixedDirectory_whenSiblingIsFile() throws IOException {
+        // Given：stock 是普通文件、stock.old 是目录——目录不会被「主文件连轮换档」那条求和
+        Files.write(root.resolve("stock"), new byte[1024]);
+        Files.createDirectory(root.resolve("stock.old"));
+        Files.write(root.resolve("stock.old").resolve("inner.txt"), new byte[2048]);
+        prepareSample();
+        sampler.sampleNow();
+
+        // When
+        String text = text(panel.handle(new PanelContributionRequest("s-1")).getLines());
+
+        // Then
+        assertTrue(text.contains("合计 3K"), text);
+        assertTrue(text.contains("stock.old"), text);
+    }
+
+    @Test
     @DisplayName("标题带采样时刻，关掉自动刷新时标出暂停")
     void title_should_carry_clock_and_pause_state() {
         prepareSample();

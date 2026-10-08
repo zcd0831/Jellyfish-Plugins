@@ -48,6 +48,21 @@ final class McpToolRegistrar {
             new ConcurrentHashMap<String, List<Subscription>>();
 
     /**
+     * 注册动作的互斥锁。
+     * <p>
+     * <b>必须串行化</b>：{@link #apply} 是「关旧处理器 → 装新标记 → 注册新处理器 → 摘掉没注册成的」
+     * 四步，每一步都对，但整段<b>不是原子的</b>——而它会被两条线程同时调用（连接线程的首轮
+     * {@code refreshTools}、通知线程的 {@code tools/list_changed} 重扫，后者在读线程收到通知后
+     * 立刻可能发生，而读线程在握手之前就起了）。交错之后 {@code registered.put} 会互相覆盖：
+     * 先注册的那批 {@link Subscription} 再没人关，于是<b>一批已经不在清单上的工具留在注册表里</b>
+     * ——模型看得见、调得到，而 server 已经不认识它们了。
+     * <p>
+     * 注册本身不慢（几条处理器挂载），串行化的吞吐代价可以忽略；而它换到的是一条可断言的
+     * 不变量：<b>任何时刻，某个 server 的注册恰好对应某一份清单</b>。
+     */
+    private final Object lock = new Object();
+
+    /**
      * 构造注册器。
      *
      * @param context  插件上下文，不可为 {@code null}
@@ -78,29 +93,31 @@ final class McpToolRegistrar {
      * @param tools         新的工具清单，不可为 {@code null}
      */
     void apply(McpInvoker invoker, McpServerConfig server, List<McpToolDefinition> tools) {
-        closeHandlers(server.id());
-        registry.replaceTools(server.id(), tools);
-        List<Subscription> created = new ArrayList<Subscription>(tools.size());
-        Set<String> registeredNames = new LinkedHashSet<String>();
-        PluginContext serverContext = context.subContext(server.id());
-        long timeoutMillis = server.callTimeoutSeconds() * 1000L;
-        for (McpToolDefinition tool : tools) {
-            try {
-                created.add(serverContext.handle(ToolCallRequest.class, tool.qualifiedName(),
-                        tool.descriptor(), new McpToolCaller(tool, invoker, timeoutMillis)));
-                registeredNames.add(tool.qualifiedName());
-            } catch (RuntimeException e) {
-                // 名字被占了（关掉前缀时最容易撞上内置工具）：跳过它，让其余工具照常可用
-                LOG.warn("MCP 工具注册失败，已跳过: server={} tool={} reason={}", server.id(),
-                        tool.qualifiedName(), e.getMessage());
-                registry.noteWarning(server.id(),
-                        "工具 " + tool.qualifiedName() + " 注册失败：" + e.getMessage());
+        synchronized (lock) {
+            closeHandlers(server.id());
+            registry.replaceTools(server.id(), tools);
+            List<Subscription> created = new ArrayList<Subscription>(tools.size());
+            Set<String> registeredNames = new LinkedHashSet<String>();
+            PluginContext serverContext = context.subContext(server.id());
+            long timeoutMillis = server.callTimeoutSeconds() * 1000L;
+            for (McpToolDefinition tool : tools) {
+                try {
+                    created.add(serverContext.handle(ToolCallRequest.class, tool.qualifiedName(),
+                            tool.descriptor(), new McpToolCaller(tool, invoker, timeoutMillis)));
+                    registeredNames.add(tool.qualifiedName());
+                } catch (RuntimeException e) {
+                    // 名字被占了（关掉前缀时最容易撞上内置工具）：跳过它，让其余工具照常可用
+                    LOG.warn("MCP 工具注册失败，已跳过: server={} tool={} reason={}", server.id(),
+                            tool.qualifiedName(), e.getMessage());
+                    registry.noteWarning(server.id(),
+                            "工具 " + tool.qualifiedName() + " 注册失败：" + e.getMessage());
+                }
             }
+            // 注册不成的名字得从标记表里摘掉：留着它，权限处理器就会把占了那个名字的「内置工具」
+            // 认成我们的写类工具，于是内置工具平白多一道审批（-cli/-server 下 ASK 即拒绝）
+            registry.retainTools(server.id(), registeredNames);
+            registered.put(server.id(), created);
         }
-        // 注册不成的名字得从标记表里摘掉：留着它，权限处理器就会把占了那个名字的「内置工具」
-        // 认成我们的写类工具，于是内置工具平白多一道审批（-cli/-server 下 ASK 即拒绝）
-        registry.retainTools(server.id(), registeredNames);
-        registered.put(server.id(), created);
     }
 
     /**
@@ -109,16 +126,20 @@ final class McpToolRegistrar {
      * @param serverId 服务标识
      */
     void close(String serverId) {
-        closeHandlers(serverId);
-        registry.removeServer(serverId);
+        synchronized (lock) {
+            closeHandlers(serverId);
+            registry.removeServer(serverId);
+        }
     }
 
     /**
      * 注销全部工具。
      */
     void closeAll() {
-        for (String serverId : new ArrayList<String>(registered.keySet())) {
-            close(serverId);
+        synchronized (lock) {
+            for (String serverId : new ArrayList<String>(registered.keySet())) {
+                close(serverId);
+            }
         }
     }
 

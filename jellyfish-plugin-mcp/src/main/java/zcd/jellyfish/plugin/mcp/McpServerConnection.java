@@ -688,12 +688,18 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
 
     /**
      * 描述一条 JSON-RPC 错误。
+     * <p>
+     * <b>对面给的 message 要压成单行</b>：它随异常首行显示在内核的轨迹行上，而轨迹是「一行一件事」
+     * 的结构——一条带换行的 message 就能凭空多出几行，让人读成「这些也是内核说的」。
+     * 这与 {@code SEC-17}（{@code -cli} 输出面过滤控制字符）是同一条：<b>来自对外的文本进我方
+     * 展示面前，先按我方展示面的形状裁一遍</b>。截断到 200 字符同理：一条几十 KB 的报错塞进
+     * 轨迹行只会把真正有用的部分挤掉。
      *
      * @param error 错误节点
      * @return 可读文本
      */
     private static String describeError(JsonNode error) {
-        String message = McpJson.text(error, "message", "未提供错误信息");
+        String message = McpJson.abbreviate(McpJson.text(error, "message", "未提供错误信息"));
         int code = McpJson.intOf(error, "code", 0);
         return code == 0 ? message : message + "（code=" + code + "）";
     }
@@ -730,6 +736,12 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
         boolean answered = await(waiter, timeoutMillis);
         pending.remove(key);
         if (!answered) {
+            // 两种「没等到」要分开说：把「被中断」说成「超时（已等待 0 ms）」是在编造一个
+            // 没发生过的超时——而超时设为 0（不超时）时这句话甚至自相矛盾
+            if (Thread.currentThread().isInterrupted()) {
+                throw new JellyfishException("MCP 调用被中断（连接正在关闭？）: "
+                        + config.id() + " / " + method);
+            }
             throw new JellyfishException("MCP 调用超时（已等待 " + timeoutMillis + " ms）: "
                     + config.id() + " / " + method);
         }
