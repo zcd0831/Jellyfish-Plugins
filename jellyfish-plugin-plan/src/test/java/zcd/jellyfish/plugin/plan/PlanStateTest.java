@@ -13,19 +13,19 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * {@link PlanState} 的单元测试：钉住「开关落在本插件的会话扩展条目上」与读取失败的兜底语义。
+ * {@link PlanState} 的单元测试：钉住「开关落在本插件的会话扩展条目上」、三态的倒向，以及沿父链判定。
  * <p>
  * 上下文用 mock（它只是内核给插件的一层门面），因此这里验证的是<b>调用姿势</b>：
- * key 用哪一个、值写成什么形状、读的时候认哪一条。
+ * key 用哪一个、值写成什么形状、读的时候认哪一条、判不出来时返回哪一态。
  *
  * @author zcd
  */
@@ -40,55 +40,143 @@ class PlanStateTest {
 
     @Test
     @DisplayName("未写过条目时为关闭")
-    void isEnabled_should_beFalse_whenNoEntry() {
+    void switchOf_should_beOff_whenNoEntry() {
         PluginContext context = context();
         when(context.extensionEntries("s-1")).thenReturn(Collections.<SessionExtensionEntry>emptyList());
 
-        assertFalse(new PlanState(context).isEnabled("s-1"));
+        assertEquals(PlanState.Switch.OFF, new PlanState(context).switchOf("s-1"));
     }
 
     @Test
     @DisplayName("条目里 enabled 为 true 时为开启")
-    void isEnabled_should_beTrue_whenEntrySaysEnabled() {
+    void switchOf_should_beOn_whenEntrySaysEnabled() {
         PluginContext context = context();
         when(context.extensionEntries("s-1"))
                 .thenReturn(Collections.singletonList(entry(Boolean.TRUE)));
 
-        assertTrue(new PlanState(context).isEnabled("s-1"));
+        assertEquals(PlanState.Switch.ON, new PlanState(context).switchOf("s-1"));
     }
 
     @Test
-    @DisplayName("值不是布尔（配置被手改过）时按关闭处理，而不是抛错")
-    void isEnabled_should_beFalse_whenValueIsNotBoolean() {
+    @DisplayName("条目里 enabled 为 false 时为关闭")
+    void switchOf_should_beOff_whenEntrySaysDisabled() {
+        PluginContext context = context();
+        when(context.extensionEntries("s-1"))
+                .thenReturn(Collections.singletonList(entry(Boolean.FALSE)));
+
+        assertEquals(PlanState.Switch.OFF, new PlanState(context).switchOf("s-1"));
+    }
+
+    @Test
+    @DisplayName("值不是布尔（会话文件被手改过）时按「读不出来」处理，而不是按关闭")
+    void switchOf_should_beUnknown_whenValueIsNotBoolean() {
         PluginContext context = context();
         when(context.extensionEntries("s-1"))
                 .thenReturn(Collections.singletonList(entry("yes")));
 
-        assertFalse(new PlanState(context).isEnabled("s-1"));
+        // 按「关」处理等于让一道按模式收窄的授权静默消失：这里必须把「判不出来」如实报上去
+        assertEquals(PlanState.Switch.UNKNOWN, new PlanState(context).switchOf("s-1"));
+    }
+
+    @Test
+    @DisplayName("条目在但字段被删空时同样按「读不出来」处理")
+    void switchOf_should_beUnknown_whenFieldIsMissing() {
+        PluginContext context = context();
+        when(context.extensionEntries("s-1")).thenReturn(Collections.singletonList(
+                new SessionExtensionEntry(FULL_KEY, Collections.<String, Object>emptyMap(), 0L)));
+
+        assertEquals(PlanState.Switch.UNKNOWN, new PlanState(context).switchOf("s-1"));
     }
 
     @Test
     @DisplayName("别人的条目不算数：只认本插件命名空间下那一条")
-    void isEnabled_should_ignoreForeignEntries() {
+    void switchOf_should_ignoreForeignEntries() {
         PluginContext context = context();
         when(context.extensionEntries("s-1")).thenReturn(Collections.singletonList(
                 new SessionExtensionEntry("other-plugin::enabled",
                         Collections.<String, Object>singletonMap("enabled", Boolean.TRUE), 0L)));
 
-        assertFalse(new PlanState(context).isEnabled("s-1"));
+        assertEquals(PlanState.Switch.OFF, new PlanState(context).switchOf("s-1"));
     }
 
     @Test
-    @DisplayName("会话标识为空、会话不存在时都按关闭处理")
-    void isEnabled_should_beFalse_whenSessionMissing() {
+    @DisplayName("会话标识为空时按关闭：没有会话就没有开关，也就没有属于它的工具调用")
+    void switchOf_should_beOff_whenSessionIdIsBlank() {
+        PlanState state = new PlanState(context());
+
+        assertEquals(PlanState.Switch.OFF, state.switchOf(null));
+        assertEquals(PlanState.Switch.OFF, state.switchOf("  "));
+    }
+
+    @Test
+    @DisplayName("读条目抛异常（会话已不存在、上下文失效）时按「读不出来」，而不是按关闭")
+    void switchOf_should_beUnknown_whenReadFails() {
         PluginContext context = context();
         when(context.extensionEntries(any())).thenThrow(new JellyfishException("session not found: ghost"));
 
-        PlanState state = new PlanState(context);
+        assertEquals(PlanState.Switch.UNKNOWN, new PlanState(context).switchOf("ghost"));
+    }
 
-        assertFalse(state.isEnabled(null));
-        assertFalse(state.isEnabled("  "));
-        assertFalse(state.isEnabled("ghost"));
+    @Test
+    @DisplayName("沿父链判定：父会话开着 plan 时，子代理会话算开着")
+    void switchOf_should_followParentChain() {
+        // Given：父会话开着 plan，子代理会话自己没有这条条目
+        PluginContext context = context();
+        when(context.extensionEntries("parent")).thenReturn(Collections.singletonList(entry(Boolean.TRUE)));
+        when(context.extensionEntries("child")).thenReturn(Collections.<SessionExtensionEntry>emptyList());
+        when(context.parentSessionId("child")).thenReturn("parent");
+
+        // Then：子会话算开着——不这样，模型借 task 派个子代理就把「只看不改」绕过去了
+        assertEquals(PlanState.Switch.ON, new PlanState(context).switchOf("child"));
+    }
+
+    @Test
+    @DisplayName("沿父链判定：链上都没有才算是关着")
+    void switchOf_should_beOff_whenNoAncestorEnabled() {
+        // Given：父会话也没有条目，再往上没有父
+        PluginContext context = context();
+        when(context.extensionEntries("parent")).thenReturn(Collections.<SessionExtensionEntry>emptyList());
+        when(context.extensionEntries("child")).thenReturn(Collections.<SessionExtensionEntry>emptyList());
+        when(context.parentSessionId("child")).thenReturn("parent");
+        when(context.parentSessionId("parent")).thenReturn(null);
+
+        assertEquals(PlanState.Switch.OFF, new PlanState(context).switchOf("child"));
+    }
+
+    @Test
+    @DisplayName("沿父链判定：链上有一层读不出来时整条链读不出来")
+    void switchOf_should_beUnknown_whenAncestorIsUnreadable() {
+        // Given：本层与父层都读不出来（父层可能是开着的那一层）
+        PluginContext context = context();
+        when(context.extensionEntries("child")).thenReturn(Collections.<SessionExtensionEntry>emptyList());
+        when(context.parentSessionId("child")).thenReturn("parent");
+        when(context.extensionEntries("parent")).thenThrow(new JellyfishException("boom"));
+
+        // Then：不能报「关」——那等于把父层可能的开启一笔勾销
+        assertEquals(PlanState.Switch.UNKNOWN, new PlanState(context).switchOf("child"));
+    }
+
+    @Test
+    @DisplayName("沿父链判定：本会话自己开着时不必往上问")
+    void switchOf_should_notWalkUp_whenOwnEntryIsEnabled() {
+        PluginContext context = context();
+        when(context.extensionEntries("child")).thenReturn(Collections.singletonList(entry(Boolean.TRUE)));
+
+        assertEquals(PlanState.Switch.ON, new PlanState(context).switchOf("child"));
+        // 自己那一条就够，不该去问父链——那是一次多余的查询
+        verify(context, never()).parentSessionId("child");
+    }
+
+    @Test
+    @DisplayName("父链成环也不会转不出来：深度有上限，超出即按「读不出来」处理")
+    void switchOf_should_beUnknown_whenChainLoops() {
+        // Given：一个自己指自己的链（实际数据不会这样，但查询不该依赖那个假设）
+        PluginContext context = context();
+        when(context.extensionEntries("s-1")).thenReturn(Collections.<SessionExtensionEntry>emptyList());
+        when(context.parentSessionId("s-1")).thenReturn("s-1");
+
+        // Then：能返回（不挂住），且按「读不出来」处理——查不全就不放宽任何东西
+        assertEquals(PlanState.Switch.UNKNOWN, new PlanState(context).switchOf("s-1"));
     }
 
     @Test
@@ -128,13 +216,15 @@ class PlanStateTest {
     }
 
     /**
-     * 构造一个只回答身份与扩展条目的插件上下文。
+     * 构造一个只回答身份、父会话与扩展条目的插件上下文。
      *
      * @return 插件上下文
      */
     private static PluginContext context() {
         PluginContext context = Mockito.mock(PluginContext.class);
-        when(context.pluginId()).thenReturn(PLUGIN_ID);
+        lenient().when(context.pluginId()).thenReturn(PLUGIN_ID);
+        // 默认不提供父会话：绝大多数用例关心的是「本会话」那条路径
+        lenient().when(context.parentSessionId(any())).thenReturn(null);
         return context;
     }
 

@@ -37,7 +37,8 @@ final class PlanOptions implements ExtensionHandler<CommandOptionRequest, Comman
 
     @Override
     public CommandOptions handle(CommandOptionRequest request) {
-        return CommandOptions.of(choices(state.isEnabled(request.getSessionId())));
+        // 展示路径：判不出来时按「没开」渲染，别把 on 标成当前值
+        return CommandOptions.of(choices(state.switchOf(request.getSessionId()) == PlanState.Switch.ON));
     }
 
     /**

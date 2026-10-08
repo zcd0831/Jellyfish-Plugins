@@ -62,7 +62,14 @@ final class PlanCommand implements ExtensionHandler<CommandRequest, CommandResul
             return CommandResult.error(USAGE);
         }
         if (tokens.isEmpty()) {
-            boolean enabled = state.isEnabled(sessionId);
+            PlanState.Switch mode = state.switchOf(sessionId);
+            if (mode == PlanState.Switch.UNKNOWN) {
+                // 不能报「已关闭」：那会让用户以为限制不在了，而权限拦截那侧正按「开着」处理；
+                // 也不能硬报「已开启」，因为它到底开没开确实不知道。给了候选，用户可用 /plan off 重置
+                return CommandResult.choices(
+                        "当前 plan 模式：开关读不出来（白名单外的工具会被拒绝）", PlanOptions.choices(false));
+            }
+            boolean enabled = mode == PlanState.Switch.ON;
             return CommandResult.choices("当前 plan 模式：" + (enabled ? "已开启" : "已关闭"),
                     PlanOptions.choices(enabled));
         }

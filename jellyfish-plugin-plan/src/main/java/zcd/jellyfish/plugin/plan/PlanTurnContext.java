@@ -43,7 +43,9 @@ final class PlanTurnContext implements ExtensionHandler<TurnContextRequest, Turn
 
     @Override
     public TurnContext handle(TurnContextRequest request) {
-        if (!state.isEnabled(request.getSessionId())) {
+        // 判不出来时也照说：拦截那侧同样按「开着」处理（fail-closed），两边口径必须一致，
+        // 否则模型会去调一个注定被拒的工具，白跑一轮
+        if (state.switchOf(request.getSessionId()) == PlanState.Switch.OFF) {
             return TurnContext.empty();
         }
         return TurnContext.of("【plan 模式】当前会话处于计划模式：只能使用白名单内的工具："

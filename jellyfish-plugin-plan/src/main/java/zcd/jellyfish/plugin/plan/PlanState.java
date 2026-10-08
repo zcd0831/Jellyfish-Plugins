@@ -22,9 +22,15 @@ import java.util.Map;
  * <b>因此开关随会话一起持久化、一起恢复</b>：{@code /resume} 回到一个开着 plan 的会话，
  * 它仍然是开着的——这与「模式属于会话」的语义一致。插件卸载也不删条目，装回来还能读到。
  * <p>
- * <b>读取失败按「关闭」处理</b>：会话标识为空或会话已不存在时内核会抛 {@link JellyfishException}，
- * 此时既没有会话也就没有工具调用，按关闭返回不会放宽任何东西；真正的错误（如上下文已失效）
- * 同样由内核在权限链上按「插件无异议」兜底，因此这里不再制造第二条失败路径。
+ * <b>读取失败按「读不出来」处理</b>：会话标识为空或会话已不存在时内核会抛 {@link JellyfishException}，
+ * 此时既没有会话也就没有工具调用，按关闭返回不会放宽任何东西。但<b>读不到与确定关闭不是一回事</b>：
+ * 会话还在、条目却读不出来时，若当作「关闭」，一道按模式收窄的授权就会在插件出故障的一瞬间
+ * <b>静默消失</b>，现场没有任何痕迹。因此这里给的是三态（{@link Switch}），把取舍留给调用方——
+ * 权限拦截那侧按「开着」处理（fail-closed），展示那侧按「没开」处理。
+ * <p>
+ * <b>判定要沿父链</b>：子代理跑在内核派生的独立会话上、它自己没有这条条目，只看本会话的话
+ * 「父会话开着 plan、模型借 {@code task} 派子代理去写文件」就能绕过。详见
+ * {@link #switchOf(String)}。
  * <p>
  * 无状态（状态全在内核侧），可安全跨线程传递。
  *
@@ -35,11 +41,32 @@ final class PlanState {
     /** 日志。 */
     private static final Logger LOG = LoggerFactory.getLogger(PlanState.class);
 
+    /**
+     * 开关的三态。
+     * <p>
+     * 「读不出来」<b>不是</b>第三种业务状态，而是对调用方的一条要求：它必须自己决定往哪一侧倒。
+     * 权限类的判断往「开着」倒（宁可多拦），展示类的判断往「没开」倒（不喊）。
+     */
+    enum Switch {
+
+        /** 确定开着。 */
+        ON,
+
+        /** 确定没开。 */
+        OFF,
+
+        /** 读不出来：不能当作「没开」，因为那等于让收窄静默失效。 */
+        UNKNOWN
+    }
+
     /** 条目的 key（不含 owner 前缀，由内核补）。 */
     static final String KEY_ENABLED = "enabled";
 
     /** 条目里的字段名，值是一个布尔。 */
     private static final String FIELD_ENABLED = "enabled";
+
+    /** 沿父链最多回溯多少层：一个查询不该依赖「父链不成环」这个假设。 */
+    private static final int MAX_ANCESTOR_DEPTH = 16;
 
     /** 插件上下文：读写会话扩展条目的唯一入口。 */
     private final PluginContext context;
@@ -58,18 +85,45 @@ final class PlanState {
     }
 
     /**
-     * 判断某个会话是否处于 plan 模式。
+     * 判断某个会话（或它所在的会话树）处于哪种开关状态。
+     * <p>
+     * <b>为什么沿父链查</b>：子代理跑在内核派生的独立会话上，它自己没有这条扩展条目——只看本会话的话，
+     * 「父会话开着 plan、模型借 {@code task} 派个子代理去写文件」就能绕过「只看不改」。而子代理的
+     * 会话是内核派出来的，父链由内核如实给出（{@link PluginContext#parentSessionId(String)}）。
+     * <p>
+     * <b>沿链取「或」</b>：链上任何一层开着就算开着。这与「模式属于会话树」的语义一致——
+     * 用户开 plan 时想约束的是这次工作，而不是「只有我自己亲手调的工具」。
+     * <p>
+     * <b>链上任何一层读不出来就整条链读不出来</b>：后面那几层里可能正开着，说「没开」是不负责任的；
+     * 而「父链成环 / 深到超出上限」同样按读不出来处理——查不全就不放宽任何东西。
      *
      * @param sessionId 会话标识，可为 {@code null}
-     * @return 开启返回 {@code true}；未设置、会话不存在或标识为空时返回 {@code false}
+     * @return {@link Switch#ON} / {@link Switch#OFF} / {@link Switch#UNKNOWN}，保证非 {@code null}
      */
-    boolean isEnabled(String sessionId) {
-        SessionExtensionEntry entry = entryOf(sessionId);
-        if (entry == null) {
-            return false;
+    Switch switchOf(String sessionId) {
+        if (sessionId == null || sessionId.trim().isEmpty()) {
+            // 没有会话就没有开关：这是「确定没开」，不是「读不出来」
+            return Switch.OFF;
         }
-        Object value = entry.getValue().get(FIELD_ENABLED);
-        return value instanceof Boolean && ((Boolean) value).booleanValue();
+        String current = sessionId;
+        for (int depth = 0; depth < MAX_ANCESTOR_DEPTH; depth++) {
+            Switch here = switchHere(current);
+            if (here == Switch.ON) {
+                return Switch.ON;
+            }
+            if (here == Switch.UNKNOWN) {
+                return Switch.UNKNOWN;
+            }
+            current = context.parentSessionId(current);
+            if (current == null) {
+                // 走到链头了：沿链都没有开
+                return Switch.OFF;
+            }
+        }
+        // 到上限还没走到链头：后面的层里可能开着，按「读不出来」处理
+        LOG.warn("plan 开关的父链超过回溯上限，按读不出来处理: sessionId={} depth={}", sessionId,
+                Integer.valueOf(MAX_ANCESTOR_DEPTH));
+        return Switch.UNKNOWN;
     }
 
     /**
@@ -86,28 +140,40 @@ final class PlanState {
     }
 
     /**
-     * 读取本插件挂在目标会话上的那一条扩展条目。
+     * 只看本会话自己的开关。
+     * <p>
+     * <b>读条目失败（含会话已不存在）按「读不出来」返回</b>：不在这里分辨「会话没了」与「上下文坏了」——
+     * 调用方拿到的是同一条信息「我判不出来」，怎么倒由它自己决定。
      *
      * @param sessionId 会话标识，可为 {@code null}
-     * @return 条目；没有或读不到时返回 {@code null}
+     * @return 本会话的三态，保证非 {@code null}
      */
-    private SessionExtensionEntry entryOf(String sessionId) {
+    private Switch switchHere(String sessionId) {
         if (sessionId == null || sessionId.trim().isEmpty()) {
-            return null;
+            return Switch.OFF;
         }
         List<SessionExtensionEntry> entries;
         try {
             entries = context.extensionEntries(sessionId);
         } catch (JellyfishException e) {
-            // 会话不存在（或上下文已失效）：没有会话就没有 plan 状态，按关闭处理
-            LOG.debug("读取 plan 开关失败，按关闭处理: sessionId={} cause={}", sessionId, e.getMessage());
-            return null;
+            LOG.warn("读取 plan 开关失败，按读不出来处理: sessionId={}", sessionId, e);
+            return Switch.UNKNOWN;
         }
         for (SessionExtensionEntry entry : entries) {
-            if (fullKey.equals(entry.getKey())) {
-                return entry;
+            if (!fullKey.equals(entry.getKey())) {
+                continue;
             }
+            // 条目值保证非 null（构造器把 null 与空表都归一成空表），因此只需看字段在不在
+            Object enabled = entry.getValue().get(FIELD_ENABLED);
+            if (enabled instanceof Boolean) {
+                return ((Boolean) enabled).booleanValue() ? Switch.ON : Switch.OFF;
+            }
+            // 条目在、值却不认识（手改过会话文件、字段被删、或来自另一个版本的插件）：判不出开着没有，
+            // 按读不出来处理比按「关」处理安全——后者会让限制静默消失
+            LOG.warn("plan 开关取值无法识别，按读不出来处理: sessionId={} value={}", sessionId, enabled);
+            return Switch.UNKNOWN;
         }
-        return null;
+        // 没有本插件的那条条目：从来没有开过
+        return Switch.OFF;
     }
 }

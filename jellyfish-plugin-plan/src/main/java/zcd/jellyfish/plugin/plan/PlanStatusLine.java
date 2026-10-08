@@ -40,7 +40,9 @@ final class PlanStatusLine implements ExtensionHandler<StatusLineContributionReq
 
     @Override
     public StatusLineContribution handle(StatusLineContributionRequest request) {
-        return state.isEnabled(request.getSessionId())
+        // 展示路径：只有「确定开着」才显示。判不出来时这里不喊（权限拦截那侧会拒绝并给出理由），
+        // 让状态栏在一个查询异常上闪来闪去反而更难读
+        return state.switchOf(request.getSessionId()) == PlanState.Switch.ON
                 ? StatusLineContribution.of(TEXT)
                 : StatusLineContribution.empty();
     }

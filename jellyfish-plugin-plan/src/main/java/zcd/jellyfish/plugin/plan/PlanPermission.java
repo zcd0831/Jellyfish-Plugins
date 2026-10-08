@@ -49,7 +49,8 @@ final class PlanPermission implements ExtensionHandler<PermissionCheckRequest, P
 
     @Override
     public PermissionVerdict handle(PermissionCheckRequest request) {
-        if (!state.isEnabled(request.getSessionId())) {
+        PlanState.Switch mode = state.switchOf(request.getSessionId());
+        if (mode == PlanState.Switch.OFF) {
             return PermissionVerdict.abstain();
         }
         String toolName = request.getToolName();
@@ -58,6 +59,12 @@ final class PlanPermission implements ExtensionHandler<PermissionCheckRequest, P
         }
         // 白名单为空是合法配置（就是「一个都不许」），但用户多半是漏配，因此补一条每种配置只喊一次的告警
         config.warnIfWhitelistIsEmpty(toolName);
+        if (mode == PlanState.Switch.UNKNOWN) {
+            // 判不出开着没有就按开着处理：不这样，状态读不出来的那一刻「只看不改」会静默失效，
+            // 而模型只看到工具照常放行、用户也不知道自己开着的那道限制已经不在了
+            return PermissionVerdict.deny("无法确认 plan 模式的状态（本会话的 plan 开关读不出来），"
+                    + "按开启处理：" + config.denialReason(toolName));
+        }
         return PermissionVerdict.deny(config.denialReason(toolName));
     }
 }

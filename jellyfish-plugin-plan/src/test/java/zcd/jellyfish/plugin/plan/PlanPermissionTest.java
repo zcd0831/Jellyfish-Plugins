@@ -3,6 +3,7 @@ package zcd.jellyfish.plugin.plan;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.PermissionCheckRequest;
 import zcd.jellyfish.api.extension.PermissionVerdict;
 import zcd.jellyfish.api.extension.SessionExtensionEntry;
@@ -21,8 +22,9 @@ import static org.mockito.Mockito.when;
 /**
  * {@link PlanPermission} 的单元测试：钉住「开着 plan 时白名单外一律拒绝、白名单内原样放行」。
  * <p>
- * 三条语义各有一个用例：关闭时不表态（核心策略的结论原样生效）、白名单内不表态（别的策略还能继续收窄）、
- * 白名单外拒绝并给出可读理由（理由会经工具结果回灌给模型）。
+ * 四条语义各有用例：关闭时不表态（核心策略的结论原样生效）、白名单内不表态（别的策略还能继续收窄）、
+ * 白名单外拒绝并给出可读理由（理由会经工具结果回灌给模型）、以及<b>开关读不出来时按开着处理</b>
+ * （fail-closed：判不出来不等于没开，否则这道收窄会静默消失）。
  *
  * @author zcd
  */
@@ -86,6 +88,30 @@ class PlanPermissionTest {
         assertTrue(verdict.isAbstain());
     }
 
+    @Test
+    @DisplayName("开关读不出来时按开着处理：白名单外的工具照样拒绝（fail-closed）")
+    void handle_should_deny_whenPlanStateUnreadable() {
+        // Given：会话还在，但本插件的开关条目读不出来（上下文失效 / 存储层故障）
+        PlanPermission permission = unreadablePermission("read_file");
+
+        // When
+        PermissionVerdict verdict = permission.handle(request("write_file"));
+
+        // Then：拒绝，且理由说清「不是你违规，是我判不出来」
+        assertTrue(verdict.isDenied());
+        assertTrue(verdict.getReason().contains("无法确认 plan 模式的状态"), verdict.getReason());
+        assertTrue(verdict.getReason().contains("read_file"), verdict.getReason());
+        assertFalse(verdict.getReason().contains("已关闭"), verdict.getReason());
+    }
+
+    @Test
+    @DisplayName("开关读不出来时白名单内的工具仍然放行：fail-closed 只落在该收窄的地方")
+    void handle_should_abstain_whenPlanStateUnreadableButToolIsWhitelisted() {
+        PlanPermission permission = unreadablePermission("read_file");
+
+        assertTrue(permission.handle(request("read_file")).isAbstain());
+    }
+
     /**
      * 构造拦截处理器。
      *
@@ -100,6 +126,19 @@ class PlanPermissionTest {
                 ? Collections.singletonList(entry())
                 : Collections.<SessionExtensionEntry>emptyList();
         when(context.extensionEntries(SESSION_ID)).thenReturn(entries);
+        return new PlanPermission(new PlanState(context), config(readOnlyTools));
+    }
+
+    /**
+     * 构造一个「开关读不出来」的拦截处理器。
+     *
+     * @param readOnlyTools 用户声明的白名单
+     * @return 处理器
+     */
+    private static PlanPermission unreadablePermission(String... readOnlyTools) {
+        PluginContext context = Mockito.mock(PluginContext.class);
+        when(context.pluginId()).thenReturn(PLUGIN_ID);
+        when(context.extensionEntries(SESSION_ID)).thenThrow(new JellyfishException("boom"));
         return new PlanPermission(new PlanState(context), config(readOnlyTools));
     }
 
