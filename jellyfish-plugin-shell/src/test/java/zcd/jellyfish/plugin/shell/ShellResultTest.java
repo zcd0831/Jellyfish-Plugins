@@ -77,6 +77,30 @@ class ShellResultTest {
     }
 
     @Test
+    @DisplayName("插件停止终止时说的是插件停止，不是「已取消」——取消是用户按了 Esc，两件事不一样")
+    void summary_should_reportStopped_differentlyFromCancellation() {
+        ShellResult result = ShellResult.of(ShellResult.Termination.STOPPED, null, 800L, false, 0L);
+
+        String summary = result.summary("/work");
+
+        assertTrue(summary.contains("插件已停止"), summary);
+        assertFalse(summary.contains("已取消"), summary);
+        assertFalse(summary.contains("exit:"), summary);
+    }
+
+    @Test
+    @DisplayName("插件停止的终止原因也进字段，且算失败")
+    void metadata_should_carryStoppedTerminal() {
+        ShellResult result = ShellResult.of(ShellResult.Termination.STOPPED, null, 800L, false, 0L);
+
+        Map<String, Object> metadata = result.metadata();
+
+        assertEquals("STOPPED", metadata.get(ToolMetadata.KEY_TERMINAL));
+        assertFalse(metadata.containsKey(ToolMetadata.KEY_EXIT_CODE));
+        assertTrue(ToolMetadata.failed(metadata), "命令没跑完就得被界面标出来");
+    }
+
+    @Test
     @DisplayName("二进制输出在元数据行里说明丢了多少字节")
     void summary_should_reportBinaryOutput() {
         ShellResult result = ShellResult.of(ShellResult.Termination.COMPLETED, Integer.valueOf(0), 10L,

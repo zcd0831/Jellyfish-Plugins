@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.CancellationToken;
+import zcd.jellyfish.api.extension.ToolMetadata;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -245,6 +246,97 @@ class ShellProcessRunnerTest {
 
         assertFalse(running.isAlive());
         assertFalse(process.isAlive());
+    }
+
+    @Test
+    @DisplayName("进程刚起、还没入表时插件就停了：这个进程必须就地被终止，不能等着快照来杀它")
+    void run_should_terminateProcess_whenStoppedBetweenLaunchAndAdopt() {
+        ShellTestSupport.FakeProcess process = new ShellTestSupport.FakeProcess();
+        ShellProcessRunner[] holder = new ShellProcessRunner[1];
+        ShellProcessRunner runner = new ShellProcessRunner(stoppingLauncher(holder, process));
+        holder[0] = runner;
+
+        ShellResult result = runner.run(invocation(5_000L, 0L), new ShellTestSupport.RecordingSink(),
+                CancellationToken.NONE);
+
+        assertEquals(ShellResult.Termination.STOPPED, result.termination());
+        assertFalse(process.isAlive(), "停止之后不能还有活着的子进程");
+        assertTrue(result.summary(CWD.toString()).contains("插件已停止"), result.summary(CWD.toString()));
+    }
+
+    @Test
+    @DisplayName("被停止时已捕获的输出照常回灌——「被杀之前打印了什么」正是判断这次终止是否合理的依据")
+    void run_should_keepCapturedOutput_whenStopped() {
+        ShellTestSupport.FakeProcess process = new ShellTestSupport.FakeProcess();
+        ShellTestSupport.RecordingSink sink = new ShellTestSupport.RecordingSink();
+        ShellProcessRunner[] holder = new ShellProcessRunner[1];
+        ShellProcessLauncher launcher = (invocation, mergedOutput) -> {
+            process.attach(mergedOutput);
+            process.write("还在跑\n");
+            // 停在这一刻：命令已经打印了东西，但进程还没入表
+            holder[0].killAll();
+            return process;
+        };
+        ShellProcessRunner runner = new ShellProcessRunner(launcher);
+        holder[0] = runner;
+
+        ShellResult result = runner.run(invocation(5_000L, 0L), sink, CancellationToken.NONE);
+
+        assertEquals(ShellResult.Termination.STOPPED, result.termination());
+        assertEquals("还在跑\n", sink.body());
+        assertEquals("STOPPED", result.metadata().get(ToolMetadata.KEY_TERMINAL));
+    }
+
+    @Test
+    @DisplayName("插件已停止之后新来的命令不再被接受：它一出生就被自己收尾")
+    void run_should_stopImmediately_whenAlreadyStopped() {
+        ShellTestSupport.FakeProcess process = new ShellTestSupport.FakeProcess();
+        ShellProcessRunner runner = new ShellProcessRunner(new ShellTestSupport.FakeLauncher(process));
+        runner.killAll();
+
+        ShellResult result = runner.run(invocation(5_000L, 0L), new ShellTestSupport.RecordingSink(),
+                CancellationToken.NONE);
+
+        assertEquals(ShellResult.Termination.STOPPED, result.termination());
+        assertFalse(process.isAlive());
+        assertEquals(1, process.destroys(), "就地收尾走的是同一条终止链");
+    }
+
+    @Test
+    @DisplayName("killAll 幂等：停止与内核关闭会各调一次，第二次不该再动已经死掉的进程")
+    void killAll_should_beIdempotent() throws InterruptedException {
+        ShellTestSupport.FakeProcess process = new ShellTestSupport.FakeProcess();
+        ShellProcessRunner runner = new ShellProcessRunner(new ShellTestSupport.FakeLauncher(process));
+        Thread running = new Thread(() -> runner.run(invocation(30_000L, 0L),
+                new ShellTestSupport.RecordingSink(), CancellationToken.NONE));
+        running.start();
+        sleep(200L);
+
+        runner.killAll();
+        running.join(2_000L);
+        int afterFirst = process.destroys();
+        runner.killAll();
+
+        assertEquals(afterFirst, process.destroys(), "快照已空，第二次不该再发信号");
+    }
+
+    /**
+     * 构造一个「在起进程与交还进程之间刚好被停止」的启动器。
+     * <p>
+     * 这是那段窗口最精确的复现：{@code launch} 返回之前的那一刻，正是 {@code run} 还没把进程记进
+     * 在途集合的时候。用真实线程去撞这个瞬间只能碰运气，而在启动器里停住是确定的。
+     *
+     * @param holder  执行器的一元数组（执行器要先于启动器存在）
+     * @param process 要交出去的假进程
+     * @return 假启动器
+     */
+    private static ShellProcessLauncher stoppingLauncher(ShellProcessRunner[] holder,
+                                                         ShellTestSupport.FakeProcess process) {
+        return (invocation, mergedOutput) -> {
+            process.attach(mergedOutput);
+            holder[0].killAll();
+            return process;
+        };
     }
 
     @Test

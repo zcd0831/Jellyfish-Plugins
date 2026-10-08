@@ -14,6 +14,8 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -213,6 +215,48 @@ class McpServerConnectionTest {
 
         // Then：坏行没有毒化后续处理
         assertNotNull(replyWithId(55L));
+    }
+
+    @Test
+    @DisplayName("关闭赶在进程出生之前：那条传输必须由连接自己收掉，不能活在停止之后")
+    void connect_should_closeTransport_whenClosedBeforeItArrives() throws InterruptedException {
+        // Given：传输的出生被挡住，好让 close() 精确地落在「资源还不存在」的那一刻
+        final CountDownLatch born = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        transport = new FakeTransport();
+        registry = new McpRegistry();
+        registry.register("fake", McpRegistry.State.PENDING, "");
+        connection = new McpServerConnection(McpServerConfig.from(serverConfig(2)), globalConfig(),
+                registry, tools -> received.add(tools), new McpMediaSpill(tempDir), config -> {
+                    born.countDown();
+                    try {
+                        release.await(2L, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return transport;
+                });
+        final JellyfishException[] failure = new JellyfishException[1];
+        Thread connecting = new Thread(() -> {
+            try {
+                connection.connect();
+            } catch (JellyfishException e) {
+                failure[0] = e;
+            }
+        }, "connect-under-test");
+        connecting.start();
+        assertTrue(born.await(2L, TimeUnit.SECONDS), "传输应已被要求出生");
+
+        // When：就在此刻停止——close() 读 transport 时它还是 null，于是这次关闭什么都没关到
+        connection.close();
+        release.countDown();
+        connecting.join(2_000L);
+
+        // Then：关闭之后才出生的那份只能由连接自己收
+        assertFalse(connecting.isAlive(), "连接线程必须立刻结束，而不是继续握手");
+        assertNotNull(failure[0], "连接必须失败，而不是留下一条没人管的通道");
+        assertTrue(failure[0].getMessage().contains("已停止"), failure[0].getMessage());
+        assertFalse(transport.isAlive(), "关闭之后出生的传输必须被它自己关掉");
     }
 
     @Test

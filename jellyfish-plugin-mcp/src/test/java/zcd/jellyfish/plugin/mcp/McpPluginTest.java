@@ -18,11 +18,16 @@ import zcd.jellyfish.infra.plugin.PluginContextImpl;
 import zcd.jellyfish.infra.registry.TypeRegistry;
 import zcd.jellyfish.infra.session.SessionManager;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -134,6 +139,111 @@ class McpPluginTest {
 
         // When / Then
         assertThrows(JellyfishException.class, () -> plugin.start(context(values)));
+    }
+
+    @Test
+    @DisplayName("停止赶在连接中途：那条连接必须被收掉，且连接线程必须在 stop 返回前结束")
+    void stop_should_closeConnectionAndJoinConnector_whenStoppingMidConnect() throws Exception {
+        // Given：一个「正在起进程」的 server——传输的出生被挡住，好让 stop() 精确落在那一刻
+        final CountDownLatch born = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        final FakeTransport transport = new FakeTransport();
+        plugin = new McpPlugin(config -> {
+            born.countDown();
+            try {
+                release.await(2L, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return transport;
+        });
+        Map<String, Object> values = new HashMap<String, Object>();
+        Map<String, Object> server = new HashMap<String, Object>();
+        server.put("id", "fs");
+        server.put("command", "echo");
+        values.put(McpConfig.KEY_SERVERS, Collections.singletonList(server));
+        // 不等连接线程：本用例要的是「它正卡在起进程时被停掉」，等待窗口只会白等 5 秒
+        values.put(McpConfig.KEY_STARTUP_WAIT_SECONDS, Integer.valueOf(0));
+        plugin.start(context(values));
+        assertTrue(born.await(2L, TimeUnit.SECONDS), "连接线程应已开始起进程");
+
+        // When
+        release.countDown();
+        plugin.stop();
+
+        // Then：进程不能活在停止之后，连接线程也不能还在跑
+        assertFalse(transport.isAlive(), "停止之后出生的传输必须被收掉");
+        assertEquals(0, countThreads("mcp-connect"), "连接线程必须在 stop 返回前结束");
+    }
+
+    @Test
+    @DisplayName("停止之后不再连剩下的 server：不会在停止之后还生出新的子进程")
+    void connectAll_should_notConnectRemainingServers_whenStopped() throws Exception {
+        // Given：两个 server，第一个在「出生」的一瞬间触发停止
+        final List<FakeTransport> births = Collections.synchronizedList(new ArrayList<FakeTransport>());
+        plugin = new McpPlugin(config -> {
+            FakeTransport created = new FakeTransport();
+            births.add(created);
+            plugin.stop();
+            return created;
+        });
+        List<Map<String, Object>> servers = new ArrayList<Map<String, Object>>();
+        servers.add(serverConfig("first"));
+        servers.add(serverConfig("second"));
+        Map<String, Object> values = new HashMap<String, Object>();
+        values.put(McpConfig.KEY_SERVERS, servers);
+        values.put(McpConfig.KEY_STARTUP_WAIT_SECONDS, Integer.valueOf(0));
+
+        // When
+        plugin.start(context(values));
+        waitForConnectorToFinish();
+
+        // Then：第二个 server 连进程都不该起
+        assertEquals(1, births.size(), "停止之后不该再连下一个 server");
+        assertFalse(births.get(0).isAlive(), "那一刻正在出生的那条也已经被收掉");
+    }
+
+    /**
+     * 等连接线程结束。
+     *
+     * @throws InterruptedException 等待被中断时抛出
+     */
+    private static void waitForConnectorToFinish() throws InterruptedException {
+        for (int round = 0; round < 100; round++) {
+            if (countThreads("mcp-connect") == 0) {
+                return;
+            }
+            Thread.sleep(20L);
+        }
+    }
+
+    /**
+     * 构造一个 server 配置。
+     *
+     * @param id 服务标识
+     * @return 配置映射
+     */
+    private static Map<String, Object> serverConfig(String id) {
+        Map<String, Object> server = new HashMap<String, Object>();
+        server.put("id", id);
+        server.put("command", "echo");
+        return server;
+    }
+
+    /**
+     * 数一数名字匹配指定前缀的存活线程。
+     *
+     * @param prefix 线程名前缀
+     * @return 数量
+     */
+    private static int countThreads(String prefix) {
+        int count = 0;
+        for (Thread thread : Thread.getAllStackTraces().keySet()) {
+            if (thread.isAlive() && thread.getName().startsWith(prefix)) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**

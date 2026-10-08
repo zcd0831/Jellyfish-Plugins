@@ -16,6 +16,23 @@
 
 ### Fixed
 
+- **`jellyfish-plugin-shell` 与 `jellyfish-plugin-mcp` 的停止窗口：插件已停而子进程仍在跑**：
+  两处都是「检查是否已停止」与「把新对象记进待清理表」分开做的。`ShellProcessRunner` 的
+  `active.add(process)` 与 `killAll()` 之间没有互斥——`stop()` 取快照时新进程还没入表，
+  这一杀就什么都没杀到；`McpPlugin` 虽然有一句 `if (stopping) return`，但它守在连接循环的顶部，
+  离 `connections.add(...)` 隔着构造与整个 `connect()`（而那一步要起子进程），
+  `stop()` 的快照同样可以整段跑完而看不到这条新连接——于是 MCP 连接会跨 `/reload` 残留。
+  现在两侧都是「检查与入表放进同一把锁」：没停才入表（停止时的快照就一定收得到它），
+  停了就根本不连；`shell` 那侧若进程已经起了，就由它自己就地收尾并如实回一条
+  「插件已停止，进程已终止」（**新增终止原因 `STOPPED`**，与「已取消」分开说——取消是用户按了 Esc，
+  这里连插件都没了；已捕获的输出照常回灌，它正是判断这次终止是否合理的依据）。
+  还补上了一处报告没点出的窗口：**「先立旗再收资源」在「资源是立旗之后才出生的」时不成立**
+  ——`McpServerConnection.close()` 读 `transport` 时它可能还是 `null`，于是那次关闭什么都没关到。
+  因此连接在给 `transport` 赋值之后要复查一次 `closed`，两侧各查一次才收口。
+  另外 `McpPlugin.stop()` 现在**有界地等连接线程收尾**（2 秒，超过打 WARN）：
+  `interrupt` 叫不醒卡在握手等应答的线程，而叫醒在途请求的正是关连接这一步，所以顺序是
+  「立旗 → interrupt → 关连接 → 等」；`ShellPlugin.runner` 也补了 `volatile`
+  （`start()`/`stop()` 在不同线程上，读到陈旧 `null` 就是「一次都没杀」）。
 - **`jellyfish-plugin-tools` 的三个读工具此前不响应 Esc，且两处枚举没有上限**：`grep_files` 的整树遍历
   一次走到底，既不看 `ToolCallRequest.getCancellationToken()`（取消是协作式的，工具自己不看就没人能打断它），
   也没有「访问了多少个文件」的上限。已有的那三个上限（匹配数 / 单行长度 / 总字节）**都要先有匹配才生效**，

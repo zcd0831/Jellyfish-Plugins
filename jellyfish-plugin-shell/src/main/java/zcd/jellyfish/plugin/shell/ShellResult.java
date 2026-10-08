@@ -35,7 +35,10 @@ final class ShellResult {
         IDLE_TIMEOUT,
 
         /** 用户取消（Esc / 客户端断连）。 */
-        CANCELLED
+        CANCELLED,
+
+        /** 插件停止（热部署、内核关闭）：进程是被我们连根拔掉的，不是命令自己出了事。 */
+        STOPPED
     }
 
     /** 终止原因。 */
@@ -156,6 +159,11 @@ final class ShellResult {
                 break;
             case CANCELLED:
                 text.append("已取消，进程已终止");
+                break;
+            case STOPPED:
+                // 与「已取消」分开说：取消是用户按了 Esc，这里是插件被停掉（热部署或内核关闭），
+                // 两者对读的人意味着完全不同的下一步——前者可以做别的，后者连插件都没了
+                text.append("插件已停止，进程已终止");
                 break;
             default:
                 break;

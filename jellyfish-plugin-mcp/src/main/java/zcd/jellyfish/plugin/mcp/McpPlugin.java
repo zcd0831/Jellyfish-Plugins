@@ -10,7 +10,6 @@ import zcd.jellyfish.api.plugin.JellyfishPlugin;
 import zcd.jellyfish.api.plugin.PluginContext;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -47,6 +46,9 @@ public final class McpPlugin implements JellyfishPlugin {
     /** {@code /mcp} 命令名。 */
     private static final String COMMAND_MCP = "mcp";
 
+    /** 等待连接线程收尾的上限（毫秒）：够它走完一次「失败就返回」的路径，又不至于拖住停止。 */
+    private static final long CONNECTOR_JOIN_MILLIS = 2000L;
+
     /** 当前配置。 */
     private volatile McpConfig config;
 
@@ -59,15 +61,41 @@ public final class McpPlugin implements JellyfishPlugin {
     /** 工具注册器。 */
     private volatile McpToolRegistrar registrar;
 
-    /** 已建立的连接；连接线程会往里加，停止时从这里收。 */
-    private final List<McpServerConnection> connections =
-            Collections.synchronizedList(new ArrayList<McpServerConnection>());
+    /** 传输工厂：生产实现起子进程，测试注入内存通道。 */
+    private final McpTransport.Factory transportFactory;
+
+    /**
+     * 已建立的连接；连接线程会往里加，停止时从这里收。
+     * <p>
+     * <b>访问必须全部在 {@link #connectionLock} 内</b>：「检查是否正在停止」与「把连接记进来」
+     * 必须是同一个原子动作，否则停止时取的快照就漏得掉刚建好的那条（见 {@link #adopt}）。
+     */
+    private final List<McpServerConnection> connections = new ArrayList<McpServerConnection>();
+
+    /** 「是否正在停止」与「连接清单」的互斥锁。 */
+    private final Object connectionLock = new Object();
 
     /** 连接线程。 */
     private volatile Thread connector;
 
     /** 是否正在停止：连接线程与工具接收方都靠它提前退出。 */
     private volatile boolean stopping;
+
+    /**
+     * 构造插件（PF4J 用）。
+     */
+    public McpPlugin() {
+        this(McpStdioTransport::start);
+    }
+
+    /**
+     * 构造插件，使用指定的传输工厂。
+     *
+     * @param transportFactory 传输工厂，不可为 {@code null}
+     */
+    McpPlugin(McpTransport.Factory transportFactory) {
+        this.transportFactory = transportFactory;
+    }
 
     @Override
     public synchronized void start(PluginContext context) {
@@ -100,18 +128,34 @@ public final class McpPlugin implements JellyfishPlugin {
         startConnector(parsed, parsedRegistry);
     }
 
+    /**
+     * 停止插件。
+     * <p>
+     * <b>顺序是「立旗 → 叫停连接线程 → 关连接 → 等它收尾」</b>：立旗与取快照在同一把锁内，
+     * 因此不会再有连接溜进清单；关连接要排在等之前，因为连接线程此刻可能正卡在握手等应答上，
+     * 而叫醒在途请求的正是 {@code close()}——先等就会白等到超时。
+     * <p>
+     * 等的是 {@code mcp-connect} 线程本身：AGENTS.md 要求「产生注册的后台线程必须在
+     * {@code stop()} 返回前停下来」。它有界（{@link #CONNECTOR_JOIN_MILLIS}），
+     * 因为一个卡在进程启动或读管道上的线程无法被强杀——那种情况只能如实告警。
+     */
     @Override
     public synchronized void stop() {
-        stopping = true;
+        List<McpServerConnection> snapshot;
+        synchronized (connectionLock) {
+            stopping = true;
+            snapshot = new ArrayList<McpServerConnection>(connections);
+            connections.clear();
+        }
         Thread thread = connector;
         connector = null;
         if (thread != null) {
             thread.interrupt();
         }
-        for (McpServerConnection connection : new ArrayList<McpServerConnection>(connections)) {
+        for (McpServerConnection connection : snapshot) {
             closeQuietly(connection);
         }
-        connections.clear();
+        awaitConnector(thread);
         McpToolRegistrar currentRegistrar = registrar;
         if (currentRegistrar != null) {
             currentRegistrar.closeAll();
@@ -124,6 +168,44 @@ public final class McpPlugin implements JellyfishPlugin {
         registry = null;
         registrar = null;
         spill = null;
+    }
+
+    /**
+     * 有界地等连接线程收尾。
+     *
+     * @param thread 连接线程，可为 {@code null}
+     */
+    private static void awaitConnector(Thread thread) {
+        if (thread == null || thread == Thread.currentThread()) {
+            return;
+        }
+        try {
+            thread.join(CONNECTOR_JOIN_MILLIS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        }
+        if (thread.isAlive()) {
+            // 它已经起不了新连接（立旗在前），但还卡在某次启动或读上：如实说一声，
+            // 因为这正是「停止之后还有东西在跑」的那类现场
+            LOG.warn("mcp 连接线程未能在 {}ms 内结束，可能仍在收尾", Long.valueOf(CONNECTOR_JOIN_MILLIS));
+        }
+    }
+
+    /**
+     * 把一条建好的连接记进清单。
+     *
+     * @param connection 连接，不可为 {@code null}
+     * @return 停止时返回 {@code false}（调用方不得再去连它），否则返回 {@code true}
+     */
+    private boolean adopt(McpServerConnection connection) {
+        synchronized (connectionLock) {
+            if (stopping) {
+                return false;
+            }
+            connections.add(connection);
+            return true;
+        }
     }
 
     /**
@@ -179,6 +261,11 @@ public final class McpPlugin implements JellyfishPlugin {
 
     /**
      * 连接单个 server。
+     * <p>
+     * <b>先入表再连接，且入表要拿着锁问一句「停了没」</b>：连接线程顶部的停止检查挡不住这段窗口
+     * ——它检查完到这里之间隔着构造与整个 {@code connect()}，而 {@code connect()} 是要起子进程的。
+     * 因此「停止」与「入表」必须是同一个原子动作：没停才入表（停止时的快照就一定收得到它），
+     * 停了就根本不去连（此时连进程都还没起，没有东西要收）。
      *
      * @param parsed         配置
      * @param parsedRegistry 共享状态
@@ -200,9 +287,12 @@ public final class McpPlugin implements JellyfishPlugin {
                 parsedRegistry.noteWarning(server.id(), "工具注册失败：" + e.getMessage());
             }
         };
-        McpServerConnection connection = new McpServerConnection(server, parsed, parsedRegistry, sink, spill);
+        McpServerConnection connection =
+                new McpServerConnection(server, parsed, parsedRegistry, sink, spill, transportFactory);
         holder[0] = connection;
-        connections.add(connection);
+        if (!adopt(connection)) {
+            return;
+        }
         try {
             connection.connect();
         } catch (RuntimeException e) {

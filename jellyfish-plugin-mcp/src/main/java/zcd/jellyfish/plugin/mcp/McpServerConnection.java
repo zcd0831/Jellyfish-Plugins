@@ -156,6 +156,11 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
 
     /**
      * 连接主体：起进程、起读线程、握手、拉工具清单。
+     * <p>
+     * <b>起完进程要复查一次「有没有被关掉」</b>：{@link #close()} 是「先立旗再收资源」，
+     * 而它读 {@code transport} 的那一刻这份资源可能还不存在（进程刚要起），于是那次关闭
+     * 什么都没关到，管道与子进程就留在了停止之后。两侧各查一次才能收口：关闭方查的是
+     * 「已经有的资源」，这里查的是「关闭发生之后才出生的资源」。
      */
     private void connectInternal() {
         McpTransport started;
@@ -166,6 +171,11 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
                     + "（" + e.getMessage() + "）", e);
         }
         transport = started;
+        if (closed) {
+            transport = null;
+            started.close();
+            throw new JellyfishException("插件已停止，连接未建立: " + config.id());
+        }
         startReader(started);
         long timeoutMillis = config.connectTimeoutSeconds() * 1000L;
         initialize(timeoutMillis);
@@ -199,6 +209,14 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
         return new McpCallOutcome(text, error, System.currentTimeMillis() - start);
     }
 
+    /**
+     * 关闭连接与它的全部资源。
+     * <p>
+     * <b>关的是「此刻已经存在」的那份</b>：先立 {@code closed} 旗再逐个收资源。旗必须最先立
+     * ——它同时是「在途请求立刻失败」与「通知不再被处理」的开关，也是
+     * {@link #connectInternal()} 复查的依据：关闭指令可能赶在传输出生之前到达，
+     * 那种情况由连接自己去收（见该方法的注释）。
+     */
     @Override
     public void close() {
         closed = true;

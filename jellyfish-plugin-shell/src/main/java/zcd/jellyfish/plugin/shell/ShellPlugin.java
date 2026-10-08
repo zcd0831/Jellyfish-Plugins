@@ -40,8 +40,13 @@ public final class ShellPlugin implements JellyfishPlugin {
     /** 日志。 */
     private static final Logger LOG = LoggerFactory.getLogger(ShellPlugin.class);
 
-    /** 执行器，{@link #stop()} 需要用它终止在途进程。 */
-    private ShellProcessRunner runner;
+    /**
+     * 执行器，{@link #stop()} 需要用它终止在途进程。
+     * <p>
+     * {@code volatile}：{@code start()} 与 {@code stop()} 由 PF4J 在不同线程上调用，
+     * 这里读到陈旧 {@code null} 的后果是「一次都没杀」——那正是这条纪律要避免的事。
+     */
+    private volatile ShellProcessRunner runner;
 
     @Override
     public void start(PluginContext context) {
