@@ -56,7 +56,7 @@ public final class SkillsPlugin implements JellyfishPlugin {
     @Override
     public void start(PluginContext context) {
         // 先解析配置：值非法属配置错误，启动期就该让人看见，而不是压到第一次对话
-        SkillsConfig config = SkillsConfig.from(context.configuration());
+        SkillsConfig config = SkillsConfig.of(context);
         SkillCatalog catalog = new SkillCatalog(config);
         // 台账命令无论启用与否都注册：禁用时「为什么什么都看不见」的唯一答案就在这里
         context.handle(CommandRequest.class, COMMAND_SKILLS,

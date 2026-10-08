@@ -2,7 +2,10 @@ package zcd.jellyfish.plugin.skills;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.plugin.PluginConfigScope;
+import zcd.jellyfish.api.plugin.PluginContext;
 
 import java.nio.file.Paths;
 import java.util.Arrays;
@@ -25,6 +28,75 @@ class SkillsConfigTest {
 
     /** 用户主目录。 */
     private static final String HOME = System.getProperty("user.home");
+
+    @Test
+    @DisplayName("项目级给的 roots 指向主目录或绝对路径一律拒绝：配置随仓库走，不该决定去哪读系统指令")
+    void of_should_rejectProjectRootsOutsideProject() {
+        assertProjectRootRejected("~/.jellyfish/skills");
+        assertProjectRootRejected("/etc");
+        assertProjectRootRejected("../../etc");
+    }
+
+    @Test
+    @DisplayName("项目级给的 roots 只要是项目内的相对路径就放行")
+    void of_should_keepProjectRootsInsideProject() {
+        // Given
+        Map<String, Object> values = new HashMap<String, Object>();
+        values.put(SkillsConfig.KEY_ROOTS, Collections.singletonList("./.jellyfish/skills"));
+        PluginContext context = Mockito.mock(PluginContext.class);
+        Mockito.when(context.configuration()).thenReturn(values);
+        Mockito.when(context.configScope()).thenReturn(PluginConfigScope.PROJECT);
+
+        // Then
+        assertEquals(Collections.singletonList(
+                        Paths.get(".jellyfish", "skills").toAbsolutePath().normalize()),
+                SkillsConfig.of(context).roots());
+    }
+
+    @Test
+    @DisplayName("全局级给的 roots 不受此限：那本来就是用户自己的地盘")
+    void of_should_allowGlobalRootsAnywhere() {
+        // Given
+        Map<String, Object> values = new HashMap<String, Object>();
+        values.put(SkillsConfig.KEY_ROOTS, Collections.singletonList("/opt/shared-skills"));
+        PluginContext context = Mockito.mock(PluginContext.class);
+        Mockito.when(context.configuration()).thenReturn(values);
+        Mockito.when(context.configScope()).thenReturn(PluginConfigScope.GLOBAL);
+
+        // Then
+        assertEquals(Collections.singletonList(Paths.get("/opt/shared-skills").toAbsolutePath().normalize()),
+                SkillsConfig.of(context).roots());
+    }
+
+    @Test
+    @DisplayName("来源未知时不做限制：旧容器上的行为与改造前一致")
+    void of_should_notRestrict_when_scopeUnknown() {
+        // Given
+        Map<String, Object> values = new HashMap<String, Object>();
+        values.put(SkillsConfig.KEY_ROOTS, Collections.singletonList("/opt/shared-skills"));
+        PluginContext context = Mockito.mock(PluginContext.class);
+        Mockito.when(context.configuration()).thenReturn(values);
+        Mockito.when(context.configScope()).thenReturn(PluginConfigScope.UNKNOWN);
+
+        // Then
+        assertEquals(Collections.singletonList(Paths.get("/opt/shared-skills").toAbsolutePath().normalize()),
+                SkillsConfig.of(context).roots());
+    }
+
+    /**
+     * 断言某个路径作为项目级 roots 会被拒。
+     *
+     * @param root 路径
+     */
+    private static void assertProjectRootRejected(String root) {
+        Map<String, Object> values = new HashMap<String, Object>();
+        values.put(SkillsConfig.KEY_ROOTS, Collections.singletonList(root));
+        PluginContext context = Mockito.mock(PluginContext.class);
+        Mockito.when(context.configuration()).thenReturn(values);
+        Mockito.when(context.configScope()).thenReturn(PluginConfigScope.PROJECT);
+
+        assertThrows(JellyfishException.class, () -> SkillsConfig.of(context), root);
+    }
 
     @Test
     @DisplayName("整段缺省时走默认根目录与默认上限")

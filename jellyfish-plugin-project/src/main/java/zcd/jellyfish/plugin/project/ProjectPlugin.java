@@ -41,7 +41,7 @@ public final class ProjectPlugin implements JellyfishPlugin {
     @Override
     public void start(PluginContext context) {
         // 先装配再注册：处理器一旦注册就可能被调用，依赖必须已经就绪
-        PluginConfig config = PluginConfig.from(context.configuration());
+        PluginConfig config = PluginConfig.of(context);
         ConventionFiles files = ConventionFiles.ofWorkingDirectory();
         ProjectPromptContribution contribution =
                 new ProjectPromptContribution(files, config, new ContributionCache());

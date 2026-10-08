@@ -3,6 +3,8 @@ package zcd.jellyfish.plugin.skills;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.plugin.PluginConfigScope;
+import zcd.jellyfish.api.plugin.PluginContext;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -114,19 +116,55 @@ final class SkillsConfig {
     }
 
     /**
+     * 从插件上下文解析配置。
+     * <p>
+     * <b>{@code roots} 来自项目级时必须留在项目目录内</b>：「去哪读 SKILL.md」决定了哪些文本会以
+     * 系统指令的姿态进上下文。项目级配置随仓库走，若它能把自己的加载目录指到 {@code /} 或 {@code ~}，
+     * 一个 {@code git clone} 下来的目录就能把机器上任意位置的文件拉进来。
+     * 用户自己那台机器上的全局级配置不受此限——那本来就是用户的地盘。
+     * <p>
+     * 其余键（清单条数、展示长度、正文上限）都只是「收紧」，两边都能调，不必区分来源。
+     * <p>
+     * 名字用 {@code of} 而不是重载 {@code from(Map)}：两者在传 {@code null} 时会有歧义。
+     *
+     * @param context 插件上下文，不可为 {@code null}
+     * @return 配置值对象，保证非 {@code null}
+     * @throws JellyfishException 配置值的类型或取值非法时抛出
+     */
+    static SkillsConfig of(PluginContext context) {
+        return build(context.configuration(),
+                context.configScope() == PluginConfigScope.PROJECT);
+    }
+
+    /**
      * 从插件配置段解析配置。
+     * <p>
+     * 调用方须保证这一份「不是项目级给的」——生产路径统一走 {@link #of(PluginContext)}，
+     * 本方法留给测试与「只有一份配置」的装配场景。
      *
      * @param configuration 插件配置段，可为 {@code null}
      * @return 配置值对象，保证非 {@code null}
      * @throws JellyfishException 配置值的类型或取值非法时抛出
      */
     static SkillsConfig from(Map<String, Object> configuration) {
+        return build(configuration, false);
+    }
+
+    /**
+     * 解析配置的公共实现。
+     *
+     * @param configuration      插件配置段，可为 {@code null}
+     * @param restrictRootsToProject 是否要求 roots 留在项目目录内
+     * @return 配置值对象，保证非 {@code null}
+     * @throws JellyfishException 配置值的类型或取值非法时抛出
+     */
+    private static SkillsConfig build(Map<String, Object> configuration, boolean restrictRootsToProject) {
         Map<String, Object> values = configuration == null
                 ? Collections.<String, Object>emptyMap()
                 : configuration;
         SkillsConfig config = new SkillsConfig(
                 bool(values.get(KEY_ENABLED), KEY_ENABLED, DEFAULT_ENABLED),
-                roots(values.get(KEY_ROOTS)),
+                roots(values.get(KEY_ROOTS), restrictRootsToProject),
                 boundedInt(values.get(KEY_MAX_SKILLS), KEY_MAX_SKILLS, DEFAULT_MAX_SKILLS, 1,
                         MAX_SKILLS_LIMIT),
                 boundedInt(values.get(KEY_MAX_DESCRIPTION_CHARS), KEY_MAX_DESCRIPTION_CHARS,
@@ -192,13 +230,19 @@ final class SkillsConfig {
      * 解析根目录列表：缺省走 {@link #DEFAULT_ROOTS}，显式空数组表示「一个根都不要」。
      * <p>
      * 与内核的「字段缺失 ≠ 显式空数组」同口径：缺失是不限制，{@code []} 是明确清空。
+     * <p>
+     * <b>缺省值不受「限定项目目录」约束</b>：缺省里那两条（{@code ~/.jellyfish/skills} 与
+     * {@code ./.jellyfish/skills}）是构件自带的、解释器自己写下的值，不是仓库内容能改的东西。
+     * 约束只落在「项目级配置显式写了 roots」这一种情形上，见 {@link #requireInsideProject}。
      *
      * @param raw 配置原值，可为 {@code null}
+     * @param restrictToProject 是否要求每一项留在项目目录内
      * @return 不可变根目录列表，保证非 {@code null}
      * @throws JellyfishException 结构或取值非法时抛出
      */
-    private static List<Path> roots(Object raw) {
+    private static List<Path> roots(Object raw, boolean restrictToProject) {
         List<Object> entries = new ArrayList<Object>();
+        boolean explicit = raw != null;
         if (raw == null) {
             entries.addAll(DEFAULT_ROOTS);
         } else {
@@ -212,12 +256,44 @@ final class SkillsConfig {
             if (!(entry instanceof String) || ((String) entry).trim().isEmpty()) {
                 throw new JellyfishException(KEY_ROOTS + " 只能包含非空字符串，实际为 " + entry);
             }
-            Path path = normalizePath(((String) entry).trim());
+            String text = ((String) entry).trim();
+            if (restrictToProject && explicit) {
+                requireInsideProject(text);
+            }
+            Path path = normalizePath(text);
             if (!resolved.contains(path)) {
                 resolved.add(path);
             }
         }
         return Collections.unmodifiableList(resolved);
+    }
+
+    /**
+     * 校验项目级配置给的根目录留在项目目录内。
+     * <p>
+     * <b>判据是「相对路径 + 不向上逃逸」</b>，而不是「解析后落在某个绝对目录下」：插件拿不到工作目录
+     * （{@code PluginContext} 刻意不开放它），比较绝对路径就得自己猜一个，猜错的方向恰恰是放行。
+     * 相对路径的语义由内核按进程工作目录解析，因此「相对且不逃逸」正好等价于「在项目目录内」，
+     * 而且不需要知道那个目录到底在哪。
+     *
+     * @param text 用户写的路径原文
+     * @throws JellyfishException 指向项目目录之外时抛出
+     */
+    private static void requireInsideProject(String text) {
+        if (text.startsWith("~")) {
+            throw new JellyfishException(KEY_ROOTS + " 由项目级配置给出时不能指向主目录：" + text
+                    + "（项目级配置随仓库走，只能指向项目目录内的相对路径）");
+        }
+        if (Paths.get(text).isAbsolute()) {
+            throw new JellyfishException(KEY_ROOTS + " 由项目级配置给出时不能是绝对路径：" + text
+                    + "（项目级配置随仓库走，只能指向项目目录内的相对路径）");
+        }
+        // 只看向上逃逸：./.jellyfish/skills 这样的正常写法规范化后不以 .. 开头
+        for (Path segment : Paths.get(text)) {
+            if ("..".equals(segment.toString())) {
+                throw new JellyfishException(KEY_ROOTS + " 由项目级配置给出时不能跳出项目目录：" + text);
+            }
+        }
     }
 
     /**

@@ -3,6 +3,7 @@ package zcd.jellyfish.plugin.project;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.plugin.PluginContext;
 
 import java.util.Collections;
 import java.util.Map;
@@ -54,9 +55,34 @@ final class PluginConfig {
     }
 
     /**
-     * 从插件配置段解析配置。
+     * 从插件上下文解析配置。
+     * <p>
+     * <b>只有一项配置，而它只认全局级那一份</b>：{@code maxInlineBytes} 决定「多大的项目约定文件
+     * 可以把原文放进 system prompt」，而 system prompt 是全仓库优先级最高的位置。这个值若由
+     * 项目级配置决定，就等于「{@code git clone} 一个仓库，它的内容就能整段占据系统指令的位置」；
+     * 那是「配置即代码」，与项目级配置的信任闸是同一条口径。
+     * <p>
+     * 读 {@code globalConfiguration()} 而不是「来源是项目级就整段忽略」：后者会把用户在全局级
+     * 设过的值一起丢掉（项目级可能只是加了个无关的键，整段替换却把全局级那份挤掉了）。
+     * <p>
+     * 名字用 {@code of} 而不是重载 {@code from(Map)}：两者在传 {@code null} 时会有歧义，
+     * 而 {@code null} 恰恰是测试里最常见的入参。
      *
-     * @param configuration 插件配置段，可为 {@code null}
+     * @param context 插件上下文，不可为 {@code null}
+     * @return 配置值对象，保证非 {@code null}
+     * @throws JellyfishException 配置值的类型或取值非法时抛出
+     */
+    static PluginConfig of(PluginContext context) {
+        return from(context.globalConfiguration());
+    }
+
+    /**
+     * 从一份配置段解析。
+     * <p>
+     * 调用方须保证这一份「只由用户自己那台机器决定」——生产路径统一走
+     * {@link #of(PluginContext)}，本方法留给测试与「只有一份配置」的装配场景。
+     *
+     * @param configuration 配置段，可为 {@code null}
      * @return 配置值对象，保证非 {@code null}
      * @throws JellyfishException 配置值的类型或取值非法时抛出
      */

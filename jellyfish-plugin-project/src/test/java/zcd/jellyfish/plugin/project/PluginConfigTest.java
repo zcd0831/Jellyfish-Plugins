@@ -4,7 +4,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.Mockito;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.plugin.PluginConfigScope;
+import zcd.jellyfish.api.plugin.PluginContext;
 
 import java.util.Collections;
 import java.util.Map;
@@ -19,6 +22,45 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  */
 @DisplayName("项目约定插件配置")
 class PluginConfigTest {
+
+    @Test
+    @DisplayName("内联上限只认全局级那份：项目级把它调到 1 MiB 也不生效")
+    void of_should_ignoreProjectLevelMaxInlineBytes() {
+        // Given：全局级设了 4 KiB，项目级把同一个键调到 1 MiB（整段替换会顶掉全局级那份）
+        PluginContext context = Mockito.mock(PluginContext.class);
+        Mockito.when(context.configuration()).thenReturn(configOf(PluginConfig.MAX_INLINE_BYTES_LIMIT));
+        Mockito.when(context.globalConfiguration()).thenReturn(configOf(4096));
+        Mockito.when(context.configScope()).thenReturn(PluginConfigScope.PROJECT);
+
+        // Then：读到的是用户自己设的 4 KiB，项目级的调宽被忽略
+        assertEquals(4096, PluginConfig.of(context).maxInlineBytes());
+    }
+
+    @Test
+    @DisplayName("项目级只加了个无关的键时，全局级设的上限不能被一起丢掉")
+    void of_should_keepGlobalValue_when_projectLevelHasOtherKeys() {
+        // Given：这正是「来源是项目级就整段忽略」那种写法会出错的地方
+        PluginContext context = Mockito.mock(PluginContext.class);
+        Map<String, Object> projectLevel = new java.util.LinkedHashMap<String, Object>();
+        projectLevel.put("somethingElse", "x");
+        Mockito.when(context.configuration()).thenReturn(projectLevel);
+        Mockito.when(context.globalConfiguration()).thenReturn(configOf(2048));
+        Mockito.when(context.configScope()).thenReturn(PluginConfigScope.PROJECT);
+
+        // Then
+        assertEquals(2048, PluginConfig.of(context).maxInlineBytes());
+    }
+
+    @Test
+    @DisplayName("来源未知时退回合并值：旧容器上的行为与改造前一致")
+    void of_should_fallBackToMergedValue_when_scopeUnknown() {
+        // Given：不区分来源的容器（globalConfiguration 的默认实现返回 configuration）
+        PluginContext context = Mockito.mock(PluginContext.class);
+        Mockito.when(context.globalConfiguration()).thenReturn(configOf(8192));
+        Mockito.when(context.configScope()).thenReturn(PluginConfigScope.UNKNOWN);
+
+        assertEquals(8192, PluginConfig.of(context).maxInlineBytes());
+    }
 
     @Test
     @DisplayName("配置段缺失时用缺省内联上限")
