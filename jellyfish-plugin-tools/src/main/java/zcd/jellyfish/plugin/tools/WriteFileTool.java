@@ -41,6 +41,11 @@ public final class WriteFileTool implements PluginTool {
     }
 
     @Override
+    public PathAccess pathAccess() {
+        return PathAccess.WRITE;
+    }
+
+    @Override
     public ToolCallResult handle(ToolCallRequest request) {
         ToolArguments arguments = new ToolArguments(request.getArguments());
         Path file = ToolPaths.resolve(arguments.requireString("path"));

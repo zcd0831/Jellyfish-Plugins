@@ -38,6 +38,20 @@ public interface PluginTool extends ExtensionHandler<ToolCallRequest, ToolCallRe
     }
 
     /**
+     * 获取本工具对文件路径的访问性质。
+     * <p>
+     * <b>为什么由工具自己声明</b>：闸门要按「工具名 → 读/写」来判，而这份映射若在闸门里另列一份清单，
+     * 就会与工具实现漂移——漂移的方向恰恰是闸门被绕过。声明放在工具类里，改名时编译器会拦住。
+     * <p>
+     * 缺省是 {@link PathAccess#NONE}（不碰路径），因此只有真正读写文件的工具需要覆写。
+     *
+     * @return 访问性质，保证非 {@code null}
+     */
+    default PathAccess pathAccess() {
+        return PathAccess.NONE;
+    }
+
+    /**
      * 把自己注册进插件上下文。
      *
      * @param context 插件上下文，不可为 {@code null}

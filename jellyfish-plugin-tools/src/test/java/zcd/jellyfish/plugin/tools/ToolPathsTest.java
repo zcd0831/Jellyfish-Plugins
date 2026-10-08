@@ -3,10 +3,14 @@ package zcd.jellyfish.plugin.tools;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -71,5 +75,66 @@ class ToolPathsTest {
         String display = ToolPaths.display(outside);
 
         assertTrue(Paths.get(display).isAbsolute(), display);
+    }
+
+    @Test
+    @DisplayName("落在允许目录内的路径应判为在内，含目录自身与深层子路径")
+    void insideAny_should_detectPathsUnderRoot() {
+        Path root = WORKING_DIRECTORY.resolve("target");
+
+        assertTrue(ToolPaths.insideAny(WORKING_DIRECTORY.resolve("target"), Collections.singletonList(root)));
+        assertTrue(ToolPaths.insideAny(
+                WORKING_DIRECTORY.resolve("target/classes/a.class"), Collections.singletonList(root)));
+    }
+
+    @Test
+    @DisplayName("用 .. 跳出去的路径不在内：字面规范化必须发生在比较之前")
+    void insideAny_should_rejectEscapingPath() {
+        Path root = WORKING_DIRECTORY.resolve("target");
+
+        assertFalse(ToolPaths.insideAny(
+                WORKING_DIRECTORY.resolve("target/../outside.txt"), Collections.singletonList(root)));
+    }
+
+    @Test
+    @DisplayName("同前缀的兄弟目录不在内：按路径段比，不按字符串前缀")
+    void insideAny_should_notMatchSiblingDirectoryWithSamePrefix() {
+        Path root = WORKING_DIRECTORY.resolve("target");
+
+        assertFalse(ToolPaths.insideAny(
+                WORKING_DIRECTORY.resolve("target-other/a.txt"), Collections.singletonList(root)));
+    }
+
+    @Test
+    @DisplayName("指向允许目录之外的符号链接不在内：这是这道判据存在的理由")
+    void insideAny_should_rejectSymlinkPointingOutside() throws IOException {
+        Path root = WORKING_DIRECTORY.resolve("target");
+        Files.createDirectories(root);
+        Path linked = root.resolve("escape-" + System.nanoTime() + ".txt");
+        Path elsewhere = Files.createTempFile("jellyfish-symlink", ".txt");
+        try {
+            Files.createSymbolicLink(linked, elsewhere);
+        } catch (IOException | UnsupportedOperationException e) {
+            // 无权限建链接的文件系统（常见于 Windows）：这一层防线测不了，跳过
+            Files.deleteIfExists(elsewhere);
+            return;
+        }
+        try {
+            assertFalse(ToolPaths.insideAny(linked, Collections.singletonList(root)), linked.toString());
+        } finally {
+            Files.deleteIfExists(linked);
+            Files.deleteIfExists(elsewhere);
+        }
+    }
+
+    @Test
+    @DisplayName("尚不存在的路径：解开已存在的那一段，尾段原样保留")
+    void realPath_should_resolveExistingPrefix_andKeepMissingTail() {
+        Path root = WORKING_DIRECTORY.resolve("target");
+
+        Path real = ToolPaths.realPath(root.resolve("not-created-yet/a.txt"));
+
+        assertTrue(real.startsWith(ToolPaths.realPath(root)), real.toString());
+        assertTrue(real.endsWith(Paths.get("not-created-yet/a.txt")), real.toString());
     }
 }

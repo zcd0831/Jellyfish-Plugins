@@ -1,7 +1,11 @@
 package zcd.jellyfish.plugin.tools;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 工具的文件路径约定：统一解析与展示口径。
@@ -15,8 +19,10 @@ import java.nio.file.Paths;
  *     落在工作目录内的路径统一转成相对形式，目录外才退回绝对路径。</li>
  * </ul>
  * <p>
- * 这里<b>不做</b>越界拦截：能否访问由权限层判定（agent 授权、插件按模式收窄的白名单），
- * 工具自己再收一道窄口子只会让「读工作目录外的文件」这种正常需求无法完成。
+ * 这里<b>不做</b>越界拦截：能否访问由权限层判定（agent 授权、插件按模式收窄的白名单，
+ * 以及本插件自己的 {@link PathPolicy}），工具自己再收一道窄口子只会让「读工作目录外的文件」
+ * 这种正常需求无法完成。**闸门与工具必须用同一套解析规则**，否则两边对「同一个路径落在哪」的判断
+ * 会分叉——分叉的方向恰恰是闸门被绕过，这也是本类把解析收在一处的原因。
  * <p>
  * <b>认 {@code ~}</b>：工具结果的落盘路径以 {@code ~} 形式回灌给模型（内核侧
  * {@code HomePaths.abbreviate} 缩写，以免把真实用户名写进上下文），模型照抄那条路径回查时
@@ -86,6 +92,70 @@ final class ToolPaths {
             return raw;
         }
         return raw.length() == 1 ? home : home + raw.substring(1);
+    }
+
+    /**
+     * 判断路径是否落在任一给定目录之内。
+     * <p>
+     * <b>必须按「真实位置」比，不能只比规范化的字面路径</b>：工作目录里放一个指向 {@code /etc} 的
+     * 符号链接，字面路径就在允许范围内，而工具顺着链接读写的却是外面——闸门等于不存在。
+     * 因此这里先用 {@link #realPath(Path)} 解掉链接再比。
+     * <p>
+     * 判据是「等于该目录、或在其下」：{@link Path#startsWith(Path)} 按路径<b>段</b>比较，
+     * 因此 {@code /work/other} 不会被 {@code /work/o} 误判为在内。
+     *
+     * @param target 目标路径
+     * @param roots  允许的目录列表，不可为 {@code null}
+     * @return 落在任一项之内返回 {@code true}
+     */
+    static boolean insideAny(Path target, List<Path> roots) {
+        Path real = realPath(target);
+        for (Path root : roots) {
+            if (real.startsWith(realPath(root))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 把路径解析到真实位置：解开符号链接，尚不存在的尾段原样保留。
+     * <p>
+     * <b>为什么不能直接用 {@code toRealPath}</b>：它对不存在的路径直接抛异常，而闸门恰恰要判
+     * 「模型准备新建的那个文件在哪」——那些路径本来就还不存在。做法是往上找到最近一个已存在的祖先、
+     * 解开它的链接，再把缺掉的那几段按原样接回去。
+     * <p>
+     * <b>解不出来时退回规范化路径</b>（不可读、链接成环）：闸门随后按字面判断，宁可判「在内」也不
+     * 凭空拒绝——工具在真正读写时会把系统错误报出来，那比一句「权限不允许」更好排查。
+     *
+     * @param path 路径
+     * @return 真实位置的绝对路径：链接已解开、尾段保留、已规范化
+     */
+    static Path realPath(Path path) {
+        Path absolute = path.toAbsolutePath().normalize();
+        Path existing = absolute;
+        List<Path> missing = new ArrayList<Path>();
+        while (existing != null && !Files.exists(existing)) {
+            Path name = existing.getFileName();
+            if (name == null) {
+                return absolute;
+            }
+            missing.add(name);
+            existing = existing.getParent();
+        }
+        if (existing == null) {
+            return absolute;
+        }
+        Path real;
+        try {
+            real = existing.toRealPath();
+        } catch (IOException e) {
+            return absolute;
+        }
+        for (int i = missing.size() - 1; i >= 0; i--) {
+            real = real.resolve(missing.get(i));
+        }
+        return real.normalize();
     }
 
     /**

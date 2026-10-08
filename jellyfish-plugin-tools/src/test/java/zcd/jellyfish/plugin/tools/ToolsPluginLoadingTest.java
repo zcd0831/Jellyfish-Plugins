@@ -9,6 +9,7 @@ import org.mockito.Mockito;
 import org.pf4j.PluginState;
 import zcd.jellyfish.api.extension.InputReferenceDescriptor;
 import zcd.jellyfish.api.extension.InputReferenceRequest;
+import zcd.jellyfish.api.extension.PermissionCheckRequest;
 import zcd.jellyfish.api.extension.PromptContributionRequest;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolDescriptor;
@@ -129,6 +130,18 @@ class ToolsPluginLoadingTest {
     }
 
     @Test
+    @DisplayName("启动后路径闸门应挂上权限扩展点")
+    void bootstrap_should_registerPathGuard() throws IOException {
+        installPlugin();
+
+        manager = newManager();
+        manager.bootstrap();
+
+        assertEquals(1, extensions.bindings(PermissionCheckRequest.class, null).size());
+        assertEquals(PLUGIN_ID, extensions.bindings(PermissionCheckRequest.class, null).get(0).getOwner());
+    }
+
+    @Test
     @DisplayName("插件卸载后工具注册应被按 owner 全部回收")
     void close_should_unregisterAllTools() throws IOException {
         installPlugin();
@@ -141,6 +154,7 @@ class ToolsPluginLoadingTest {
         assertTrue(extensions.handlers(ToolCallRequest.class, "read_file").isEmpty());
         assertTrue(extensions.handlers(InputReferenceRequest.class, FileReferenceCompletion.MARKER).isEmpty());
         assertTrue(extensions.bindings(PromptContributionRequest.class, null).isEmpty());
+        assertTrue(extensions.bindings(PermissionCheckRequest.class, null).isEmpty());
     }
 
     /**

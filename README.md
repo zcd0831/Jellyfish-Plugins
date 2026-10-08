@@ -49,7 +49,7 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
 
 | 模块 | plugin.id | 提供什么 |
 | --- | --- | --- |
-| `jellyfish-plugin-tools` | 同名 | 五个文件工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`grep_files`；提问工具 `ask_user`；以及输入框的 `@` 文件引用 |
+| `jellyfish-plugin-tools` | 同名 | 五个文件工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`grep_files`；提问工具 `ask_user`；输入框的 `@` 文件引用；以及按路径收口的闸门 `pathPolicy` |
 | `jellyfish-plugin-shell` | 同名 | `shell` 工具（`/bin/sh -c` 执行命令原文）+ 命令策略（分段判定、白名单准入、可信表免审批、只读不打扰、灾难形状拒绝、命令替换与重定向升级审批、其余审批）+ `!命令` 输入指令。**没有沙箱** |
 | `jellyfish-plugin-session-file` | 同名 | 会话持久化：一个会话一个 JSON 文件，并用 git 管理历史 |
 | `jellyfish-plugin-todo` | 同名 | 会话待办：`todo_write` / `todo_claim` / `todo_done` / `todo_release` / `todo_block` 五个工具 + 只读 `/todo` + 随本轮消息送达的待办块 + 状态栏进度 + 左栏清单面板 |
@@ -94,8 +94,6 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
 - **子代理回合里当场拒绝**：外层界面按当前会话取待答项，而子代理有独立的会话，它的提问不会出现在任何界面上。
 - **超时**来自 `jellyfish.json` 的 `ask.timeoutSeconds`（缺省 120 秒），不是本插件的配置段。
 
-本插件没有自己的配置项。
-
 - **`read_file` 单行就超过 `max_bytes` 时报错，不切短**：切短会输出一行「看起来完整、实际残缺」的内容，
   模型无从判断自己拿到的是不是全文。错误文案给出三条出路——缩小 `limit`、调大 `max_bytes`、
   或改用 `grep_files` 定位。多行累加超预算仍照旧分页（内容还在文件里，可按 `offset` 续读）。
@@ -104,6 +102,45 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
   权限与 `max_bytes` 照旧生效。
 - **「只读」在权限层没有内置含义**：能不能在某个模式下放行，由提供那个模式的插件按你写的名单决定
   （官方 `jellyfish-plugin-plan` 即此形态）。
+
+### 路径闸门（`pathPolicy`）
+
+本插件有一项配置：`plugins.configurations.jellyfish-plugin-tools.pathPolicy`。
+文件工具在**允许的路径之外**时会升级为人工审批或直接拒绝。粒度是「工具名 + 路径」，
+而不只是工具名——否则「允许 `write_file`」就等于「允许往任何地方写」。
+
+```json
+{
+  "plugins": {
+    "configurations": {
+      "jellyfish-plugin-tools": {
+        "pathPolicy": {
+          "write": { "allow": ["."], "outside": "ask" },
+          "read":  { "allow": [".", "~/.jellyfish"], "outside": "deny" }
+        }
+      }
+    }
+  }
+}
+```
+
+| 键 | 取值 | 说明 |
+| --- | --- | --- |
+| `write` / `read` | 对象 | 一个方向的规则。**`read` 不配就不设限**；**`write` 不配按缺省（只允许工作目录、范围外要审批）** |
+| `….allow` | 路径数组 | 允许的目录。相对路径按**进程工作目录**解析、行首 `~` 按**用户主目录**——与工具自己的解析规则逐字一致，因此 `"."` 就是工作目录。缺省 `["."]` |
+| `….outside` | `allow` / `ask` / `deny` | 范围之外的裁定。`allow` 等于**把该方向的门关掉**（恒无异议）。缺省 `ask` |
+
+几点口径：
+
+- **哪些工具受管由工具自己声明**：`read_file` / `list_dir` / `grep_files` 归读，`write_file` / `edit_file` 归写，
+  `ask_user` 不碰路径因此不受管。闸门不认识别家的工具——`shell`、MCP 工具送到它面前时一律「无异议」。
+- **判据看的是真实位置**：符号链接会先解开再比。工作目录里放一个指向 `/etc` 的链接不会成为后门。
+  对「准备新建的文件」这类还不存在的路径，解开它最近一个已存在的祖先、尾段原样保留。
+- **`ask` 在没有审批界面的外壳里等于拒绝**：`-cli` 不挂审批通道，因此工作目录外的写在那里会直接失败。
+  要放开就把该方向配成 `outside: "allow"`，或把目录加进 `allow`。
+- **它不是文件系统沙箱**：管不了 `shell` 命令里出现的路径（那是命令策略的事，见下节），
+  也管不了 MCP 工具。它管的是本插件这几个文件工具的 `path` 参数。
+- **配置写错只回退并告警**，不会让插件起不来：告警走 `ConfigWarningEvent`（TUI 上看得见）。
 
 ## 命令行（jellyfish-plugin-shell）
 

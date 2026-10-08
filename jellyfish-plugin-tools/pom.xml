@@ -26,6 +26,15 @@
             <scope>provided</scope>
         </dependency>
 
+        <!-- 日志：与内核同源（宿主已有 slf4j），同样走 provided 由父加载器提供。
+             本插件此前不记日志（工具只抛 JellyfishException），路径策略引入后要报配置告警，
+             因此与兄弟插件一样声明它。 -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- 单测：工具实现只依赖 JDK 与内核契约，因此测试也不需要第三方库 -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

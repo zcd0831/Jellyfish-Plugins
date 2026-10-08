@@ -79,6 +79,11 @@ public final class GrepFilesTool implements PluginTool {
     }
 
     @Override
+    public PathAccess pathAccess() {
+        return PathAccess.READ;
+    }
+
+    @Override
     public ToolCallResult handle(ToolCallRequest request) {
         ToolArguments arguments = new ToolArguments(request.getArguments());
         Pattern pattern = compile(arguments.requireString("pattern"));

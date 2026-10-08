@@ -52,6 +52,11 @@ public final class ListDirTool implements PluginTool {
     }
 
     @Override
+    public PathAccess pathAccess() {
+        return PathAccess.READ;
+    }
+
+    @Override
     public ToolCallResult handle(ToolCallRequest request) {
         ToolArguments arguments = new ToolArguments(request.getArguments());
         Path directory = ToolPaths.resolve(arguments.optionalString("path", "."));
