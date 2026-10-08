@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -278,6 +279,168 @@ class McpServerConnectionTest {
         // When / Then
         assertThrows(JellyfishException.class, () -> connection.connect());
         assertEquals(McpRegistry.State.FAILED, registry.statusOf("fake").state());
+    }
+
+    @Test
+    @DisplayName("tools/list 缺 tools 数组是协议违规，不是「这个 server 没有工具」")
+    void connect_should_fail_whenToolsListLacksToolsArray() {
+        // Given：握手成功，但 tools/list 回一个没有 tools 字段的 result
+        Map<String, Object> values = serverConfig(2);
+        McpServerConfig server = McpServerConfig.from(values);
+        transport = new FakeTransport();
+        transport.responder(message -> {
+            String method = McpJson.text(message, "method", "");
+            long id = message.get("id").asLong();
+            if (McpProtocol.METHOD_INITIALIZE.equals(method)) {
+                return FakeTransport.result(id, "{\"protocolVersion\":\""
+                        + McpProtocol.PROTOCOL_VERSION + "\",\"capabilities\":{}}");
+            }
+            if (McpProtocol.METHOD_TOOLS_LIST.equals(method)) {
+                return FakeTransport.result(id, "{}");
+            }
+            return null;
+        });
+        registry = new McpRegistry();
+        registry.register("fake", McpRegistry.State.PENDING, "");
+        connection = new McpServerConnection(server, globalConfig(), registry,
+                tools -> received.add(tools), new McpMediaSpill(tempDir), config -> transport);
+
+        // When
+        JellyfishException failure = assertThrows(JellyfishException.class, () -> connection.connect());
+
+        // Then：没拿到清单时绝不能去替换注册表——那等于让整个 server 的工具静默消失
+        assertTrue(failure.getMessage().contains("缺少 tools 数组"), failure.getMessage());
+        assertEquals(McpRegistry.State.FAILED, registry.statusOf("fake").state());
+        assertTrue(received.isEmpty(), "没拿到清单就不该动注册表");
+    }
+
+    @Test
+    @DisplayName("重扫时遇到非法应答：保留现有清单，工具不能就这么没了")
+    void refresh_should_keepCurrentTools_whenToolsListInvalid() throws InterruptedException {
+        // Given：已连上并拿到两个工具
+        connection = connected(2);
+        assertEquals(1, received.size());
+        int before = received.get(0).size();
+        assertTrue(before > 0, "前置条件：先得有一份清单");
+
+        // When：server 通知清单变了，而重扫的应答里没有 tools 数组
+        transport.responder(message -> {
+            String method = McpJson.text(message, "method", "");
+            if (McpProtocol.METHOD_TOOLS_LIST.equals(method)) {
+                return FakeTransport.result(message.get("id").asLong(), "{\"result\":null}");
+            }
+            return null;
+        });
+        transport.push("{\"jsonrpc\":\"2.0\",\"method\":\"" + McpProtocol.METHOD_TOOLS_LIST_CHANGED
+                + "\"}");
+
+        // Then：失败被记下，而现有清单原样保留（received 没有多出一份空清单）
+        assertTrue(awaitWarning(3_000L), "刷新失败应记一条告警");
+        assertTrue(registry.statusOf("fake").lastWarning().contains("缺少 tools 数组"),
+                registry.statusOf("fake").lastWarning());
+        assertEquals(1, received.size(), "非法应答不该触发清单替换");
+    }
+
+    @Test
+    @DisplayName("server 回一个合法的空清单：这是「确实没有工具」，照常替换")
+    void connect_should_acceptEmptyToolsArray() {
+        // Given
+        McpServerConfig server = McpServerConfig.from(serverConfig(2));
+        transport = new FakeTransport();
+        transport.responder(message -> {
+            String method = McpJson.text(message, "method", "");
+            long id = message.get("id").asLong();
+            if (McpProtocol.METHOD_INITIALIZE.equals(method)) {
+                return FakeTransport.result(id, "{\"protocolVersion\":\""
+                        + McpProtocol.PROTOCOL_VERSION + "\",\"capabilities\":{}}");
+            }
+            if (McpProtocol.METHOD_TOOLS_LIST.equals(method)) {
+                return FakeTransport.result(id, "{\"tools\":[]}");
+            }
+            return null;
+        });
+        registry = new McpRegistry();
+        registry.register("fake", McpRegistry.State.PENDING, "");
+        connection = new McpServerConnection(server, globalConfig(), registry,
+                tools -> received.add(tools), new McpMediaSpill(tempDir), config -> transport);
+
+        // When
+        connection.connect();
+
+        // Then：「有 tools 字段但为空」与「没有 tools 字段」必须区别对待
+        assertEquals(1, received.size());
+        assertTrue(received.get(0).isEmpty());
+        assertEquals(McpRegistry.State.CONNECTED, registry.statusOf("fake").state());
+        assertEquals(0, registry.statusOf("fake").toolCount());
+    }
+
+    @Test
+    @DisplayName("对面断开要上报一次——插件靠它摘掉必然失败的工具并排队重连")
+    void onDisconnected_should_notifyOnce_whenServerDies() throws InterruptedException {
+        // Given
+        connection = connected(2);
+        AtomicInteger notified = new AtomicInteger();
+        connection.onDisconnected(notified::incrementAndGet);
+
+        // When：server 进程没了（读线程读到 null 就退出）
+        transport.close();
+
+        // Then
+        assertTrue(awaitNotify(notified, 3_000L), "对面断开应上报");
+        Thread.sleep(100L);
+        assertEquals(1, notified.get(), "同一次断开只该被上报一次");
+    }
+
+    @Test
+    @DisplayName("我们自己关掉的连接不算「对面断开」：那条路已有自己的收尾")
+    void onDisconnected_should_notNotify_whenClosedByUs() throws InterruptedException {
+        // Given
+        connection = connected(2);
+        AtomicInteger notified = new AtomicInteger();
+        connection.onDisconnected(notified::incrementAndGet);
+
+        // When
+        connection.close();
+        Thread.sleep(100L);
+
+        // Then
+        assertEquals(0, notified.get(), "主动关闭不该被当成对面断开");
+    }
+
+    /**
+     * 等告警被记上。
+     *
+     * @param millis 最多等待的毫秒数
+     * @return 等到返回 {@code true}
+     * @throws InterruptedException 等待被中断时抛出
+     */
+    private boolean awaitWarning(long millis) throws InterruptedException {
+        for (long waited = 0; waited < millis; waited += 20L) {
+            String warning = registry.statusOf("fake").lastWarning();
+            if (warning != null && !warning.isEmpty()) {
+                return true;
+            }
+            Thread.sleep(20L);
+        }
+        return false;
+    }
+
+    /**
+     * 等断开通知送达。
+     *
+     * @param notified 计数
+     * @param millis   最多等待的毫秒数
+     * @return 等到返回 {@code true}
+     * @throws InterruptedException 等待被中断时抛出
+     */
+    private static boolean awaitNotify(AtomicInteger notified, long millis) throws InterruptedException {
+        for (long waited = 0; waited < millis; waited += 20L) {
+            if (notified.get() > 0) {
+                return true;
+            }
+            Thread.sleep(20L);
+        }
+        return notified.get() > 0;
     }
 
     /**

@@ -44,6 +44,14 @@ final class McpRegistry {
         /** 连接失败或进程已退出。 */
         FAILED("失败"),
 
+        /**
+         * 连接已断开，正在按退避重试。
+         * <p>
+         * 与 {@link #CONNECTING} 分开：那个是「第一次连上去」，这个是「已经能用过、现在掉了」，
+         * 两者对读台账的人意味着不同的下一步——前者只需等，后者要先看上次为什么掉。
+         */
+        RECONNECTING("重连中"),
+
         /** 插件已停止。 */
         STOPPED("已停止"),
 
@@ -170,11 +178,18 @@ final class McpRegistry {
      * <p>
      * <b>只由注册器调用</b>：标记表的生命周期与「谁注册了处理器」绑定，连接对象不碰它——
      * 否则会出现「处理器还在、标记已经没了」的窗口，那一刻写类工具是不需要审批的。
+     * <p>
+     * <b>工具数要一起归零</b>：它是台账上并列显示的一栏，若只摘标记表不清它，台账会同时说出
+     * 「工具 3 个」与「已注册工具: 0 个」两句互相打架的话——而这两句正是排查时最先看的地方。
      *
      * @param serverId 服务标识
      */
     void removeServer(String serverId) {
         toolsByServer.remove(serverId);
+        ServerStatus status = statuses.get(serverId);
+        if (status != null) {
+            status.toolCount = 0;
+        }
     }
 
     /**

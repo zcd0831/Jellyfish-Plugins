@@ -4,8 +4,17 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.Mockito;
 import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.CancellationToken;
+import zcd.jellyfish.api.extension.ToolCallRequest;
+import zcd.jellyfish.api.plugin.PluginDeclaration;
+import zcd.jellyfish.infra.event.EventChannel;
+import zcd.jellyfish.infra.event.EventChannelOptions;
+import zcd.jellyfish.infra.extension.ExtensionRegistry;
+import zcd.jellyfish.infra.plugin.PluginContextImpl;
+import zcd.jellyfish.infra.registry.TypeRegistry;
+import zcd.jellyfish.infra.session.SessionManager;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -13,6 +22,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -107,6 +117,98 @@ class McpStdioTransportIT {
         }
     }
 
+    @Test
+    @DisplayName("真进程退出后：工具被摘掉，并按退避自动重连回来")
+    void disconnect_should_unregisterAndReconnect_withRealProcess() throws Exception {
+        // Given：真装配（真起子进程、真注册内核扩展点）
+        TypeRegistry typeRegistry = new TypeRegistry();
+        ExtensionRegistry extensions = new ExtensionRegistry(typeRegistry);
+        EventChannel events = new EventChannel(EventChannelOptions.defaults(), typeRegistry);
+        events.start();
+        final List<McpTransport> transports =
+                Collections.synchronizedList(new ArrayList<McpTransport>());
+        McpPlugin plugin = new McpPlugin(config -> {
+            McpTransport started = McpStdioTransport.start(config);
+            transports.add(started);
+            return started;
+        }, 1000L, 2000L, 3);
+        String tool = "mcp__echo__echo";
+        try {
+            Map<String, Object> server = echoServer();
+            server.put("connectTimeoutSeconds", 20);
+            Map<String, Object> values = new HashMap<String, Object>();
+            values.put(McpConfig.KEY_SERVERS, Collections.singletonList(server));
+            values.put(McpConfig.KEY_STARTUP_WAIT_SECONDS, Integer.valueOf(0));
+            plugin.start(new PluginContextImpl(
+                    PluginDeclaration.of("jellyfish-plugin-mcp", values), extensions, events,
+                    Mockito.mock(SessionManager.class)));
+            assertTrue(awaitTool(extensions, tool, true, 10_000L), "真进程的工具应先注册上");
+
+            // When：server 进程被杀（关掉传输等于进程退出，读线程立刻看到 EOF）
+            transports.get(0).close();
+
+            // Then
+            assertTrue(awaitTool(extensions, tool, false, 5_000L), "进程退出后工具必须被摘掉");
+            assertTrue(hasToolAfterReconnect(extensions, transports, tool, 15_000L),
+                    "重连之后工具应重新出现，实际连接数=" + transports.size());
+        } finally {
+            plugin.stop();
+            events.close();
+        }
+    }
+
+    /**
+     * 等工具在注册表里出现（或消失）。
+     *
+     * @param extensions 扩展注册表
+     * @param tool       工具展开名
+     * @param expected   期望的状态：{@code true} 表示「等到它出现」
+     * @param millis     最多等待的毫秒数
+     * @return 等到返回 {@code true}
+     * @throws InterruptedException 等待被中断时抛出
+     */
+    private static boolean awaitTool(ExtensionRegistry extensions, String tool, boolean expected,
+                                     long millis) throws InterruptedException {
+        return await(() -> !extensions.handlers(ToolCallRequest.class, tool).isEmpty() == expected,
+                millis);
+    }
+
+    /**
+     * 等重连完成：新建了连接，且工具回来了。
+     *
+     * @param extensions 扩展注册表
+     * @param transports 已建立的传输
+     * @param tool       工具展开名
+     * @param millis     最多等待的毫秒数
+     * @return 等到返回 {@code true}
+     * @throws InterruptedException 等待被中断时抛出
+     */
+    private static boolean hasToolAfterReconnect(ExtensionRegistry extensions,
+                                                 List<McpTransport> transports, String tool,
+                                                 long millis) throws InterruptedException {
+        return await(() -> transports.size() >= 2
+                && !extensions.handlers(ToolCallRequest.class, tool).isEmpty(), millis);
+    }
+
+    /**
+     * 轮询等待一个条件成立。
+     *
+     * @param condition 条件
+     * @param millis    最多等待的毫秒数
+     * @return 到期时条件是否成立
+     * @throws InterruptedException 等待被中断时抛出
+     */
+    private static boolean await(BooleanSupplier condition, long millis) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + millis;
+        while (System.currentTimeMillis() < deadline) {
+            if (condition.getAsBoolean()) {
+                return true;
+            }
+            Thread.sleep(20L);
+        }
+        return condition.getAsBoolean();
+    }
+
     /**
      * 连上仓库自带的 echo server。
      *
@@ -114,6 +216,22 @@ class McpStdioTransportIT {
      * @return 连接
      */
     private McpServerConnection connect(List<List<McpToolDefinition>> received) {
+        McpConfig global = McpConfig.from(new HashMap<String, Object>());
+        registry = new McpRegistry();
+        registry.register("echo", McpRegistry.State.PENDING, "");
+
+        McpServerConnection created = new McpServerConnection(McpServerConfig.from(echoServer()),
+                global, registry, received::add, new McpMediaSpill(tempDir));
+        created.connect();
+        return created;
+    }
+
+    /**
+     * 构造 echo server 的配置。
+     *
+     * @return 配置映射
+     */
+    private static Map<String, Object> echoServer() {
         Map<String, Object> server = new HashMap<String, Object>();
         server.put("id", "echo");
         server.put("command", javaExecutable());
@@ -122,14 +240,7 @@ class McpStdioTransportIT {
         server.put("callTimeoutSeconds", 10);
         // 只读只认用户声明：echo 自己也填了 readOnlyHint，但那个不再采纳
         server.put("readOnlyTools", Collections.singletonList("echo"));
-        McpConfig global = McpConfig.from(new HashMap<String, Object>());
-        registry = new McpRegistry();
-        registry.register("echo", McpRegistry.State.PENDING, "");
-
-        McpServerConnection created = new McpServerConnection(McpServerConfig.from(server), global,
-                registry, received::add, new McpMediaSpill(tempDir));
-        created.connect();
-        return created;
+        return server;
     }
 
     /**

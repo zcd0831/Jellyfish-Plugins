@@ -20,6 +20,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
@@ -100,6 +101,12 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
     /** 是否已握手完成。 */
     private volatile boolean connected;
 
+    /** 断开通知，可为 {@code null}（无人关心）。 */
+    private volatile Runnable disconnectListener;
+
+    /** 是否已经通知过断开：连接一旦不可用，这个事实只该被上报一次。 */
+    private final AtomicBoolean disconnectNotified = new AtomicBoolean();
+
     /**
      * 构造连接。
      *
@@ -133,6 +140,33 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
         this.toolSink = toolSink;
         this.spill = spill;
         this.transportFactory = transportFactory;
+    }
+
+    /**
+     * 注册「对面把连接断掉了」的通知。
+     * <p>
+     * <b>只报一次，且只报「不是我们关的」那种</b>：主动 {@link #close()} 的路径有自己的收尾
+     * （插件停止时会连注册一起收），若它也触发通知，收尾方就得再判一次「这次关机算不算断开」。
+     * <p>
+     * 用注册回调而不是构造参数：这个动作只有装配方（插件）关心，而构造器已经带了五个协作者
+     * ——再加一个只为了一处回调，会让每个测试夹具都得先想一遍「这里该传什么」。
+     *
+     * @param listener 断开时的动作，不可为 {@code null}
+     */
+    void onDisconnected(Runnable listener) {
+        this.disconnectListener = listener;
+    }
+
+    /**
+     * 上报一次「对面断开了」。
+     * <p>
+     * 幂等：读线程退出只可能发生一次，但通知的消费方（注销工具 + 排队重连）不能被做两遍。
+     */
+    private void notifyDisconnected() {
+        Runnable listener = disconnectListener;
+        if (listener != null && disconnectNotified.compareAndSet(false, true)) {
+            listener.run();
+        }
     }
 
     /**
@@ -229,7 +263,9 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
             current.close();
         }
         Thread reader = readerThread;
-        if (reader != null) {
+        // 不是自己时才等：断开的路径上会有人在读线程里收自己的资源，
+        // 那时 join(2000) 只会白等两秒（join 自己不报错，也没有意义）
+        if (reader != null && reader != Thread.currentThread()) {
             try {
                 reader.join(2000L);
             } catch (InterruptedException e) {
@@ -319,6 +355,9 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
                 connected = false;
                 failAllPending("MCP server 进程已退出: " + config.id());
                 registry.noteFailure(config.id(), "server 进程已退出");
+                // 已经注册出去的工具由插件在收到这个通知后一并注销：留着它们，模型会继续调用
+                // 一批注定失败的 MCP 工具（每次都以「未连接」收场），那份工具清单等于在撒谎
+                notifyDisconnected();
             }
         }
     }
@@ -451,9 +490,18 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
      * <p>
      * 游标必须支持：工具多的 server（浏览器、云平台）会分页返回，只取第一页的表现是
      * 「工具少了一大半，而日志里什么异常都没有」。
+     * <p>
+     * <b>缺 {@code tools} 数组是协议违规，不是「没有工具」</b>：这两件事的后果差得很远——
+     * {@code {"tools":[]}} 是「我确实没有工具」（照常替换，工具真没了），而 {@code {"result":{}}}
+     * 或 {@code result} 为 {@code null} 只说明<b>它没给我们清单</b>。把它按 0 个处理，等于一次
+     * 非法应答就让整个 server 的工具静默消失且不再回来（重扫只由 {@code tools/list_changed}
+     * 触发，而对面已经出问题了）。因此这里抛异常：调用点会保留现有清单、记一条告警，
+     * 下一次刷新照常发生。分页拉到一半缺字段也一样——一份可能不完整的清单去替换完整的，
+     * 比保留旧清单危险得多。
      *
      * @param timeoutMillis 单次请求超时毫秒数
      * @return 工具节点列表，保证非 {@code null}
+     * @throws JellyfishException 应答里没有 {@code tools} 数组时抛出
      */
     private List<JsonNode> listToolNodes(long timeoutMillis) {
         List<JsonNode> nodes = new ArrayList<JsonNode>();
@@ -466,10 +514,12 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
             JsonNode result = request(McpProtocol.METHOD_TOOLS_LIST, params, timeoutMillis,
                     CancellationToken.NONE);
             JsonNode tools = McpJson.childArray(result, "tools");
-            if (tools != null) {
-                for (JsonNode tool : tools) {
-                    nodes.add(tool);
-                }
+            if (tools == null) {
+                throw new JellyfishException("tools/list 应答缺少 tools 数组（第 " + (page + 1)
+                        + " 页）: " + config.id());
+            }
+            for (JsonNode tool : tools) {
+                nodes.add(tool);
             }
             cursor = McpJson.text(result, "nextCursor", null);
             if (cursor == null || cursor.isEmpty()) {

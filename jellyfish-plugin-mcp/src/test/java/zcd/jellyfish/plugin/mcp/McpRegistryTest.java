@@ -36,6 +36,27 @@ class McpRegistryTest {
     }
 
     @Test
+    @DisplayName("摘掉 server 时工具数要一起归零：台账不能同时说「工具 3 个」和「已注册 0 个」")
+    void removeServer_should_resetToolCount() {
+        // Given
+        McpRegistry registry = new McpRegistry();
+        registry.register("fs", McpRegistry.State.FAILED, "server 进程已退出");
+        registry.replaceTools("fs", Arrays.asList(tool("mcp__fs__a", true), tool("mcp__fs__b", false),
+                tool("mcp__fs__c", true)));
+        assertEquals(3, registry.statusOf("fs").toolCount());
+
+        // When
+        registry.removeServer("fs");
+
+        // Then
+        assertEquals(0, registry.statusOf("fs").toolCount());
+        assertTrue(registry.toolsOf("fs").isEmpty());
+        assertFalse(registry.isMcpTool("mcp__fs__a"));
+        assertEquals(McpRegistry.State.FAILED, registry.statusOf("fs").state(),
+                "摘工具不该顺手改状态：为什么断开比「已经摘干净」更有用");
+    }
+
+    @Test
     @DisplayName("整体替换应带上只读标记与工具数")
     void replaceTools_should_trackReadOnlyAndCount() {
         // Given
