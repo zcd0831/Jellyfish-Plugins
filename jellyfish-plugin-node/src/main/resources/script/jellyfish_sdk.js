@@ -921,7 +921,8 @@ defineShape('permission', (result) => {
  * 校验并归一 `{verdict, reason}` 写法。
  *
  * 没有「放行」这一态：脚本只能收紧，不能放宽内核已经允许的调用。
- * 未知裁定一律报错而不是静默按无异议处理。
+ * 未知裁定一律报错而不是静默按无异议处理——内核随后按拒绝处理：
+ * 宁可这次调用被拒（可见、可重试），也不让一道本该有人看的调用静默放行。
  *
  * @param {Record<string, unknown>} mapping 脚本返回的映射
  * @returns {Record<string, unknown>} 协议载荷
