@@ -10,12 +10,14 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * {@link SessionStore} 的单元测试。
@@ -30,6 +32,62 @@ class SessionStoreTest {
     /** 用例独立的工作目录。 */
     @TempDir
     Path tempDir;
+
+    @Test
+    @DisplayName("落盘权限收到只有本人：会话正文不该让同机其他用户读到")
+    void writeIfChanged_should_restrictPermissions() throws IOException {
+        // Given：只在支持 POSIX 权限位的文件系统上断言（Windows 没有这一套）
+        assumeTrue(supportsPosix());
+        Path directory = tempDir.resolve("sessions");
+        SessionStore store = new SessionStore(directory);
+
+        // When
+        assertTrue(store.writeIfChanged("s1", "{}"));
+
+        // Then：目录 700、文件 600
+        assertEquals("rwx------", PosixFilePermissions.toString(Files.getPosixFilePermissions(directory)));
+        assertEquals("rw-------",
+                PosixFilePermissions.toString(Files.getPosixFilePermissions(directory.resolve("s1.json"))));
+    }
+
+    @Test
+    @DisplayName("既已存在的目录权限不动：那是用户的盘，他不一定希望被改")
+    void writeIfChanged_should_notTouchExistingDirectoryPermissions() throws IOException {
+        assumeTrue(supportsPosix());
+        Path directory = tempDir.resolve("sessions");
+        Files.createDirectories(directory);
+        Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwxrwxrwx"));
+
+        new SessionStore(directory).writeIfChanged("s1", "{}");
+
+        assertEquals("rwxrwxrwx", PosixFilePermissions.toString(Files.getPosixFilePermissions(directory)));
+    }
+
+    @Test
+    @DisplayName("临时文件被预置成符号链接时写不进去，而不是跟着链接写到别处")
+    void writeIfChanged_should_refuse_when_tempIsSymlink() throws IOException {
+        assumeTrue(supportsPosix());
+        Path directory = tempDir.resolve("sessions");
+        Files.createDirectories(directory);
+        Path outside = tempDir.resolve("outside.txt");
+        Files.write(outside, "untouched".getBytes(StandardCharsets.UTF_8));
+        Files.createSymbolicLink(directory.resolve("s1.json.tmp"), outside);
+
+        SessionStore store = new SessionStore(directory);
+
+        // Then：写入失败（fail-closed），目标文件一个字节都没被改
+        assertThrows(JellyfishException.class, () -> store.writeIfChanged("s1", "{}"));
+        assertEquals("untouched", new String(Files.readAllBytes(outside), StandardCharsets.UTF_8));
+    }
+
+    /**
+     * 判断当前文件系统是否支持 POSIX 权限位。
+     *
+     * @return 支持返回 {@code true}
+     */
+    private static boolean supportsPosix() {
+        return java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+    }
 
     @Test
     @DisplayName("一个会话对应一个同名 JSON 文件")

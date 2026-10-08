@@ -1,5 +1,7 @@
 package zcd.jellyfish.plugin.sessionfile;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import zcd.jellyfish.api.JellyfishException;
 
 import java.io.IOException;
@@ -7,8 +9,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -31,6 +36,9 @@ import java.util.List;
  * @author zcd
  */
 final class SessionStore {
+
+    /** 日志。 */
+    private static final Logger LOG = LoggerFactory.getLogger(SessionStore.class);
 
     /** 会话文件后缀。 */
     private static final String SUFFIX = ".json";
@@ -73,7 +81,7 @@ final class SessionStore {
     boolean writeIfChanged(String sessionId, String json) {
         Path file = fileOf(sessionId);
         try {
-            Files.createDirectories(directory);
+            createOwnerOnlyDirectories(directory);
             if (Files.exists(file) && json.equals(read(file))) {
                 return false;
             }
@@ -145,6 +153,17 @@ final class SessionStore {
 
     /**
      * 原子写入：先写临时文件，再替换目标文件。
+     * <p>
+     * <b>临时文件走 {@code NOFOLLOW_LINKS}</b>：名字是固定的 {@code <id>.json.tmp}，而目录里的内容
+     * 不完全由我们决定（同步盘、备份工具、或者一个恶意仓库里的脚本）。若那里被预置了一个同名符号
+     * 链接，普通的 open 会老实地跟着它写到别处去。加上这个选项之后，最后一段是符号链接时直接失败
+     * ——一次写不进去，而不是把内容写到链接指向的地方。
+     * <p>
+     * <b>固定名仍然留着</b>：同会话并发写本来就是「后写覆盖前写」（两次写的都是同一份快照的相邻版本），
+     * 换随机名只会让崩溃残留的临时文件越积越多，并不换来正确性。
+     * <p>
+     * <b>权限在改名之前就收成 600</b>：rename 保留 inode，因此目标文件一出生就是 600，
+     * 不存在「先按 umask 可读、稍后才收紧」的窗口。
      *
      * @param file 目标文件
      * @param json 内容
@@ -152,12 +171,77 @@ final class SessionStore {
      */
     private void writeAtomically(Path file, String json) throws IOException {
         Path temp = file.resolveSibling(file.getFileName() + TEMP_SUFFIX);
-        Files.write(temp, json.getBytes(StandardCharsets.UTF_8));
         try {
-            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException e) {
-            // 少数文件系统不支持原子替换，退化到普通替换：至少不会留下半截文件在目标路径上
-            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+            Files.write(temp, json.getBytes(StandardCharsets.UTF_8),
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
+                    LinkOption.NOFOLLOW_LINKS);
+            restrictToOwner(temp, false);
+            try {
+                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                // 少数文件系统不支持原子替换，退化到普通替换：至少不会留下半截文件在目标路径上
+                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException | RuntimeException e) {
+            deleteQuietly(temp);
+            throw e;
+        }
+    }
+
+    /**
+     * 创建目录，并把<b>本次新建的</b>层级权限收到「只有本人可进出」。
+     * <p>
+     * 默认权限由 umask 决定（常见 755），也就是同机其他用户能进目录、能读里面的会话正文——
+     * 那里面是完整的对话记录。已存在的层级不动：那是用户的盘，他可能出于自己的理由设过权限。
+     * <p>
+     * <b>已知边界</b>：只挡「同机其他用户读」，挡不住同用户的其它进程，也挡不住已经落地的副本
+     * （备份、同步盘、git 远端）。文件本身是 600，那才是防读取的主要一道。
+     *
+     * @param target 目标目录
+     * @throws IOException 创建失败时抛出
+     */
+    private static void createOwnerOnlyDirectories(Path target) throws IOException {
+        if (Files.exists(target)) {
+            return;
+        }
+        List<Path> missing = new ArrayList<Path>();
+        for (Path current = target; current != null && !Files.exists(current); current = current.getParent()) {
+            missing.add(current);
+        }
+        Files.createDirectories(target);
+        for (Path created : missing) {
+            restrictToOwner(created, true);
+        }
+    }
+
+    /**
+     * 把一个文件或目录的权限收到「只有本人」。
+     * <p>
+     * 不支持的平台（Windows 等）直接跳过：那里没有 POSIX 权限位，落盘行为保持原样，
+     * 而不是因为「设不上权限」把一次正常落盘变成失败。
+     *
+     * @param path      目标路径
+     * @param directory 是否为目录（目录要带执行位才能进出）
+     */
+    private static void restrictToOwner(Path path, boolean directory) {
+        try {
+            Files.setPosixFilePermissions(path,
+                    PosixFilePermissions.fromString(directory ? "rwx------" : "rw-------"));
+        } catch (UnsupportedOperationException | IOException e) {
+            LOG.debug("无法收紧落盘权限（平台不支持则属正常）: path={} reason={}", path, e.toString());
+        }
+    }
+
+    /**
+     * 安静地删掉临时文件，不影响正在向上抛出的那个异常。
+     *
+     * @param temp 临时文件
+     */
+    private static void deleteQuietly(Path temp) {
+        try {
+            Files.deleteIfExists(temp);
+        } catch (IOException e) {
+            LOG.debug("清理会话临时文件失败: path={} reason={}", temp, e.toString());
         }
     }
 
