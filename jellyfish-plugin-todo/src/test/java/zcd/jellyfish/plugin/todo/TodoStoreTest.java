@@ -291,6 +291,39 @@ class TodoStoreTest {
         assertEquals("run-1", store.itemsOf("s-1").get(0).owner());
     }
 
+    @Test
+    @DisplayName("卡住后被打回未开始：认领者必须一起清掉，否则这条谁也领不走、谁也完不成")
+    void replace_should_clearOwner_whenBlockedItemIsRewrittenToPending() {
+        store.replace("s-1", items("甲", "乙"));
+        store.claim("s-1", "run-1");
+        store.block("s-1", "甲", "run-1", "需要写权限");
+
+        // 父回合整表重写，把卡住那条又写回「未开始」（它是模型手写的，自然不带认领者）
+        List<TodoItem> rewritten = store.replace("s-1", items("甲", "乙"));
+
+        // Then：状态回到未开始，认领者一并清掉——PENDING + 旧 owner 是条死条目
+        assertEquals(TodoStatus.PENDING, rewritten.get(0).status());
+        assertNull(rewritten.get(0).owner(), "未开始的条目不能带着认领者");
+        // Then：它现在能被正常认领（这正是原缺陷里做不到的那一步）
+        assertEquals("甲", store.claim("s-1", "run-2").getItem().content());
+        assertEquals("run-2", store.itemsOf("s-1").get(0).owner());
+    }
+
+    @Test
+    @DisplayName("未开始的条目不再被继承成「有主」：连续两次重写也不会把它锁住")
+    void replace_should_notResurrectClaim_onRepeatedRewrite() {
+        store.replace("s-1", items("甲"));
+        store.claim("s-1", "run-1");
+        store.block("s-1", "甲", "run-1", "卡住了");
+
+        // 第一次重写清掉认领者；此后 findSticky 不再把这条当黏性条目
+        store.replace("s-1", items("甲"));
+        List<TodoItem> second = store.replace("s-1", items("甲"));
+
+        assertNull(second.get(0).owner());
+        assertEquals("run-3", store.claim("s-1", "run-3").getItem().owner());
+    }
+
     /**
      * 构造一份待办列表。
      *

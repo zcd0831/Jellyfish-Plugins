@@ -313,6 +313,12 @@ final class TodoStore {
      * <p>
      * <b>认领还是黏的</b>：上一份里已被认领的条目，其状态不会被一次重写改回「未开始」——
      * 那等于把一件正在做的事重新放回池子里。模型照样可以把它标成完成（那是明确的意图）。
+     * <p>
+     * <b>但「认领者」只跟着「非未开始」的状态走</b>：条目落到 {@code PENDING} 时不能带着 owner，
+     * 否则它就是一条谁也领不走（{@code claim} 要求无主）、谁也完不成（{@code complete} 要求归属匹配）的
+     * 死条目；而 {@link #findSticky} 又以「有 owner」为黏性判据，于是这个 owner 会被一次次继承下去，
+     * 模型自己修不回来。{@code IN_PROGRESS}（有人在干）与 {@code BLOCKED}（卡住但有主，便于原主续做）
+     * 都要保留认领者，那才是「模型看不见的那部分状态」。
      *
      * @param previous 上一份列表，不可为 {@code null}
      * @param incoming 新列表，不可为 {@code null}
@@ -331,10 +337,15 @@ final class TodoStore {
             }
             boolean keepInProgress = sticky.status() == TodoStatus.IN_PROGRESS
                     && item.status() == TodoStatus.PENDING;
+            TodoStatus status = keepInProgress ? TodoStatus.IN_PROGRESS : item.status();
             String reason = item.reason() == null && item.status() == TodoStatus.BLOCKED
                     ? sticky.reason() : item.reason();
-            merged.add(item.with(keepInProgress ? TodoStatus.IN_PROGRESS : item.status(),
-                    sticky.owner(), reason));
+            // PENDING 不继承认领者：claim 只接受「未开始且无主」的条目，而 complete 要求归属匹配，
+            // 于是带上旧 owner 的 PENDING 谁也领不走、谁也完不成。更麻烦的是 findSticky 以「有 owner」
+            // 为黏性判据，之后每一次整表覆盖都会把这个 owner 继续继承下来——模型自己修不回来，
+            // 只有 todo_release 能救。IN_PROGRESS 与 BLOCKED 都要保留认领者，那是「活有人在干」的信息
+            String owner = status == TodoStatus.PENDING ? null : sticky.owner();
+            merged.add(item.with(status, owner, reason));
         }
         return merged;
     }
