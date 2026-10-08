@@ -3,6 +3,9 @@ package zcd.jellyfish.plugin.mcp;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.StringReader;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -11,6 +14,8 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -22,6 +27,56 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 @DisplayName("MCP 子进程的环境与日志")
 class McpStdioTransportTest {
+
+    @Test
+    @DisplayName("单行读取：\\n 与 \\r\\n 都算换行，且不吞掉下一行的内容")
+    void readLineWithinLimit_should_handleBothLineEndings() throws Exception {
+        BufferedReader reader = reader("first\nsecond\r\nthird\rfourth");
+
+        assertEquals("first", McpStdioTransport.readLineWithinLimit(reader, "s"));
+        assertEquals("second", McpStdioTransport.readLineWithinLimit(reader, "s"));
+        // 单个 \r 也算换行：后面那一行不能被吃掉
+        assertEquals("third", McpStdioTransport.readLineWithinLimit(reader, "s"));
+        // 最后一行没有换行符，仍要返回（子进程可能没写完就退出）
+        assertEquals("fourth", McpStdioTransport.readLineWithinLimit(reader, "s"));
+        assertNull(McpStdioTransport.readLineWithinLimit(reader, "s"));
+    }
+
+    @Test
+    @DisplayName("单行读取：空行是合法的一行，不能与「流结束」混为一谈")
+    void readLineWithinLimit_should_keepEmptyLineDistinctFromEndOfStream() throws Exception {
+        BufferedReader reader = reader("\n");
+
+        assertEquals("", McpStdioTransport.readLineWithinLimit(reader, "s"));
+        assertNull(McpStdioTransport.readLineWithinLimit(reader, "s"));
+    }
+
+    @Test
+    @DisplayName("超过上限的一行应报错而不是把它读进内存")
+    void readLineWithinLimit_should_fail_when_lineExceedsLimit() {
+        // Given：一行比上限还长、且不带换行——不受信的 server 一句 dump 就能这样
+        StringBuilder huge = new StringBuilder();
+        for (int i = 0; i < 4 * 1024 * 1024 + 1; i++) {
+            huge.append('x');
+        }
+        BufferedReader reader = reader(huge.toString());
+
+        // When / Then
+        IOException failure = assertThrows(IOException.class,
+                () -> McpStdioTransport.readLineWithinLimit(reader, "fs"));
+        assertTrue(failure.getMessage().contains("超过上限"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("fs"), failure.getMessage());
+    }
+
+    /**
+     * 构造一个按给定文本读取的缓冲读取器。
+     *
+     * @param text 文本
+     * @return 读取器
+     */
+    private static BufferedReader reader(String text) {
+        return new BufferedReader(new StringReader(text));
+    }
 
     @Test
     @DisplayName("父进程里的凭据不应跟过去：宿主 JVM 的 provider 密钥与 MCP server 无关")

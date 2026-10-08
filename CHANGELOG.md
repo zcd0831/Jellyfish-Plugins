@@ -79,6 +79,11 @@
 
 ### Fixed
 
+- **`jellyfish-plugin-mcp`：子进程的输出加了行长上限**（安全修复）。stdout（协议通道）与 stderr
+  哨兵此前都用 `BufferedReader.readLine()`，它会把一整行读进内存。对面是用户从 npm/pip 拉下来的
+  第三方 server——一个不换行、一直吐的进程能直接把宿主 JVM 撑爆，而它连「恶意」都不需要：
+  一句把整个数据库 dump 到 stderr 的日志就够了。现在按字符读并计数，超过 4 MiB 即报错结束该行
+  （远大于任何正常的单条 JSON-RPC 消息）。换行语义与 `BufferedReader` 一致（`\n`、`\r`、`\r\n` 都算）。
 - **`jellyfish-script`：脚本的 `entry` 不能跳出脚本目录**（安全修复）。清单是随仓库分发的东西，
   而 `entry` 是「把哪个文件交给解释器执行」的唯一来源：一个 `git clone` 下来的脚本目录，若清单写着
   `../../escape.py` 或 `/etc/passwd`，原先的校验只到「文件存在」，内核就会把脚本目录外的任意文件

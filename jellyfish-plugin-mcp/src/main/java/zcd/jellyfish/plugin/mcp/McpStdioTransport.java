@@ -48,6 +48,19 @@ final class McpStdioTransport implements McpTransport {
     private static final long GRACE_MILLIS = 2000L;
 
     /**
+     * 单行长度上限（字符）：子进程的 stdout 与 stderr 都按它收口。
+     * <p>
+     * <b>为什么必须给上限</b>：这里读的是<b>子进程</b>的输出，而对面是个不受信的第三方程序
+     * （用户从 npm/pip 拉下来的 server）。{@code BufferedReader.readLine()} 会把一整行全部读进内存，
+     * 一个不换行、一直吐的 server 能直接把宿主 JVM 撑爆——而它连「恶意」都不需要，
+     * 一句把整个数据库 dump 到 stderr 的日志就够了。
+     * <p>
+     * 4 MiB 远大于任何正常的单条 JSON-RPC 消息（{@code tools/list} 的应答是最大的那种，
+     * 几十个工具也就几百 KB），因此正常 server 碰不到它。
+     */
+    private static final int MAX_LINE_CHARS = 4 * 1024 * 1024;
+
+    /**
      * 允许从父进程继承的环境变量名（精确匹配）。
      * <p>
      * <b>为什么是白名单，而不是「继承 + 剔除敏感变量」</b>：shell 插件走的是后者，因为那里的命令是
@@ -274,11 +287,50 @@ final class McpStdioTransport implements McpTransport {
      * 阻塞读取一条消息。
      *
      * @return 一条消息文本；流结束（子进程退出）时返回 {@code null}
-     * @throws IOException 读取失败时抛出
+     * @throws IOException 读取失败、或子进程吐出的单行超过 {@link #MAX_LINE_CHARS} 时抛出
      */
     @Override
     public String readLine() throws IOException {
-        return reader.readLine();
+        return readLineWithinLimit(reader, serverId);
+    }
+
+    /**
+     * 按上限读一行。
+     * <p>
+     * <b>为什么不用 {@code BufferedReader.readLine()}</b>：它没有长度上限，而这里读的是不受信子进程的
+     * 输出——一行就能把内存吃光（见 {@link #MAX_LINE_CHARS}）。因此自己按字符读并计数。
+     * <p>
+     * 行结束符保持 {@code BufferedReader} 的语义：{@code \n}、{@code \r}、{@code \r\n} 都算，
+     * 后者靠读一个字符再看是不是 {@code \n}（不是就还回去）。MCP 自己写出去的是 {@code \n}，
+     * 但对面是第三方程序，不该要求它只用一种换行。
+     *
+     * @param reader   读取器，不可为 {@code null}
+     * @param serverId 服务标识，用于报错定位
+     * @return 一行（不含行结束符）；流已结束时返回 {@code null}
+     * @throws IOException 读取失败或超过上限时抛出
+     */
+    static String readLineWithinLimit(BufferedReader reader, String serverId) throws IOException {        StringBuilder line = new StringBuilder();
+        while (true) {
+            int next = reader.read();
+            if (next == -1) {
+                return line.length() == 0 ? null : line.toString();
+            }
+            if (next == '\n') {
+                return line.toString();
+            }
+            if (next == '\r') {
+                reader.mark(1);
+                int afterCr = reader.read();
+                if (afterCr != '\n' && afterCr != -1) {
+                    reader.reset();
+                }
+                return line.toString();
+            }
+            line.append((char) next);
+            if (line.length() > MAX_LINE_CHARS) {
+                throw new IOException("MCP server 输出的一行超过上限 " + MAX_LINE_CHARS + " 字符: id=" + serverId);
+            }
+        }
     }
 
     /**
@@ -483,10 +535,11 @@ final class McpStdioTransport implements McpTransport {
             try (BufferedReader stderr = new BufferedReader(
                     new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) {
                 String line;
-                while ((line = stderr.readLine()) != null) {
+                while ((line = readLineWithinLimit(stderr, serverId)) != null) {
                     LOG.debug("[mcp:{}] {}", serverId, line);
                 }
             } catch (IOException e) {
+                // 超过行长上限也走这里：那条 stderr 是子进程自己写坏的，宿主不能因此被拖垮
                 LOG.debug("读取 MCP server 的 stderr 结束: id={}", serverId, e);
             }
         }, "mcp-stderr-" + serverId);
