@@ -9,6 +9,9 @@ import zcd.jellyfish.api.extension.ToolDescriptor;
 import zcd.jellyfish.api.plugin.PluginOwnerNamespace;
 import zcd.jellyfish.script.codec.ExtensionCodecs;
 
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -46,6 +49,9 @@ public final class ScriptManifest {
 
     /** 清单文件名。 */
     public static final String FILE_NAME = "manifest.json";
+
+    /** 上一级目录段：{@code entry} 规范化后以它开头即视为跳出脚本目录。 */
+    private static final Path PARENT_DIRECTORY = Paths.get("..");
 
     /** 顶层允许的键。 */
     private static final Set<String> TOP_KEYS = keys("id", "entry", "tools", "commands", "commandOptions",
@@ -154,12 +160,41 @@ public final class ScriptManifest {
         rejectUnknownKeys(root, "清单", TOP_KEYS);
         String id = resolveId(text(root, "id"), fallbackId);
         String entry = requireText(root, "entry");
+        validateEntry(entry);
         List<Tool> tools = parseTools(root.get("tools"));
         List<Command> commands = parseCommands(root.get("commands"));
         return new ScriptManifest(id, entry, tools, commands,
                 parseCommandOptions(root.get("commandOptions"), commands), parseContributions(root, codecs),
                 parseEvents(root.get("events")), parseHandlers(root.get("handlers"), codecs),
                 parseSchedules(root.get("schedules")));
+    }
+
+    /**
+     * 校验入口文件必须落在脚本目录内。
+     * <p>
+     * <b>为什么清单这一层就要判</b>：{@code entry} 是「把哪个文件交给解释器执行」的唯一来源，而
+     * 清单是<b>随仓库分发</b>的东西——一个 {@code git clone} 下来的脚本目录，若它的清单写着
+     * {@code "../../../.ssh/id_rsa"} 或 {@code /etc/shadow}，校验一旦只到「文件存在」，内核就会
+     * 把脚本目录外的任意文件当脚本执行。判据只看形状（相对、且规范化后不跑到上一级去），
+     * 不依赖脚本目录的绝对位置，因此这一层不需要知道目录在哪——它挡的是「构造上逃得出去」。
+     * <p>
+     * 目录内的符号链接指向外面这一条不在这里判（这里看不到真实位置），由扫描器用
+     * {@code toRealPath} 复核。
+     *
+     * @param entry 入口路径，非空白
+     * @throws JellyfishException 是绝对路径、或规范化后跳出脚本目录时抛出
+     */
+    private static void validateEntry(String entry) {
+        Path path;
+        try {
+            path = Paths.get(entry);
+        } catch (InvalidPathException e) {
+            throw new JellyfishException("entry 不是合法路径: " + entry);
+        }
+        if (path.isAbsolute() || path.normalize().startsWith(PARENT_DIRECTORY)) {
+            throw new JellyfishException("entry 必须指向脚本目录内的文件（不能是绝对路径，"
+                    + "也不能用 .. 跳出脚本目录）: " + entry);
+        }
     }
 
     /**

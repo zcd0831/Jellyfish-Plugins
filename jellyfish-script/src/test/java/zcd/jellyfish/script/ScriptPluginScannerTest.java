@@ -134,6 +134,50 @@ class ScriptPluginScannerTest {
     }
 
     @Test
+    @DisplayName("入口文件是目录外符号链接时应记问题：清单里的名字挡不住链接的指向")
+    void scan_should_recordIssue_when_entryIsSymlinkOutsideScriptDirectory() throws IOException {
+        // Given：脚本目录外的真实文件，以及一个指向它的符号链接
+        Path outside = Files.write(scriptsRoot.resolve("outside.py"), "x".getBytes(StandardCharsets.UTF_8));
+        Path directory = scriptsRoot.resolve("jira");
+        Files.createDirectories(directory);
+        Files.write(directory.resolve(ScriptManifest.FILE_NAME),
+                "{\"entry\":\"main.py\"}".getBytes(StandardCharsets.UTF_8));
+        try {
+            Files.createSymbolicLink(directory.resolve("main.py"), outside);
+        } catch (IOException | UnsupportedOperationException e) {
+            // 无权限建链接的文件系统（常见于 Windows）：这一层防线测不了，跳过
+            return;
+        }
+
+        ScriptScanResult result = scanner.scan(scriptsRoot);
+
+        assertTrue(result.plugins().isEmpty(), result.plugins().toString());
+        assertEquals(1, result.issues().size());
+        assertTrue(result.issues().get(0).message().contains("超出脚本目录"),
+                result.issues().get(0).message());
+    }
+
+    @Test
+    @DisplayName("入口文件是目录内符号链接时应放行：解到真实位置仍在脚本目录里")
+    void scan_should_loadScript_when_entryIsSymlinkInsideScriptDirectory() throws IOException {
+        Path directory = scriptsRoot.resolve("jira");
+        Files.createDirectories(directory);
+        Files.write(directory.resolve(ScriptManifest.FILE_NAME),
+                "{\"entry\":\"main.py\"}".getBytes(StandardCharsets.UTF_8));
+        Files.write(directory.resolve("real.py"), "".getBytes(StandardCharsets.UTF_8));
+        try {
+            Files.createSymbolicLink(directory.resolve("main.py"), directory.resolve("real.py"));
+        } catch (IOException | UnsupportedOperationException e) {
+            return;
+        }
+
+        ScriptScanResult result = scanner.scan(scriptsRoot);
+
+        assertEquals(1, result.plugins().size(), result.issues().toString());
+        assertTrue(result.issues().isEmpty());
+    }
+
+    @Test
     @DisplayName("多个脚本应按目录名升序出现，保证跳过谁在各机器上一致")
     void scan_should_sortPlugins_by_directoryName() throws IOException {
         writeScript("charlie", "{\"entry\":\"main.py\"}", "main.py");

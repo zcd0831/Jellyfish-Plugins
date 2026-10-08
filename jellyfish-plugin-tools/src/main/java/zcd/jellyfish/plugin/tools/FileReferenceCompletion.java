@@ -42,9 +42,6 @@ final class FileReferenceCompletion implements ExtensionHandler<InputReferenceRe
     /** 一次最多返回的候选数：足够覆盖实际使用，又不会让面板与目录扫描无界膨胀。 */
     private static final int MAX_CHOICES = 200;
 
-    /** 家目录前缀：路径语义归插件，用户敲 {@code ~/...} 时应当按家目录解析。 */
-    private static final String HOME_PREFIX = "~/";
-
     @Override
     public InputReferenceResult handle(InputReferenceRequest request) {
         String token = request.getToken();
@@ -85,14 +82,9 @@ final class FileReferenceCompletion implements ExtensionHandler<InputReferenceRe
      * @return 目录路径；无法解析或不是目录时返回 {@code null}
      */
     private static Path resolveDirectory(String dirPart) {
-        Path directory;
-        if (dirPart.isEmpty()) {
-            directory = ToolPaths.workingDirectory();
-        } else if (dirPart.startsWith(HOME_PREFIX)) {
-            directory = Paths.get(System.getProperty("user.home"), dirPart.substring(HOME_PREFIX.length()));
-        } else {
-            directory = Paths.get(dirPart);
-        }
+        Path directory = dirPart.isEmpty()
+                ? ToolPaths.workingDirectory()
+                : Paths.get(ToolPaths.expandHome(dirPart));
         Path normalized = directory.toAbsolutePath().normalize();
         return Files.isDirectory(normalized) ? normalized : null;
     }

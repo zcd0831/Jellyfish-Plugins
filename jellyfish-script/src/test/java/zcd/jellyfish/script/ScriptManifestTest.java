@@ -132,6 +132,27 @@ class ScriptManifestTest {
     }
 
     @Test
+    @DisplayName("entry 是绝对路径、或跳出脚本目录时应报错")
+    void parse_should_rejectEntry_when_itEscapesScriptDirectory() {
+        // 清单随仓库分发：一个 git clone 下来的脚本目录，若 entry 能指向目录外，
+        // 内核就会把任意文件交给解释器执行
+        for (String escaping : new String[]{"../escape.py", "a/../../escape.py", "/etc/passwd", ".."}) {
+            JellyfishException failure = assertThrows(JellyfishException.class,
+                    () -> parse("{\"entry\":\"" + escaping + "\"}"), escaping);
+            assertTrue(failure.getMessage().contains("脚本目录"), failure.getMessage());
+        }
+    }
+
+    @Test
+    @DisplayName("entry 在脚本目录内（含子目录与无用的 .. ）应放行")
+    void parse_should_acceptEntry_when_itStaysInside() {
+        assertEquals("main.py", parse("{\"entry\":\"main.py\"}").entry());
+        assertEquals("src/main.py", parse("{\"entry\":\"src/main.py\"}").entry());
+        // `a/../main.py` 规范化后落在脚本目录内，属于「写法啰嗦」而不是「逃逸」
+        assertEquals("./main.py", parse("{\"entry\":\"./main.py\"}").entry());
+    }
+
+    @Test
     @DisplayName("工具名重复应报错，并指出是第几个条目")
     void parse_should_rejectDuplicateToolName_when_twoToolsShareName() {
         JellyfishException failure = assertThrows(JellyfishException.class, () -> parse(

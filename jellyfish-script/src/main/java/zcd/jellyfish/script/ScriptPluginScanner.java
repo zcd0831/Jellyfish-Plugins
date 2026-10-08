@@ -27,8 +27,9 @@ import java.util.Set;
  *     <li>只扫<b>子目录</b>，每个子目录要求有 {@link ScriptManifest#FILE_NAME}；缺失即问题；</li>
  *     <li>{@code id} 缺省用目录名；两个目录声明同一个 {@code id} 时后者被跳过——
  *     否则两者的注册会在同一个 owner 下互相覆盖，而且覆盖顺序取决于目录遍历顺序；</li>
- *     <li>{@code entry} 指向的文件必须存在：否则问题会被推迟到「第一次调用该脚本」才暴露，
- *     而那已经是用户在使用工具的时候了。</li>
+ *     <li>{@code entry} 指向的文件必须存在，且解析后仍落在脚本目录内：前者避免问题被推迟到
+ *     「第一次调用该脚本」才暴露（那已经是用户在使用工具的时候了），后者避免脚本目录外的
+ *     任意文件被当脚本交给解释器执行（符号链接也算——解到真实位置再比）。</li>
  * </ul>
  * 子目录按名字排序遍历，保证「谁被跳过」在任何机器上都一致。
  * <p>
@@ -112,7 +113,32 @@ public final class ScriptPluginScanner {
             issues.add(new ScriptIssue(name, "入口文件不存在: " + manifest.entry()));
             return;
         }
+        if (!insideDirectory(plugin.entryFile(), directory)) {
+            issues.add(new ScriptIssue(name, "入口文件超出脚本目录: " + manifest.entry()));
+            return;
+        }
         plugins.add(plugin);
+    }
+
+    /**
+     * 判断入口文件解析后是否仍落在脚本目录内。
+     * <p>
+     * 清单已经拒掉了 {@code ../} 与绝对路径（构造上逃不出去），这一层挡的是另一条路：脚本目录
+     * <b>里面</b>的那个名字是个符号链接，指向目录外。{@code toRealPath} 把链接解到真实位置再比，
+     * 因此只有「真实位置也在脚本目录内」的链接才放行（目录内互相链接照常能用）。
+     * <p>
+     * 解不出来（不可读、链接成环）按「不在里面」处理：清单声明了它必须在里面，读不出来就不放行。
+     *
+     * @param entryFile 入口文件
+     * @param directory 脚本目录
+     * @return 在脚本目录内返回 {@code true}
+     */
+    private static boolean insideDirectory(Path entryFile, Path directory) {
+        try {
+            return entryFile.toRealPath().startsWith(directory.toRealPath());
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     /**

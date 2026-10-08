@@ -36,6 +36,22 @@ class ToolPathsTest {
     }
 
     @Test
+    @DisplayName("行首的 ~ 应按用户主目录展开：工具结果的回灌路径就是这种形式")
+    void resolve_should_expandTilde_toUserHome() {
+        Path home = Paths.get(System.getProperty("user.home")).toAbsolutePath().normalize();
+
+        assertEquals(home.resolve(".jellyfish/tool-outputs/x.txt"),
+                ToolPaths.resolve("~/.jellyfish/tool-outputs/x.txt"));
+        assertEquals(home, ToolPaths.resolve("~"));
+    }
+
+    @Test
+    @DisplayName("~other 不展开：解析别人的主目录是 shell 的能力，插件不猜")
+    void expandHome_should_keepTilde_when_itNamesAnotherUser() {
+        assertEquals("~other/x.txt", ToolPaths.expandHome("~other/x.txt"));
+    }
+
+    @Test
     @DisplayName("工作目录内的路径应显示为相对路径")
     void display_should_returnRelativePath_when_insideWorkingDirectory() {
         assertEquals("src/Main.java", ToolPaths.display(WORKING_DIRECTORY.resolve("src/Main.java")));
