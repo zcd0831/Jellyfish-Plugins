@@ -218,7 +218,9 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
                 Thread.currentThread().interrupt();
             }
         }
-        registry.removeServer(config.id());
+        // 标记表刻意不由这里清：它的生命周期跟着「谁注册了工具处理器」（McpToolRegistrar）。
+        // 若在这里清掉，而处理器还挂在扩展点上（stop() 里 registrar.closeAll() 是这一步之后才跑的），
+        // 中间那一刻写类 MCP 工具就没有审批闸门了。
         // 失败状态比「已停止」更有信息量：连不上的 server 不该在下一次 /mcp 里变成一句无头无尾的停止
         McpRegistry.ServerStatus status = registry.statusOf(config.id());
         if (status == null || status.state() != McpRegistry.State.FAILED) {

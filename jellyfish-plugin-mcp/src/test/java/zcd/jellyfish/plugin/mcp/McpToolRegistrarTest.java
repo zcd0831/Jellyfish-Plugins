@@ -5,6 +5,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.mockito.invocation.InvocationOnMock;
+import zcd.jellyfish.api.event.Subscription;
+import zcd.jellyfish.api.extension.ExtensionHandler;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
 import zcd.jellyfish.api.plugin.PluginContext;
@@ -16,6 +19,7 @@ import zcd.jellyfish.infra.plugin.PluginContextImpl;
 import zcd.jellyfish.infra.registry.TypeRegistry;
 import zcd.jellyfish.infra.session.SessionManager;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -23,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -115,6 +120,73 @@ class McpToolRegistrarTest {
         // Then
         assertEquals(1, extensions.handlers(ToolCallRequest.class, "mcp__fs__free").size());
         assertTrue(registry.statusOf("fs").lastWarning().contains("mcp__fs__taken"));
+    }
+
+    @Test
+    @DisplayName("注册失败的名字必须从标记表里摘掉：留着它会把占了那个名字的内置工具判成我们的写类工具")
+    void apply_should_notMarkTool_when_registrationFails() {
+        // Given：mcp__fs__taken 已被占住，而它在本插件的清单里是「未声明只读」
+        extensions.handle("core", ToolCallRequest.class, "mcp__fs__taken", null,
+                request -> new ToolCallResult("mcp__fs__taken", "builtin"),
+                zcd.jellyfish.api.event.RegisterOptions.DEFAULT);
+
+        // When
+        registrar.apply(invoker, server("fs"), Arrays.asList(tool("taken", false), tool("free", false)));
+
+        // Then：注册不成的名字不再是「我们的工具」，权限处理器不会替它下结论
+        assertFalse(registry.isMcpTool("mcp__fs__taken"));
+        assertTrue(registry.isMcpTool("mcp__fs__free"));
+    }
+
+    @Test
+    @DisplayName("换清单时应先装标记再注册：注册那一刻名字已经在表里，否则写类工具在刷新窗口里不需要审批")
+    void apply_should_installMarkersBefore_when_registering() {
+        // Given：把上下文换成观察点——注册照常发生，只是在每次注册前先看一眼标记表
+        List<Boolean> flaggedAtRegistration = new ArrayList<Boolean>();
+        PluginContext root = observingRoot(context, flaggedAtRegistration);
+        registrar = new McpToolRegistrar(root, registry);
+
+        // When
+        registrar.apply(invoker, server("fs"), Arrays.asList(tool("read", true), tool("write", false)));
+
+        // Then：两个名字都必须在注册前就带着标记（把 replaceTools 挪到注册之后，这里会变成 false）
+        assertEquals(Arrays.asList(Boolean.TRUE, Boolean.TRUE), flaggedAtRegistration);
+        assertEquals(1, extensions.handlers(ToolCallRequest.class, "mcp__fs__read").size());
+        assertEquals(1, extensions.handlers(ToolCallRequest.class, "mcp__fs__write").size());
+    }
+
+    /**
+     * 包一层上下文：每次注册前记录「这个名字此刻是否已在标记表里」，随后照常完成注册。
+     *
+     * @param real 真实上下文
+     * @param seen 记录目标
+     * @return 包装后的上下文
+     */
+    private PluginContext observingRoot(PluginContext real, List<Boolean> seen) {
+        PluginContext sub = real.subContext("fs");
+        PluginContext observedSub = Mockito.mock(PluginContext.class);
+        Mockito.doAnswer(invocation -> {
+            seen.add(Boolean.valueOf(registry.isMcpTool(invocation.getArgument(1))));
+            return registerOn(sub, invocation);
+        }).when(observedSub).handle(Mockito.<Class<ToolCallRequest>>any(), Mockito.anyString(),
+                Mockito.any(), Mockito.<ExtensionHandler<ToolCallRequest, ToolCallResult>>any());
+        PluginContext root = Mockito.mock(PluginContext.class);
+        Mockito.when(root.subContext("fs")).thenReturn(observedSub);
+        return root;
+    }
+
+    /**
+     * 在被观察的上下文上真的完成一次注册。
+     *
+     * @param sub        真实的子上下文
+     * @param invocation 被拦截的调用
+     * @return 注册句柄
+     */
+    @SuppressWarnings("unchecked")
+    private static Subscription registerOn(PluginContext sub, InvocationOnMock invocation) {
+        return sub.handle((Class<ToolCallRequest>) invocation.getArgument(0), invocation.getArgument(1),
+                invocation.getArgument(2),
+                (ExtensionHandler<ToolCallRequest, ToolCallResult>) invocation.getArgument(3));
     }
 
     @Test

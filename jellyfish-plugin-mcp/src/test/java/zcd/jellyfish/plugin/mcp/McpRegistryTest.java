@@ -83,6 +83,67 @@ class McpRegistryTest {
     }
 
     @Test
+    @DisplayName("两个 server 提供同名工具时，替换其中一个不应动到另一个的标记")
+    void replaceTools_should_keepOtherServerMarkers_when_nameShared() {
+        // Given：两个 server 都提供 read_file（关掉前缀时就会这样）
+        McpRegistry registry = new McpRegistry();
+        registry.register("a", McpRegistry.State.PENDING, "");
+        registry.register("b", McpRegistry.State.PENDING, "");
+        registry.replaceTools("a", Collections.singletonList(tool("read_file", true)));
+        registry.replaceTools("b", Collections.singletonList(tool("read_file", false)));
+
+        // When：B 换一份完全不同的清单
+        registry.replaceTools("b", Collections.singletonList(tool("other", true)));
+
+        // Then：A 的标记必须还在——按名字在共享大表里删旧名字会把 A 的标记一起删掉
+        assertTrue(registry.isMcpTool("read_file"));
+        assertTrue(registry.isReadOnly("read_file"));
+        assertEquals(1, registry.toolsOf("a").size());
+    }
+
+    @Test
+    @DisplayName("同名工具被两边标得不一致时按最严算：任一边算成写类就要审批")
+    void isReadOnly_should_beStrict_when_twoServersDisagree() {
+        // Given
+        McpRegistry registry = new McpRegistry();
+        registry.replaceTools("a", Collections.singletonList(tool("shared", true)));
+        registry.replaceTools("b", Collections.singletonList(tool("shared", false)));
+
+        // Then：放宽只可能来自「所有声明者都说只读」，否则写类工具会借另一个 server 的声明溜过去
+        assertFalse(registry.isReadOnly("shared"));
+    }
+
+    @Test
+    @DisplayName("retainTools 应只摘掉没注册成的名字，其余标记照旧")
+    void retainTools_should_dropOnlyGivenNames() {
+        // Given
+        McpRegistry registry = new McpRegistry();
+        registry.register("fs", McpRegistry.State.PENDING, "");
+        registry.replaceTools("fs", Arrays.asList(tool("kept", true), tool("taken", true)));
+
+        // When：taken 在内核那边没注册上（名字被占了）
+        registry.retainTools("fs", Collections.singleton("kept"));
+
+        // Then
+        assertTrue(registry.isMcpTool("kept"));
+        assertFalse(registry.isMcpTool("taken"));
+        assertEquals(1, registry.statusOf("fs").toolCount());
+    }
+
+    @Test
+    @DisplayName("对未登记的 server 收窄工具集应是空操作而不是抛错")
+    void retainTools_should_beNoopForUnknownServer() {
+        // Given
+        McpRegistry registry = new McpRegistry();
+
+        // When
+        registry.retainTools("ghost", Collections.singleton("x"));
+
+        // Then
+        assertTrue(registry.toolsOf("ghost").isEmpty());
+    }
+
+    @Test
     @DisplayName("removeServer 应把工具与只读标记一起收回")
     void removeServer_should_dropTools() {
         // Given

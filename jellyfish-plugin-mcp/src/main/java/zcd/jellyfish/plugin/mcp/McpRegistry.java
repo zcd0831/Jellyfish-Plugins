@@ -2,7 +2,7 @@ package zcd.jellyfish.plugin.mcp;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -72,11 +72,18 @@ final class McpRegistry {
         }
     }
 
-    /** 工具展开名 → 是否为用户声明的只读工具（只驱动本插件的审批策略）。 */
-    private final Map<String, Boolean> readOnlyTools = new ConcurrentHashMap<String, Boolean>();
-
-    /** server 标识 → 该 server 当前提供的工具展开名。 */
-    private final Map<String, Set<String>> serverTools = new ConcurrentHashMap<String, Set<String>>();
+    /**
+     * server 标识 → 该 server 当前工具展开名到只读标记的映射（只驱动本插件的审批策略）。
+     * <p>
+     * <b>按 server 存整份视图，而不是存一张「工具名 → 只读」的大表</b>：一次 {@code tools/list}
+     * 就是一次整体替换，而整份替换必须是原子的——若按名字逐条删旧加新，中间那一瞬「新名字还没进表」，
+     * 权限处理器会把它当成别人的工具（{@code abstain}），于是「写类工具要审批」这道闸门在刷新窗口里
+     * 短暂消失。一条 {@code put} 换掉整份视图，窗口就不存在了。
+     * <p>
+     * 顺带解决同名互相踩：两个 server 都提供 {@code read_file} 时，替换 B 的清单不会动到 A 的标记。
+     */
+    private final Map<String, Map<String, Boolean>> toolsByServer =
+            new ConcurrentHashMap<String, Map<String, Boolean>>();
 
     /** server 标识 → 运行状态；按标识排序以保证台账输出稳定。 */
     private final Map<String, ServerStatus> statuses = new ConcurrentSkipListMap<String, ServerStatus>();
@@ -103,61 +110,118 @@ final class McpRegistry {
      * <p>
      * <b>整体替换而不是增量追加</b>：{@code tools/list} 返回的是「当前全部」，
      * 增量追加会让一个已被 server 删掉的工具永远留在只读标记里——而它的处理器已经不在了。
+     * <p>
+     * <b>替换是原子的</b>：新视图建好之后一条 {@code put} 顶掉旧的，因此不存在
+     * 「旧名字已删、新名字未进」的空窗（见 {@link #toolsByServer}）。
      *
      * @param serverId 服务标识
      * @param tools    新的工具清单
      */
     void replaceTools(String serverId, List<McpToolDefinition> tools) {
-        Set<String> previous = serverTools.get(serverId);
-        if (previous != null) {
-            for (String name : previous) {
-                readOnlyTools.remove(name);
+        Map<String, Boolean> flags = new LinkedHashMap<String, Boolean>();
+        for (McpToolDefinition tool : tools) {
+            flags.put(tool.qualifiedName(), Boolean.valueOf(tool.readOnly()));
+        }
+        install(serverId, flags);
+    }
+
+    /**
+     * 把某个 server 的工具集收窄到给定名字，其余摘掉。
+     * <p>
+     * 调用点是「注册失败之后」：名字与内置工具撞车、或与别的插件撞车时，内核注册不上去，
+     * 这个名字就不该再留在标记表里——留着它会让权限处理器把<b>内置工具</b>认成
+     * 「我们的写类工具」，于是内置工具被判成「未声明只读」要审批，而 {@code -cli}/{@code -server}
+     * 下 ASK 等于拒绝，内置工具直接不可用。
+     *
+     * @param serverId 服务标识
+     * @param keptNames 真正注册成功的工具展开名
+     */
+    void retainTools(String serverId, Set<String> keptNames) {
+        Map<String, Boolean> current = toolsByServer.get(serverId);
+        if (current == null) {
+            return;
+        }
+        Map<String, Boolean> kept = new LinkedHashMap<String, Boolean>();
+        for (Map.Entry<String, Boolean> entry : current.entrySet()) {
+            if (keptNames.contains(entry.getKey())) {
+                kept.put(entry.getKey(), entry.getValue());
             }
         }
-        Set<String> current = new LinkedHashSet<String>();
-        for (McpToolDefinition tool : tools) {
-            readOnlyTools.put(tool.qualifiedName(), Boolean.valueOf(tool.readOnly()));
-            current.add(tool.qualifiedName());
-        }
-        serverTools.put(serverId, Collections.unmodifiableSet(current));
+        install(serverId, kept);
+    }
+
+    /**
+     * 安装某个 server 的整份工具视图，并同步台账上的工具数。
+     *
+     * @param serverId 服务标识
+     * @param flags    工具展开名到只读标记的映射，构造方保证之后不再改动
+     */
+    private void install(String serverId, Map<String, Boolean> flags) {
+        Map<String, Boolean> view = Collections.unmodifiableMap(flags);
+        toolsByServer.put(serverId, view);
         ServerStatus status = statuses.get(serverId);
         if (status != null) {
-            status.toolCount = current.size();
+            status.toolCount = view.size();
         }
     }
 
     /**
      * 移除某个 server 的全部事实（连接断开时调用）。
+     * <p>
+     * <b>只由注册器调用</b>：标记表的生命周期与「谁注册了处理器」绑定，连接对象不碰它——
+     * 否则会出现「处理器还在、标记已经没了」的窗口，那一刻写类工具是不需要审批的。
      *
      * @param serverId 服务标识
      */
     void removeServer(String serverId) {
-        Set<String> previous = serverTools.remove(serverId);
-        if (previous != null) {
-            for (String name : previous) {
-                readOnlyTools.remove(name);
-            }
-        }
+        toolsByServer.remove(serverId);
     }
 
     /**
      * 判断一个工具展开名是否由本插件提供。
+     * <p>
+     * 遍历各 server 的视图而不是查一张反查表：server 数是个位数，而「按名字反查」需要一张
+     * 跨 server 的聚合表，每次替换都得原子重建它——为省几次 map 查找引入一个更容易写错的表不划算。
      *
      * @param qualifiedName 工具展开名，可为 {@code null}
      * @return 由本插件提供返回 {@code true}
      */
     boolean isMcpTool(String qualifiedName) {
-        return qualifiedName != null && readOnlyTools.containsKey(qualifiedName);
+        if (qualifiedName == null) {
+            return false;
+        }
+        for (Map<String, Boolean> flags : toolsByServer.values()) {
+            if (flags.containsKey(qualifiedName)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
      * 判断一个工具是否被用户声明为只读。
+     * <p>
+     * 多个 server 都提供同名工具时取<b>最严</b>：只要有一个把它算成写类，就按写类要审批。
      *
      * @param qualifiedName 工具展开名，可为 {@code null}
      * @return 用户声明为只读时返回 {@code true}；未知工具返回 {@code false}
      */
     boolean isReadOnly(String qualifiedName) {
-        return Boolean.TRUE.equals(readOnlyTools.get(qualifiedName));
+        if (qualifiedName == null) {
+            return false;
+        }
+        boolean claimed = false;
+        for (Map<String, Boolean> flags : toolsByServer.values()) {
+            Boolean readOnly = flags.get(qualifiedName);
+            if (readOnly == null) {
+                continue;
+            }
+            if (!readOnly.booleanValue()) {
+                return false;
+            }
+            claimed = true;
+        }
+        return claimed;
     }
 
     /**
@@ -167,8 +231,8 @@ final class McpRegistry {
      * @return 不可变集合，保证非 {@code null}
      */
     Set<String> toolsOf(String serverId) {
-        Set<String> tools = serverTools.get(serverId);
-        return tools == null ? Collections.<String>emptySet() : tools;
+        Map<String, Boolean> flags = toolsByServer.get(serverId);
+        return flags == null ? Collections.<String>emptySet() : flags.keySet();
     }
 
     /**
