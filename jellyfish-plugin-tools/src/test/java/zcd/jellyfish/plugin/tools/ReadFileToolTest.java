@@ -222,6 +222,25 @@ class ReadFileToolTest {
         assertTrue(summaryOf(result).endsWith("a.txt（空文件）"), summaryOf(result));
     }
 
+    @Test
+    @DisplayName("已经取消的令牌：一行都不读，摘要也标出已取消")
+    void handle_should_reportCancelled_whenTokenAlreadyCancelled() throws Exception {
+        // Given：文件有内容，但调用前用户就按了 Esc
+        Path file = write("a.txt", "第一行\n第二行");
+        ToolTestSupport.ManualToken token = new ToolTestSupport.ManualToken();
+        token.cancel();
+
+        // When
+        ToolCallResult result = ToolTestSupport.invokeResult(tool, args("path", file.toString()), token);
+
+        // Then：既不能悄悄把文件读出来（取消没生效），也不能报成「文件为空」（那是个事实断言）
+        String output = String.valueOf(result.getOutput());
+        assertTrue(output.contains("已取消"), output);
+        assertFalse(output.contains("第一行"), output);
+        assertFalse(output.contains("文件为空"), output);
+        assertTrue(summaryOf(result).endsWith("（已取消）"), summaryOf(result));
+    }
+
     /**
      * 在临时目录写入文件。
      *

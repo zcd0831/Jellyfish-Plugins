@@ -163,6 +163,57 @@ class ListDirToolTest {
         assertTrue(summaryOf(result).endsWith("（空目录）"), summaryOf(result));
     }
 
+    @Test
+    @DisplayName("条目数到顶就停，并明说「总数不是全量」——不能把没列全说成「共 N 项」")
+    void handle_should_reportTruncation_whenEntryLimitReached() throws Exception {
+        // Given：上限 3 项，目录里有 5 项
+        ListDirTool limited = new ListDirTool(3);
+        for (int i = 1; i <= 5; i++) {
+            write("f" + i + ".txt", "x");
+        }
+
+        // When
+        ToolCallResult result = invokeResult(limited, args("path", tempDir.toString()));
+
+        // Then：给出拿到的那 3 项，并说清上面的总数不是全量
+        String output = String.valueOf(result.getOutput());
+        assertTrue(output.contains("共 3 项"), output);
+        assertTrue(output.contains("只统计了前 3 项（目录可能还有更多）"), output);
+        assertTrue(summaryOf(result).contains("未列全"), summaryOf(result));
+    }
+
+    @Test
+    @DisplayName("条目数没到顶就不该报截断（正常目录一个字都不变）")
+    void handle_should_notReportTruncation_whenUnderLimit() throws Exception {
+        // Given：上限 3 项，目录里 2 项
+        ListDirTool limited = new ListDirTool(3);
+        write("a.txt", "x");
+        write("b.txt", "x");
+
+        // When
+        String output = invoke(limited, args("path", tempDir.toString()));
+
+        // Then
+        assertFalse(output.contains("只统计了前"), output);
+        assertTrue(output.contains("（共 2 项"), output);
+    }
+
+    @Test
+    @DisplayName("已经取消的令牌：一个条目都不列，且明说被取消（不能说成「空目录」）")
+    void handle_should_reportCancelled_whenTokenAlreadyCancelled() throws Exception {
+        // Given：目录里其实有东西，但调用前用户就按了 Esc
+        write("a.txt", "x");
+        ToolTestSupport.ManualToken token = new ToolTestSupport.ManualToken();
+        token.cancel();
+
+        // When
+        String output = ToolTestSupport.invoke(tool, args("path", tempDir.toString()), token);
+
+        // Then：「空目录」是个事实断言，而这次我们根本没看——错误地这么说会让模型以为目录是空的
+        assertTrue(output.contains("已被取消"), output);
+        assertFalse(output.contains("是空目录"), output);
+    }
+
     /**
      * 在临时目录写入文件。
      *

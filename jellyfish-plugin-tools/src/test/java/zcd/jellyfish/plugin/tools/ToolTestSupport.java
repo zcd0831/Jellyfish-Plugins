@@ -1,12 +1,14 @@
 package zcd.jellyfish.plugin.tools;
 
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.extension.CancellationToken;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
 import zcd.jellyfish.api.extension.ToolMetadata;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -61,6 +63,76 @@ final class ToolTestSupport {
      */
     static ToolCallResult invokeResult(PluginTool tool, Map<String, Object> arguments) throws Exception {
         return tool.handle(new ToolCallRequest(tool.name(), arguments));
+    }
+
+    /**
+     * 可手动取消的令牌。
+     * <p>
+     * 工具里的取消是协作式的（工具在循环里自查），因此用例要能「先让它开始、再取消」。
+     * 与 {@code jellyfish-plugin-shell} 的 IT 里那个同形：回调允许为空，取消后注册的回调立即执行
+     * （{@link CancellationToken} 的契约如此）。
+     *
+     * @author zcd
+     */
+    static final class ManualToken implements CancellationToken {
+
+        /** 是否已取消。 */
+        private final AtomicBoolean cancelled = new AtomicBoolean();
+
+        /** 已注册的取消回调，可为 {@code null}。 */
+        private volatile Runnable callback;
+
+        @Override
+        public boolean isCancelled() {
+            return cancelled.get();
+        }
+
+        @Override
+        public void onCancel(Runnable action) {
+            callback = action;
+            if (cancelled.get() && action != null) {
+                action.run();
+            }
+        }
+
+        /**
+         * 触发取消。
+         */
+        void cancel() {
+            cancelled.set(true);
+            Runnable action = callback;
+            if (action != null) {
+                action.run();
+            }
+        }
+    }
+
+    /**
+     * 以指定令牌调用工具，返回输出文本。
+     *
+     * @param tool      工具
+     * @param arguments 参数
+     * @param token     取消令牌
+     * @return 输出文本
+     * @throws Exception 工具抛出的异常
+     */
+    static String invoke(PluginTool tool, Map<String, Object> arguments, CancellationToken token)
+            throws Exception {
+        return String.valueOf(invokeResult(tool, arguments, token).getOutput());
+    }
+
+    /**
+     * 以指定令牌调用工具，返回完整结果（含元数据）。
+     *
+     * @param tool      工具
+     * @param arguments 参数
+     * @param token     取消令牌
+     * @return 工具结果
+     * @throws Exception 工具抛出的异常
+     */
+    static ToolCallResult invokeResult(PluginTool tool, Map<String, Object> arguments, CancellationToken token)
+            throws Exception {
+        return tool.handle(new ToolCallRequest(tool.name(), arguments, null, token, null));
     }
 
     /**

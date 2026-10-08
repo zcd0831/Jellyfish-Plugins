@@ -1,6 +1,7 @@
 package zcd.jellyfish.plugin.tools;
 
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.extension.CancellationToken;
 import zcd.jellyfish.api.extension.ToolCallRequest;
 import zcd.jellyfish.api.extension.ToolCallResult;
 import zcd.jellyfish.api.extension.ToolDescriptor;
@@ -30,6 +31,10 @@ import java.util.Arrays;
  * 改用 {@code grep_files}）都能让它拿到有用的东西。这与「多行超预算就分页」不矛盾：
  * 那种情形下内容仍在文件里，可以按 offset 续读。
  * <p>
+ * <b>行循环里会查取消令牌</b>（{@link ToolCallRequest#getCancellationToken()}）：本工具读的量本来就被
+ * {@code max_bytes} 限制住，加这一查不是为了防它跑太久，而是为了让「按 Esc 之后有反应」在三个文件工具上
+ * 一致——用户不该需要记住「哪个工具按 Esc 有用、哪个没用」。
+ * <p>
  * 无状态，可安全复用。
  *
  * @author zcd
@@ -38,6 +43,14 @@ public final class ReadFileTool implements PluginTool {
 
     /** 缺省最大读取字节数。 */
     private static final int DEFAULT_MAX_BYTES = 64 * 1024;
+
+    /**
+     * 每读多少行查一次取消。
+     * <p>
+     * 与 {@code grep_files} 取同一个量级，理由也一样：检查本身是一次 volatile 读，比扫这些行便宜得多。
+     * 本工具真正的流量上限由 {@code max_bytes} 兜着，这一查只为让 Esc 在三个文件工具上表现一致。
+     */
+    private static final int CANCEL_CHECK_LINES = 8192;
 
     /** 工具名片，无状态因此整个插件共用一个实例。 */
     private static final ToolDescriptor DESCRIPTOR = new ToolDescriptor(
@@ -77,7 +90,7 @@ public final class ReadFileTool implements PluginTool {
             throw new JellyfishException("max_bytes 必须大于 0: " + maxBytes);
         }
         requireRegularFile(file);
-        ReadOutcome outcome = readLines(file, offset, limit, maxBytes);
+        ReadOutcome outcome = readLines(file, offset, limit, maxBytes, request.getCancellationToken());
         return new ToolCallResult(name(), outcome.text, ToolSummaries.of(outcome.summary));
     }
 
@@ -106,19 +119,31 @@ public final class ReadFileTool implements PluginTool {
      * @param offset   起始行号，从 1 开始
      * @param limit    最多读取行数，{@code 0} 表示不限
      * @param maxBytes 最多读取字节数（按 UTF-8 计）
+     * @param token    取消令牌，不可为 {@code null}
      * @return 回灌文本与展示摘要
      * @throws JellyfishException 起始行超出文件行数或读取失败时抛出
      */
-    private static ReadOutcome readLines(Path file, int offset, int limit, int maxBytes) {
+    private static ReadOutcome readLines(Path file, int offset, int limit, int maxBytes,
+                                         CancellationToken token) {
         StringBuilder text = new StringBuilder();
         int lineNumber = 0;
         int taken = 0;
         long usedBytes = 0L;
         boolean moreContent = false;
+        boolean cancelled = false;
+        if (token.isCancelled()) {
+            // 开始前就取消了：一行都不读。行循环里的检查是每 8192 行一次，短文件根本到不了那次检查，
+            // 因此这一句不是冗余——没有它，「取消」在小文件上会表现得像没取消
+            return new ReadOutcome("[已取消：读取被中止，一行都没读到]", ToolPaths.display(file) + "（已取消）");
+        }
         try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             String line;
             while ((line = reader.readLine()) != null) {
                 lineNumber++;
+                if (lineNumber % CANCEL_CHECK_LINES == 0 && token.isCancelled()) {
+                    cancelled = true;
+                    break;
+                }
                 if (lineNumber < offset) {
                     continue;
                 }
@@ -147,6 +172,16 @@ public final class ReadFileTool implements PluginTool {
             }
         } catch (IOException e) {
             throw new JellyfishException("读取文件失败: " + ToolPaths.display(file) + " (" + e.getMessage() + ')', e);
+        }
+        if (cancelled) {
+            // 取消时把已经读到的部分交出去：那部分是真的，丢掉它只会让用户白等一场；
+            // 但必须说清它是残缺的，否则模型会把「读到这里为止」当成「文件就到这里」
+            if (taken == 0) {
+                return new ReadOutcome("[已取消：读取被中止，一行都没读到]", ToolPaths.display(file) + "（已取消）");
+            }
+            text.append("\n[已取消：读取被中止，以上是已读到的 ").append(taken).append(" 行]");
+            return new ReadOutcome(text.toString(),
+                    ToolPaths.display(file) + ':' + offset + '-' + (offset + taken - 1) + "（已取消）");
         }
         if (taken == 0) {
             if (lineNumber == 0) {

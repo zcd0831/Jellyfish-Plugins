@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.api.extension.CancellationToken;
 import zcd.jellyfish.api.extension.ToolCallResult;
 
 import java.io.IOException;
@@ -11,6 +12,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -36,6 +38,12 @@ class GrepFilesToolTest {
     /** 每个用例独立的临时目录。 */
     @TempDir
     Path tempDir;
+
+    /**
+     * 探针文件的行数：要盖过行循环里那一次取消检查
+     * （见 {@code GrepFilesTool.CANCEL_CHECK_LINES}）。
+     */
+    private static final int CANCEL_PROBE_LINES = 9000;
 
     /** 被测工具。 */
     private final GrepFilesTool tool = new GrepFilesTool();
@@ -227,6 +235,135 @@ class GrepFilesToolTest {
         ToolCallResult result = invokeResult(tool, args("pattern", "nope", "path", tempDir.toString()));
 
         assertTrue(summaryOf(result).endsWith(" · 无匹配"), summaryOf(result));
+    }
+
+    @Test
+    @DisplayName("访问文件数到顶就停，且明说「未扫完整棵树」——不能把没扫完说成没有匹配")
+    void handle_should_stopAtFileLimit_whenTreeIsTooBig() throws Exception {
+        // Given：上限 2 个文件，树里有 3 个（都命中），因此一定扫不完
+        GrepFilesTool limited = new GrepFilesTool(2);
+        write("a.txt", "hit");
+        write("b.txt", "hit");
+        write("c.txt", "hit");
+
+        // When
+        ToolCallResult result = invokeResult(limited, args("pattern", "hit", "path", tempDir.toString()));
+
+        // Then：结果照常给出，但必须说清是「没扫完」而不是「就这么些」
+        String output = String.valueOf(result.getOutput());
+        assertTrue(output.contains("未扫完整棵树"), output);
+        assertFalse(output.contains("没有匹配到任何内容"), output);
+        assertTrue(summaryOf(result).contains("未扫完"), summaryOf(result));
+    }
+
+    @Test
+    @DisplayName("一个文件都没扫完时，也不能说「没有匹配到任何内容」")
+    void handle_should_notClaimNoMatch_whenFileLimitHitBeforeAnyMatch() throws Exception {
+        // Given：上限 1，且第一个文件不命中——「没扫完」与「没有」必须分开说
+        GrepFilesTool limited = new GrepFilesTool(1);
+        write("a.txt", "nothing here");
+        write("b.txt", "hit");
+
+        // When
+        String output = invoke(limited, args("pattern", "hit", "path", tempDir.toString()));
+
+        // Then
+        assertFalse(output.contains("没有匹配到任何内容"), output);
+        assertTrue(output.contains("未扫完整棵树"), output);
+    }
+
+    @Test
+    @DisplayName("文件数上限之内搜完了就不该报「未扫完」")
+    void handle_should_notReportFileLimit_whenTreeFullyScanned() throws Exception {
+        // Given：上限 3，树里只有 2 个文件
+        GrepFilesTool limited = new GrepFilesTool(3);
+        write("a.txt", "hit");
+        write("b.txt", "hit");
+
+        // When
+        String output = invoke(limited, args("pattern", "hit", "path", tempDir.toString()));
+
+        // Then
+        assertFalse(output.contains("未扫完整棵树"), output);
+        assertFalse(output.contains("已截断"), output);
+    }
+
+    @Test
+    @DisplayName("已经取消的令牌：不搜，并说清「不代表真的没有」")
+    void handle_should_stopImmediately_whenAlreadyCancelled() throws Exception {
+        // Given：调用前用户就按了 Esc
+        write("a.txt", "hit");
+        ToolTestSupport.ManualToken token = new ToolTestSupport.ManualToken();
+        token.cancel();
+
+        // When
+        String output = ToolTestSupport.invoke(tool, args("pattern", "hit", "path", tempDir.toString()), token);
+
+        // Then：绝不能输出「没有匹配到任何内容」——那句话会让模型以为搜索真的做完了
+        assertTrue(output.contains("已取消"), output);
+        assertFalse(output.contains("没有匹配到任何内容"), output);
+    }
+
+    @Test
+    @DisplayName("搜到一半被取消：结果带回去，但明说「可能还有遗漏」")
+    void handle_should_keepPartialMatches_whenCancelledMidway() throws Exception {
+        // Given：一个大到足以走到行循环里的取消检查的文件（每 8192 行查一次），
+        // 上限都调大，确保截断不会先发生；令牌在第 2 次被问到时开始取消
+        StringBuilder content = new StringBuilder();
+        for (int i = 0; i < CANCEL_PROBE_LINES; i++) {
+            content.append("hit\n");
+        }
+        write("big.txt", content.toString());
+        Path big = tempDir.resolve("big.txt");
+        CancellingToken token = new CancellingToken(2);
+
+        // When：直接指向那个文件（单文件搜索的检查点顺序是「先文件边界、再每 8192 行一次」）
+        ToolCallResult result = invokeResult(tool, args("pattern", "hit", "path", big.toString(),
+                "max_results", CANCEL_PROBE_LINES, "max_bytes", 8 * 1024 * 1024, "max_line_chars", 200), token);
+
+        // Then：已找到的那些照常回灌（不白等一场），同时说清是被中止的
+        String output = String.valueOf(result.getOutput());
+        assertTrue(output.contains("big.txt:1:hit"), output);
+        assertTrue(output.contains("已取消"), output);
+        assertTrue(output.contains("可能还有遗漏"), output);
+    }
+
+    /**
+     * 问到第 N 次时开始返回「已取消」的令牌。
+     * <p>
+     * <b>为什么要按调用次数触发</b>：取消本身是异步的，而用例需要「扫到一半」这个确定时刻。
+     * 工具的检查点顺序是固定的（先文件边界、再每 8192 行一次），因此「第几次被问到」就是一个
+     * 可比时间的刻度。代价是这条用例依赖检查点的位置——但那正是它要守的东西：
+     * 行循环里若不再检查取消，它会红。
+     *
+     * @author zcd
+     */
+    private static final class CancellingToken implements CancellationToken {
+
+        /** 第几次被问到时开始取消。 */
+        private final int cancelAtQuery;
+
+        /** 已被问过几次。 */
+        private final AtomicInteger queries = new AtomicInteger();
+
+        /**
+         * 构造令牌。
+         *
+         * @param cancelAtQuery 第几次被问到时开始取消
+         */
+        CancellingToken(int cancelAtQuery) {
+            this.cancelAtQuery = cancelAtQuery;
+        }
+
+        @Override
+        public boolean isCancelled() {
+            return queries.incrementAndGet() >= cancelAtQuery;
+        }
+
+        @Override
+        public void onCancel(Runnable callback) {
+            // 本用例只用「拉模型」这一半：工具在循环里自查，不需要推送
+        }
     }
 
     /**
