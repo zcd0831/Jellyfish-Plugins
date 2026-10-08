@@ -50,9 +50,20 @@ final class PluginConfig {
      * 默认剔除的环境变量名模式（大小写不敏感的通配匹配）。
      * <p>
      * 这些名字覆盖了绝大多数凭据载体，而它们的值一旦进入工具输出就会被送到远端 LLM。
+     * <p>
+     * <b>「带 `_` 的写法」不是笔误</b>：{@code *_PAT*} 而不是 {@code *PAT*}——后者会命中
+     * {@code PATH}，而 {@code PATH} 一旦被剔掉，几乎所有命令都变成 command not found；
+     * {@code *_PWD} 而不是 {@code *PWD*}——后者会命中 shell 自带的 {@code PWD}。
+     * 通配模式是字面量匹配，没有「排除某个词」的写法，因此只能在这里把边界写准。
+     * <p>
+     * <b>{@code *AUTH*} 与 {@code *PROXY*} 是有代价的取舍</b>：前者会连带剔掉
+     * {@code SSH_AUTH_SOCK}（{@code git clone git@...} 拿不到 agent），后者会让 {@code curl}
+     * 之类的工具不再走代理（{@code HTTP_PROXY} 的值里常内嵌 {@code user:pass@}）。
+     * 两者都可用 {@code environment} 段显式注入回来——剔除是默认姿势，不是硬规则。
      */
     static final List<String> DEFAULT_SENSITIVE_PATTERNS = Collections.unmodifiableList(Arrays.asList(
-            "*KEY*", "*TOKEN*", "*SECRET*", "*PASSWORD*", "*CREDENTIAL*"));
+            "*KEY*", "*TOKEN*", "*SECRET*", "*PASSWORD*", "*CREDENTIAL*",
+            "*_PAT*", "*AUTH*", "*NETRC*", "*PROXY*", "*PASSPHRASE*", "*_PWD"));
 
     /** 墙上时钟超时（秒）。 */
     private final int timeoutSeconds;

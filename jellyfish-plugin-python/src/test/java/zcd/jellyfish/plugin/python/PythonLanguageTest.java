@@ -28,9 +28,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("Python 语言适配")
 class PythonLanguageTest {
 
-    /** 白名单的独立副本：与实现各写一份，改宽实现会被这条用例挡住。 */
+    /**
+     * 白名单的独立副本：与实现各写一份，改宽实现会被这条用例挡住。
+     * <p>
+     * {@code PYTHONHOME} 刻意不在其中：它换的是整个标准库的位置，而解释器已经是显式给绝对路径的
+     * {@code pythonPath}。{@code PYTHONPATH} 则留着——它是用户脚本 import 到自己依赖的必要条件
+     * （网关自己的 SDK 由 {@code gateway.py} 算路径插进 {@code sys.path}，不依赖它）。
+     */
     private static final Set<String> EXPECTED_WHITELIST = new HashSet<String>(Arrays.asList(
-            "PATH", "HOME", "LANG", "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"));
+            "PATH", "HOME", "LANG", "PYTHONPATH", "VIRTUAL_ENV"));
 
     @Test
     @DisplayName("语言标识与人读名应稳定")
@@ -57,6 +63,13 @@ class PythonLanguageTest {
         List<String> command = new PythonLanguage("python3").startCommand(gatewayDirectory);
 
         assertEquals(Arrays.asList("python3", "/tmp/jellyfish-gateway/script/gateway.py"), command);
+    }
+
+    @Test
+    @DisplayName("白名单应恰好是这一份：改宽或改窄都必须是一次有意识的选择")
+    void envWhitelist_should_matchExactly() {
+        // Then：等值断言与机器环境无关，因此「往白名单里加一个键」必然被挡下
+        assertEquals(EXPECTED_WHITELIST, new HashSet<String>(PythonLanguage.ENV_WHITELIST));
     }
 
     @Test

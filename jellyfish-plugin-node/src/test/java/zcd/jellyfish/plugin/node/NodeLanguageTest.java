@@ -32,9 +32,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("Node 语言适配")
 class NodeLanguageTest {
 
-    /** 白名单的独立副本：与实现各写一份，改宽实现会被这条用例挡住。 */
+    /**
+     * 白名单的独立副本：与实现各写一份，改宽实现会被这条用例挡住。
+     * <p>
+     * {@code NODE_OPTIONS} 刻意不在其中：它改的是加载器行为（{@code --require} 能在网关脚本之前
+     * 加载任意模块），不是「去哪找依赖」。它能通过 {@code NODE_PATH} / {@code NPM_CONFIG_PREFIX} 满足，
+     * 而那两个才是脚本 require 到自己依赖所必需的。
+     */
     private static final Set<String> EXPECTED_WHITELIST = new HashSet<String>(Arrays.asList(
-            "PATH", "HOME", "LANG", "NODE_PATH", "NODE_OPTIONS", "NODE_ENV", "NPM_CONFIG_PREFIX"));
+            "PATH", "HOME", "LANG", "NODE_PATH", "NODE_ENV", "NPM_CONFIG_PREFIX"));
 
     @Test
     @DisplayName("语言标识与人读名应稳定")
@@ -75,6 +81,13 @@ class NodeLanguageTest {
         assertTrue(resources.contains("script/dump_manifest.js"), resources.toString());
         // 入口必须是清单里的一项，否则「抽出来的资源」与「启动的命令」会对不上
         assertTrue(resources.get(0).endsWith("gateway.js"), resources.toString());
+    }
+
+    @Test
+    @DisplayName("白名单应恰好是这一份：改宽或改窄都必须是一次有意识的选择")
+    void envWhitelist_should_matchExactly() {
+        // Then：等值断言与机器环境无关，因此「往白名单里加一个键」必然被挡下
+        assertEquals(EXPECTED_WHITELIST, new HashSet<String>(NodeLanguage.ENV_WHITELIST));
     }
 
     @Test

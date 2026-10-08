@@ -134,7 +134,7 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
 | `timeoutSeconds` | `120` | 命令最多允许跑多久；单次调用可用 `timeout_seconds` 参数覆盖，并被 `maxTimeoutSeconds`（`1800`）钳制。**不支持「不超时」** |
 | `maxTimeoutSeconds` | `1800` | 单次调用能声明的超时上限 |
 | `idleTimeoutSeconds` | `0`（关闭） | 连续多久没有任何输出就判定卡住。「墙钟」回答「最多跑多久」，它回答「多久没动静就当死了」。**模型不能设置它**，它是用户的环境策略 |
-| `environment` | `{}` | 额外注入或覆盖的环境变量。子进程**继承**父进程环境，但名字匹配 `*KEY*` / `*TOKEN*` / `*SECRET*` / `*PASSWORD*` / `*CREDENTIAL*` 的变量**不会**传下去（工具输出会送到远端 LLM）；另有一组防挂死默认值（`PAGER=cat`、`GIT_PAGER=cat`、`GIT_TERMINAL_PROMPT=0`、`TERM=dumb`、`NO_COLOR=1`、`DEBIAN_FRONTEND=noninteractive`），这里写的值可以盖掉默认值；`sensitivePatterns` 用于**追加**剔除模式 |
+| `environment` | `{}` | 额外注入或覆盖的环境变量。子进程**继承**父进程环境，但名字匹配 `*KEY*` / `*TOKEN*` / `*SECRET*` / `*PASSWORD*` / `*CREDENTIAL*` / `*_PAT*` / `*AUTH*` / `*NETRC*` / `*PROXY*` / `*PASSPHRASE*` / `*_PWD` 的变量**不会**传下去（工具输出会送到远端 LLM）；其中 `*AUTH*` 会让 `SSH_AUTH_SOCK`、`*PROXY*` 会让 `HTTP_PROXY` 也一并被挡，需要时在这里写回来。另有一组防挂死默认值（`PAGER=cat`、`GIT_PAGER=cat`、`GIT_TERMINAL_PROMPT=0`、`TERM=dumb`、`NO_COLOR=1`、`DEBIAN_FRONTEND=noninteractive`），这里写的值可以盖掉默认值；`sensitivePatterns` 用于**追加**剔除模式 |
 | `allowedCommands` | `[]` | **非空即默认拒绝**的准入白名单，支持 `git status` 这种两 token 形式（单 token 覆盖该命令的全部子命令）。**它只管准入，不管审批**，也**不受 `commandPolicy.enabled` 影响** |
 | `commandPolicy.enabled` | `true` | 只关**分类器**这个便利机制。`false` 时只读表、重定向/命令替换检查与「其余命令问人」都不再表态，但白名单、可信表、拒绝形状照旧生效 |
 | `commandPolicy.trustedCommands` | `[]` | **可信命令表，命中即免审批**。粒度与白名单一致 |
@@ -537,7 +537,7 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 | 字段 | 缺省 | 说明 |
 | --- | --- | --- |
 | `servers[].id` | — | server 标识，工具名前缀用它 |
-| `servers[].command` / `args` / `env` | — | 起 server 子进程的方式 |
+| `servers[].command` / `args` / `env` | — | 起 server 子进程的方式。**`env` 是拿到环境变量的唯一通道**：子进程只继承 `PATH` / `HOME` / `LANG` / `LC_*` / `TMPDIR` / `TEMP` / `TMP` / `USER` / `LOGNAME` / `SHELL`（Windows 另加 `SystemRoot` / `PATHEXT` / `ComSpec` / `windir`），宿主 JVM 里那些 provider 密钥不会跟过去 |
 | `servers[].callTimeoutSeconds` | `60` | 单次工具调用的超时 |
 | `servers[].readOnlyTools` | `[]` | **本插件审批策略**用的只读名单（与 plan 插件的同名键无关） |
 | `askWriteTools` | `true` | 写类工具是否要人工审批 |
@@ -558,6 +558,13 @@ description: 处理 PDF 时使用：拆分、合并、提取文本
 - **二进制内容落盘**：server 返回的图片 / 音频写到系统临时目录下的 `jellyfish-plugin-mcp/<pid>/`，
   回灌给模型的只是一个路径（base64 塞进上下文会让一次截图就撑满窗口）。插件停止时整个目录会被删掉。
 - **`-cli` / `-server` 下没有审批者**：`ASK` 等于拒绝，因此这两个模式里写类 MCP 工具实际不可用（与 `shell` 同理）。
+- **子进程的环境是白名单**：只继承运行一个进程真正需要的那几个（见上表的 `env` 一行）。
+  宿主 JVM 里有各 provider 的 API key，而对面是个不受信的第三方进程——「继承」意味着它们会一起过去。
+  要传别的东西（含密钥）就写在 `env` 段里：**显式即允许**。
+- **启动日志里的参数值会遮蔽**：`--token sk-xxx`、`--api-key=...` 打成 `***`；`--path /tmp` 这类照旧打印，
+  因为排查「server 起不来」时它正是要看的东西。识别只按旗标名（`KEY`/`TOKEN`/`SECRET`/`PASSWORD`/
+  `CREDENTIAL`/`PASSPHRASE`/`AUTH`），不按值的样子猜——把密钥塞进 `--header "Authorization: Bearer x"`
+  这种普通旗标的值里，这里认不出来。
 
 | 命令 | 说明 |
 | --- | --- |
@@ -668,6 +675,9 @@ PF4J 插件，能力边界由进程隔离 + 静态清单 + 熔断三层承担。
 
 - **密钥不能靠环境变量传给脚本**：脚本进程的环境是严格白名单（仅解释器运行与依赖解析必需的那几个），
   这是有意的安全取舍。与 Java 插件同一条密钥通道是 `${ENV}` 插值。
+  白名单里**没有加载器开关**：`NODE_OPTIONS`（`--require` 能在网关之前加载任意模块）与 `PYTHONHOME`
+  （换掉整个标准库的位置）都不透传；`NODE_PATH` / `PYTHONPATH` / `VIRTUAL_ENV` 保留，
+  它们是「去哪找依赖」，是脚本 require / import 到自己依赖的必要条件。
 
   > ⚠️ **`${ENV}` 是硬失败，不是「取不到就留空」**：配置里写了 `${SOME_KEY}` 而环境变量没设，
   > 整个进程**启动即失败**（`environment variable is not set: SOME_KEY`）。确实要用的密钥才写

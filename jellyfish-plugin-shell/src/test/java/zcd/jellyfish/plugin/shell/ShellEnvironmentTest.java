@@ -26,6 +26,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ShellEnvironmentTest {
 
     @Test
+    @DisplayName("内置剔除表应恰好是这一份：它是「只看名单不看值」的，少一条就是漏一个族")
+    void defaultSensitivePatterns_should_matchExactly() {
+        // Then：等值断言（含顺序）挡住「把 *_PAT* 手滑写成 *PAT*」这类改动——
+        // 那种改动不会让任何一条功能用例变红，却会让 PATH 被剥掉
+        assertEquals(Arrays.asList("*KEY*", "*TOKEN*", "*SECRET*", "*PASSWORD*", "*CREDENTIAL*",
+                "*_PAT*", "*AUTH*", "*NETRC*", "*PROXY*", "*PASSPHRASE*", "*_PWD"),
+                PluginConfig.DEFAULT_SENSITIVE_PATTERNS);
+    }
+
+    @Test
     @DisplayName("默认剔除名字里带凭据关键词的环境变量")
     void build_should_drop_sensitive_variables() {
         Map<String, String> parent = new HashMap<String, String>();
@@ -44,6 +54,49 @@ class ShellEnvironmentTest {
                 "MY_CREDENTIAL", "SOME_KEY")) {
             assertNull(environment.get(name), name + " 不该被传给子进程");
         }
+    }
+
+    @Test
+    @DisplayName("易漏的几族凭据也要剔除：PAT、AUTH、NETRC、代理、口令短语、数据库口令")
+    void build_should_drop_lessObviousCredentialFamilies() {
+        // Given：这些都不含 KEY/TOKEN/SECRET/PASSWORD/CREDENTIAL，旧表全放过
+        Map<String, String> parent = new HashMap<String, String>();
+        parent.put("GITHUB_PAT", "泄漏");
+        parent.put("SSH_AUTH_SOCK", "/tmp/agent.sock");
+        parent.put("NETRC", "/home/u/.netrc");
+        parent.put("HTTP_PROXY", "http://user:pass@proxy:8080");
+        parent.put("HTTPS_PROXY", "http://user:pass@proxy:8080");
+        parent.put("GPG_PASSPHRASE", "泄漏");
+        parent.put("MYSQL_PWD", "泄漏");
+
+        Map<String, String> environment = ShellEnvironment.build(parent,
+                ShellEnvironment.sensitivePatterns(null), null);
+
+        for (String name : Arrays.asList("GITHUB_PAT", "SSH_AUTH_SOCK", "NETRC", "HTTP_PROXY",
+                "HTTPS_PROXY", "GPG_PASSPHRASE", "MYSQL_PWD")) {
+            assertNull(environment.get(name), name + " 不该被传给子进程");
+        }
+    }
+
+    @Test
+    @DisplayName("名字里带关键词但不是凭据的变量必须留住——把 PATH 剔掉等于几乎每条命令都 command not found")
+    void build_should_keepLookalikeNamesThatCarryNoSecret() {
+        // Given：*PAT* 会命中 PATH、*PWD* 会命中 shell 自带的 PWD，因此通配模式只能写成 *_PAT* / *_PWD
+        Map<String, String> parent = new HashMap<String, String>();
+        parent.put("PATH", "/usr/bin:/bin");
+        parent.put("PWD", "/home/u");
+        parent.put("OLDPWD", "/home");
+        parent.put("CLASSPATH", "/tmp/classes");
+        parent.put("NPM_CONFIG_PREFIX", "/usr/local");
+
+        Map<String, String> environment = ShellEnvironment.build(parent,
+                ShellEnvironment.sensitivePatterns(null), null);
+
+        assertEquals("/usr/bin:/bin", environment.get("PATH"));
+        assertEquals("/home/u", environment.get("PWD"));
+        assertEquals("/home", environment.get("OLDPWD"));
+        assertEquals("/tmp/classes", environment.get("CLASSPATH"));
+        assertEquals("/usr/local", environment.get("NPM_CONFIG_PREFIX"));
     }
 
     @Test

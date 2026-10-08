@@ -23,6 +23,10 @@ import java.util.Map;
  * 与 npm 全局目录这类路径。于是取交集：只透传「运行时能跑起来 + 用户脚本能 require 到自己的依赖」
  * 所必需的那几个，不把 JVM 进程的整个环境（可能含密钥）复制给一个不受信的子进程。
  * <p>
+ * <b>{@code NODE_OPTIONS} 刻意不在白名单里</b>：它改的不是「去哪找依赖」而是<b>加载器行为</b>——
+ * {@code --require} 能在网关脚本之前加载任意模块，等于绕过「这个脚本在不在清单里」这条约束。
+ * 父子进程共享同一个环境，但「共享」不等于「都要跟过去」：它是宿主进程的旋钮，不是子进程的。
+ * <p>
  * <b>不需要 Python 那样的「关缓冲」开关</b>：Python 的 {@code PYTHONUNBUFFERED} 是因为它默认
  * 对非终端 stdout 做块缓冲，会让协议帧滞留在缓冲区里、双方互相等死。Node 侧不用环境变量解决：
  * 网关与 worker 都把 {@code process.stdout.write} 换成了同步写入（见各自的 {@code script/*.js}），
@@ -37,9 +41,15 @@ final class NodeLanguage implements ScriptLanguage {
     /** 语言标识。 */
     static final String ID = "node";
 
-    /** 透传的环境变量名（精确匹配）。 */
-    private static final List<String> ENV_WHITELIST = Collections.unmodifiableList(Arrays.asList(
-            "PATH", "HOME", "LANG", "NODE_PATH", "NODE_OPTIONS", "NODE_ENV", "NPM_CONFIG_PREFIX"));
+    /**
+     * 透传的环境变量名（精确匹配）。
+     * <p>
+     * 包私有而不是私有：语言适配的白名单是「一旦放宽就会静默出错」的约定，测试要能把它<b>整份</b>
+     * 对一遍。若只靠「遍历当前进程的环境变量看有没有漏网的」，测试机器上没设那个变量就永远绿——
+     * 那种守卫挡不住「往白名单里加一个键」。
+     */
+    static final List<String> ENV_WHITELIST = Collections.unmodifiableList(Arrays.asList(
+            "PATH", "HOME", "LANG", "NODE_PATH", "NODE_ENV", "NPM_CONFIG_PREFIX"));
 
     /** 透传的环境变量名前缀（区域设置有多套键，逐个列会漏）。 */
     private static final String ENV_WHITELIST_PREFIX = "LC_";
