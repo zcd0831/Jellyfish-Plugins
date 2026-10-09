@@ -213,6 +213,9 @@ class Gateway {
         this.eventsPushed = 0;
         this.eventsDropped = 0;
         this.eventsEchoed = 0;
+        // 是否已进入收尾：一进入就不再往宿主写协议帧（见 writeJava）。
+        // 与 python 侧同款——收尾必须能做完，通知可以丢
+        this.closing = false;
     }
 
     // ------------------------------------------------------------ 生命周期
@@ -301,6 +304,11 @@ class Gateway {
      * @returns {Promise<void>} 全部 worker 处理完之后完成的 promise
      */
     async shutdown() {
+        // 与 python 侧同款的取舍：**收尾阶段一帧都不往宿主写**。收尾的唯一职责是把自己收干净
+        // （杀掉 worker、删 PID 文件），而此刻宿主可能已经关闭、或者它的读取线程早就出事了——
+        // 写一帧就可能永久阻塞，把「杀 worker」一起拖死，留下的正是孤儿。
+        // 代价是丢掉几条收尾期的 worker_state 通知，而正在关闭的宿主本来也不会去看它们
+        this.closing = true;
         for (const state of this.states.values()) {
             this.killWorker(state, '网关退出');
         }
@@ -1378,6 +1386,13 @@ class Gateway {
      * @param {object} message 帧
      */
     writeJava(message) {
+        if (this.closing) {
+            // 收尾阶段不写帧：宿主可能已经不在读了，而这里**没有**超时可设——
+            // `fs.writeSync` 是同步阻塞写，JS 层没有任何办法把它中断（这是两个语言之间
+            // 一处真实的差异：python 侧的信号处理器能把阻塞的写就地作废，node 侧不能）。
+            // 因此收尾路径上的通知一律不写，靠宿主自己的两段式关闭兜底
+            return;
+        }
         let data = wire.encode(message);
         if (data.length > wire.MAX_FRAME_BYTES) {
             data = wire.encode({

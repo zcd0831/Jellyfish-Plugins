@@ -74,6 +74,20 @@ MIN_INITIALIZE_SECONDS = 10.0
 ECHO_MEMORY = 256
 
 
+class _SignalExit(Exception):
+    """终止信号：用来把主循环从**阻塞的调用**里拽出来。
+
+    为什么需要它（而不是「处理器里只翻标志」那条常见做法）：宿主停止读我们的帧时
+    （它自己的读取线程出事、或者进程被挂起），网关正卡在把一帧写进 stdout 的那次 ``os.write``
+    里，而 PEP 475 规定「被信号打断的 syscall 在处理器返回后自动重试」——只翻标志的话
+    那次写会接着阻塞，收尾逻辑永远轮不到跑，连 SIGTERM 都停不住它。
+    在处理器里抛异常，是让那次阻塞的调用就地作废的唯一办法（异常落在主线程当前执行的那一行）。
+
+    它**不是** ``OSError`` 的子类：网关里到处都有 ``except OSError``（写失败、EINTR 那些），
+    继承 OSError 会被它们顺手吞掉，那正好会让「拽出来」失效。
+    """
+
+
 class Worker(object):
     """一个正在运行的 worker 进程。
 
@@ -165,25 +179,34 @@ class Gateway(object):
         self.events_pushed = 0
         self.events_dropped = 0
         self.events_echoed = 0
+        # 是否已进入收尾：一进入就不再往宿主写协议帧（见 _write_java），
+        # 以及那条「不再写帧」的提示是否已经打过（避免刷日志）
+        self.closing = False
+        self.closing_notified = False
 
     # ------------------------------------------------------------ 生命周期
 
     def run(self):
         """进入事件循环。"""
         self._install_signals()
-        while self.running:
-            self._expire()
-            self._pump_all()
-            self._reap()
-            self._escalate()
-            self._check_worker_busy()
-            self._check_idle()
-            self._wait()
+        try:
+            while self.running:
+                self._expire()
+                self._pump_all()
+                self._reap()
+                self._escalate()
+                self._check_worker_busy()
+                self._check_idle()
+                self._wait()
+        except _SignalExit:
+            # 终止信号把某次阻塞的调用打断了：收尾照走。收尾是唯一会清理 worker 的地方，
+            # 因此这里 **吞掉异常继续往下**，而不是直接 return
+            pass
         self._shutdown()
         return 0
 
     def _install_signals(self):
-        """装信号处理：只翻标志，实际动作留给循环。"""
+        """装信号处理：翻标志 + 把主循环从阻塞的调用里拽出来（见 _on_signal）。"""
         self.wakeup_r, self.wakeup_w = os.pipe()
         # 两端都设非阻塞：读端若阻塞，排空唤醒管道时会把整个事件循环卡住
         os.set_blocking(self.wakeup_r, False)
@@ -194,11 +217,25 @@ class Gateway(object):
                 signal.signal(getattr(signal, name), self._on_signal)
 
     def _on_signal(self, number, _frame):
-        """信号处理器：只记录退出原因。"""
+        """信号处理器：记录退出原因，并把主循环从阻塞调用里**抛**出来。
+
+        这里刻意抛异常，与「处理器里只翻标志」的常见写法不同，理由是一条实打实的死锁：
+        宿主停止读我们的帧时（它自己的读取线程出事、或者进程被挂起），网关正卡在把一帧写进
+        stdout 的那次 ``os.write`` 里。PEP 475 规定「被信号打断的 syscall 在处理器返回后
+        **自动重试**」，于是只翻标志的话那次写会接着阻塞下去——收尾逻辑永远轮不到跑，
+        连 SIGTERM 都停不住它，只能等宿主强杀（然后留下 worker 让孤儿看门狗去收）。
+
+        代价是异常可能落在主循环的任意一行上，因此**只在第一次**终止信号时抛：
+        收尾路径上再来信号就只翻标志——那时再抛会把 ``_shutdown`` 自己打断，
+        反而把 worker 留在身后。
+        """
         if number == getattr(signal, "SIGCHLD", None):
             return
+        first = self.running
         self.running = False
         self.exit_reason = "signal %d" % number
+        if first:
+            raise _SignalExit(self.exit_reason)
 
     def _shutdown(self):
         """收尾：杀掉全部 worker 再退出。
@@ -206,6 +243,9 @@ class Gateway(object):
         worker 是网关的子进程，因此这一步必须由网关做——宿主不知道 worker 的存在，
         也不该知道（``waitpid`` 回收、PID 表维护都留在有父子关系的进程里）。
         """
+        # 第一件事就是不再写协议帧：收尾里那些通知（worker 退出、状态快照）都可能卡在
+        # 「宿主不读」上，而它们一卡，下面的杀 worker 就再也轮不到（见 _write_java）
+        self.closing = True
         for state in list(self.states.values()):
             self._kill_worker(state, "网关退出")
         deadline = time.time() + KILL_GRACE_SECONDS + KILL_FORCE_SECONDS
@@ -1065,7 +1105,18 @@ class Gateway(object):
                           "error": {"code": code, "message": message}})
 
     def _write_java(self, message):
-        """把一帧写进宿主 stdout，并更新「最后一次忙碌」时间。"""
+        """把一帧写进宿主 stdout，并更新「最后一次忙碌」时间。
+
+        **收尾阶段一帧都不写**：收尾的唯一职责是把自己收干净（杀掉 worker、删 PID 文件），
+        而写帧这件事在这里可能**永久**卡住——宿主正在关闭、或者它的读取线程早就出事了，
+        管道写满之后 ``os.write`` 就再也不返回。那会把「杀 worker」一起拖死，留下的正是孤儿。
+        代价是丢掉几条收尾期的 ``worker_state`` 通知，而正在关闭的宿主本来也不会去看它们。
+        """
+        if self.closing:
+            if not self.closing_notified:
+                self.closing_notified = True
+                self._log("收尾阶段：不再向宿主写协议帧（宿主可能已经不在读）")
+            return
         data = wire.encode(message)
         if len(data) > wire.MAX_FRAME_BYTES:
             data = wire.encode({"jsonrpc": "2.0", "id": message.get("id"),

@@ -665,6 +665,75 @@ class PythonScriptIT {
     }
 
     @Test
+    @DisplayName("宿主停止读帧、网关卡在写里时，SIGTERM 也必须能把它停住（不留孤儿）")
+    void gateway_should_stillExit_whenHostStopsReading() throws Exception {
+        // 宿主的读取线程出事（或进程被挂起）时，网关会卡在把一帧写进 stdout 的那次 os.write 里：
+        // 它连自己的事件循环都回不去了——收尸、空闲自毁、收尾全做不了，唯一还能救它的是 SIGTERM。
+        // 而 PEP 475 规定「被信号打断的 syscall 在处理器返回后自动重试」，
+        // 所以「处理器里只翻标志」那种写法根本停不住它。这里刻意**不读**网关的 stdout
+        writeScript("large", LARGE_SCRIPT, LARGE_MANIFEST);
+        java.nio.file.Path gatewayDirectory = new zcd.jellyfish.script.GatewayResources(gatewayRoot)
+                .materialize(new PythonLanguage(interpreter()), PythonLanguage.GATEWAY_RESOURCES);
+        java.nio.file.Path log = gatewayRoot.resolve("stuck-gateway.log");
+        java.nio.file.Path pidPath = pidRoot.resolve("stuck-gateway.pid");
+        // stderr 落文件而不是留在管道里：本用例要制造的只有 stdout 那一侧的堵塞
+        Process gateway = new ProcessBuilder(interpreter(),
+                gatewayDirectory.resolve("script").resolve("gateway.py").toString())
+                .redirectError(log.toFile())
+                .start();
+        try {
+            java.io.OutputStream stdin = gateway.getOutputStream();
+            String spec = "{\"id\":\"large\",\"directory\":\"" + scriptsRoot.resolve("large")
+                    + "\",\"entry\":\"main.py\",\"manifest\":" + LARGE_MANIFEST + ",\"config\":{}}";
+            stdin.write(("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"scripts\":["
+                    + spec + "],\"settings\":{\"invokeTimeoutSeconds\":5,\"workerIdleSeconds\":0,"
+                    + "\"gatewayIdleSeconds\":0,\"manifestStrict\":true,\"pidFile\":\"" + pidPath
+                    + "\"}}}\n").getBytes(StandardCharsets.UTF_8));
+            stdin.flush();
+            int pid = awaitPid(pidPath, 5000L);
+            Thread.sleep(1000L);
+            stdin.write(("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"invoke\",\"params\":"
+                    + "{\"script\":\"large\",\"type\":\"tool\","
+                    + "\"request\":{\"tool\":\"large_probe\",\"arguments\":{}}}}\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            stdin.flush();
+            // 这一帧是 20 万字节：管道（64 KiB）写满之后它就卡住了，而我们从头到尾没读过
+            Thread.sleep(3000L);
+            assertTrue(gateway.isAlive(), "网关应当还活着（正卡在写里）");
+            // 「卡住」不能只看「它还活着」——它本来就不该退出。要证明的是它**已经读不了 stdin**：
+            // 发一条 kill_worker，网关健康时 worker 会当场死掉；卡在写里时它连这条请求都收不到。
+            // 这条断言同时挡住「网关其实早就自己退了，于是 waitFor 天然为真」这种假绿
+            stdin.write(("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"kill_worker\",\"params\":"
+                    + "{\"script\":\"large\",\"reason\":\"探针\"}}\n").getBytes(StandardCharsets.UTF_8));
+            stdin.flush();
+            Thread.sleep(3000L);
+            assertEquals(2, countProcesses(gatewayDirectory),
+                    "网关没有卡在写里（它读到了 stdin 并杀掉了 worker），这条用例就失去意义了");
+
+            // **信号必须从外面发**：Java 的 Process.destroy() 会连带关掉 stdout 的读端，
+            // 于是网关拿到的是 EPIPE、自己就走了——那条路径与 SIGTERM 的处理无关，
+            // 用它来验证「信号能不能停住卡住的网关」等于什么都没验证（实测踩过这个坑）
+            Process kill = new ProcessBuilder("kill", "-TERM", String.valueOf(pid)).start();
+            assertEquals(0, kill.waitFor(), "发送 SIGTERM 的命令应成功");
+
+            assertTrue(gateway.waitFor(10L, TimeUnit.SECONDS),
+                    "SIGTERM 之后网关应当立刻退出——它还卡在写里，等满超时说明停不住它");
+            // 停住之后必须**收干净**：worker 是网关的子进程，网关卡住这件事不该让它们留下
+            assertTrue(awaitProcessCount(gatewayDirectory, 0),
+                    "网关退出后不该留下进程，实际仍有 " + countProcesses(gatewayDirectory) + " 个");
+            assertFalse(Files.exists(pidPath), "正常收尾应当把 PID 文件删掉");
+        } finally {
+            if (gateway.isAlive()) {
+                gateway.destroyForcibly();
+                gateway.waitFor(10L, TimeUnit.SECONDS);
+            }
+            // 用例失败时网关是被强杀的，那一刻它的 worker 会变成孤儿并靠看门狗自己走——
+            // 给它一点时间，别让下一个用例的背景里多出一个进程
+            awaitProcessCount(gatewayDirectory, 0);
+        }
+    }
+
+    @Test
     @DisplayName("大于宿主按行缓冲上限的结果也必须完整送达（而不是被切成两条谁也解析不了的行）")
     void largeResult_should_reachCaller_whenItExceedsHostLineLimit() throws IOException {
         // 宿主是**按行**读协议流的，而它给「一行」留的缓冲有上限；脚本侧又各自声明了一个
