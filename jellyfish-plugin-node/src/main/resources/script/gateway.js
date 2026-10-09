@@ -71,24 +71,21 @@ const HERE = __dirname;
  * 统一走同步写入之后，两者共享同一条串行路径。
  */
 process.stdout.write = function writeSync(chunk, encoding) {
-    fs.writeSync(1, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding || 'utf8'));
+    wire.writeAll(1, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding || 'utf8'));
     return true;
 };
 
 /**
  * 把数据完整写到某个描述符。
  *
- * `fs.writeSync` 可能只写一部分（管道缓冲区满时会短写），而**半帧 JSON 比丢帧更糟**：
- * 对端会把它和下一帧粘在一起，报出来的是「JSON 解析失败」而不是「写不下」。
+ * 实现搬到 {@link wire.writeAll} 了：worker 侧要的是同一个东西，而**同步写的两个坑**
+ * （短写、EAGAIN）在那里写得更细。两份实现只会在其中一个上被修掉，所以这里只留个转发。
  *
  * @param {number} fd 描述符
  * @param {Buffer} data 数据
  */
 function writeAll(fd, data) {
-    let offset = 0;
-    while (offset < data.length) {
-        offset += fs.writeSync(fd, data, offset, data.length - offset);
-    }
+    wire.writeAll(fd, data);
 }
 
 /**

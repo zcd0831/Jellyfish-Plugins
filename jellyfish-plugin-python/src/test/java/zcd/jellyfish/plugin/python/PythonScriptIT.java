@@ -664,6 +664,43 @@ class PythonScriptIT {
                 "被隔离的 worker 成了永久孤儿（进程数 " + countProcesses(gatewayDirectory) + "）");
     }
 
+    @Test
+    @DisplayName("大于宿主按行缓冲上限的结果也必须完整送达（而不是被切成两条谁也解析不了的行）")
+    void largeResult_should_reachCaller_whenItExceedsHostLineLimit() throws IOException {
+        // 宿主是**按行**读协议流的，而它给「一行」留的缓冲有上限；脚本侧又各自声明了一个
+        // 出帧上限。两者一旦错位（宿主那张比脚本侧那张小），落在中间的结果就会被宿主**就地切成
+        // 两条非法行**丢掉——现场表现是「调用一直等到超时」，而脚本侧那条「结果超过传输上限」
+        // 的错误码永远不会触发（它压根没觉得自己超限）
+        writeScript("large", LARGE_SCRIPT, LARGE_MANIFEST);
+        startRuntime(10);
+
+        ToolCallResult result = invokeTool("large_probe", Collections.<String, Object>emptyMap());
+
+        assertEquals(200000, String.valueOf(result.getOutput()).length(),
+                "大结果没有完整送达（拿到的长度是 " + String.valueOf(result.getOutput()).length() + "）");
+    }
+
+    @Test
+    @DisplayName("宿主按行的缓冲上限必须严格大于脚本侧的出帧上限（两个数字，互相不能悄悄改）")
+    void hostLineLimit_should_beGreaterThanScriptFrameLimit() throws IOException {
+        // 这条守卫存在的理由：这是**跨语言的两个数字**，而它们的关系（宿主 > 脚本）是硬要求。
+        // 任何一侧单独改了数，另一侧不会编译失败、不会测试变红，只会在大结果上表现成「超时」。
+        // 因此这里把关系本身钉死：从脚本侧的源码里读那个数，与宿主侧那个数比大小
+        java.nio.file.Path gatewayDirectory = new zcd.jellyfish.script.GatewayResources(gatewayRoot)
+                .materialize(new PythonLanguage(interpreter()), PythonLanguage.GATEWAY_RESOURCES);
+        String source = new String(Files.readAllBytes(
+                gatewayDirectory.resolve("script").resolve("script_wire.py")),
+                StandardCharsets.UTF_8);
+        java.util.regex.Matcher matcher =
+                java.util.regex.Pattern.compile("MAX_FRAME_BYTES\\s*=\\s*(\\d+)").matcher(source);
+        assertTrue(matcher.find(), "没在 script_wire.py 里找到 MAX_FRAME_BYTES 的字面量");
+        long scriptLimit = Long.parseLong(matcher.group(1));
+        assertTrue(zcd.jellyfish.script.protocol.ScriptProtocol.MAX_LINE_BYTES > scriptLimit,
+                "宿主按行缓冲的上限(" + zcd.jellyfish.script.protocol.ScriptProtocol.MAX_LINE_BYTES
+                        + ") 必须严格大于脚本侧出帧上限(" + scriptLimit
+                        + ")：否则大结果会被宿主切成两条非法行，现场只看到「超时」");
+    }
+
 
     @Test
     @DisplayName("PID 文件应记下网关自己的 PID，并在正常退出时删掉")
@@ -1917,6 +1954,19 @@ class PythonScriptIT {
     /** 与 {@link #STUBBORN_SCRIPT} 逐字对应的清单。 */
     private static final String STUBBORN_MANIFEST = "{\"entry\":\"main.py\","
             + "\"tools\":[{\"name\":\"stubborn_hang\"}]}";
+
+    /** 返回一个大结果的脚本：用来钉住「帧比宿主按行缓冲的上限大」时会发生什么。 */
+    private static final String LARGE_SCRIPT = ""
+            + "from jellyfish_sdk import tool\n"
+            + "\n"
+            + "\n"
+            + "@tool(name=\"large_probe\", description=\"返回一个很大的结果\")\n"
+            + "def large_probe(args, ctx):\n"
+            + "    return \"x\" * 200000\n";
+
+    /** 与 {@link #LARGE_SCRIPT} 逐字对应的清单。 */
+    private static final String LARGE_MANIFEST = "{\"entry\":\"main.py\","
+            + "\"tools\":[{\"name\":\"large_probe\"}]}";
 
     /**
      * 读配置的脚本：同时从 ``ctx.configuration`` 与模块级 ``configuration()`` 取值。

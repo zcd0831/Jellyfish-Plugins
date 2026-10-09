@@ -80,6 +80,23 @@ public final class ScriptProtocol {
     /** 错误码：网关内部错误。 */
     public static final int CODE_INTERNAL = -32603;
 
+    /**
+     * 协议单行的最大字节数（宿主侧按行读，这是它给「一行」留的缓冲）。
+     * <p>
+     * <b>它必须严格大于脚本侧的出帧上限</b>（Node 的 {@code script/gateway.js} 所在目录里的
+     * {@code script_wire.js}、Python 的 {@code script_wire.py}，两侧都是 10 MB）。
+     * 这两个数字是硬关系，而它们分处两种语言、无法互相引用：
+     * <ul>
+     *   <li>宿主这张更小 → 落在中间的帧被宿主**就地切成两条非法行**丢掉，现场表现是
+     *       「调用一直等到超时」，而脚本侧那条 {@link #CODE_RESULT_TOO_LARGE} 永远不会触发
+     *       （它压根没觉得自己超限）；</li>
+     *   <li>留出余量而不是取相等 → 本类的判定发生在**看到换行之前**
+     *       （缓冲一满就按一行截断输出），因此「恰好等于上限」的那一帧也会被判成超限。</li>
+     * </ul>
+     * Node 与 Python 的端到端测试各有一条守卫用例把这条不等式钉死（从脚本侧源码里读那个数来比）。
+     */
+    public static final int MAX_LINE_BYTES = 10 * 1024 * 1024 + 64 * 1024;
+
     /** 字段名：JSON-RPC 版本。 */
     private static final String FIELD_VERSION = "jsonrpc";
 

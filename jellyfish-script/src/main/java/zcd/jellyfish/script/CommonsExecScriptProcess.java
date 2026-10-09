@@ -8,6 +8,7 @@ import org.apache.commons.exec.StreamPumper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.script.protocol.ScriptProtocol;
 
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
@@ -425,8 +426,15 @@ final class CommonsExecScriptProcess implements ScriptProcess {
      */
     static final class LineOutputStream extends OutputStream {
 
-        /** 单行最大字节数，超过即截断输出。 */
-        private static final int MAX_LINE_BYTES = 64 * 1024;
+        /**
+         * 单行最大字节数，超过即截断输出。
+         *
+         * <p><b>它是协议的单行上限，不是「日志行长」</b>：本流既接协议 stdout 也接 stderr 日志，
+         * 而这两者用同一个上限是可以的（日志行上千字节就到头了）。真正的约束在
+         * {@link ScriptProtocol#MAX_LINE_BYTES} 上——那里的注释写明了它为什么必须严格大于
+         * 脚本侧的出帧上限，以及两个数字错位时的现场长什么样。
+         */
+        private static final int MAX_LINE_BYTES = ScriptProtocol.MAX_LINE_BYTES;
 
         /** 成行后的接收方。 */
         private final Consumer<String> sink;

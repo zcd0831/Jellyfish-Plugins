@@ -79,14 +79,18 @@ class LineOutputStreamTest {
     @Test
     @DisplayName("超长无换行输出应按上限截断，不能无限占用内存")
     void write_should_truncateOverlongLine() throws IOException {
+        // 上限取协议常量而不是硬编码的 64 KiB：宿主这张缓冲必须**严格大于**脚本侧的出帧上限
+        // （否则大结果会被就地切成两条非法行），因此它是个会变的数。这里钉的是「有上限且生效」，
+        // 而「它与脚本侧那个数的大小关系」由 Node 与 Python 的端到端守卫用例守着
+        int limit = zcd.jellyfish.script.protocol.ScriptProtocol.MAX_LINE_BYTES;
         StringBuilder builder = new StringBuilder();
-        for (int index = 0; index < 70000; index++) {
+        for (int index = 0; index < limit + 1; index++) {
             builder.append('x');
         }
         writeAll(builder.toString());
 
         assertEquals(1, lines.size());
-        assertEquals(64 * 1024, lines.get(0).length());
+        assertEquals(limit, lines.get(0).length());
     }
 
     @Test

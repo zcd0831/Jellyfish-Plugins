@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('fs');
+
 /**
  * 网关与 worker 两侧共用的分帧约定（Node 版）。
  *
@@ -12,7 +14,16 @@
  * 这类问题的现场表现是「脚本毫无反应」，既看不到异常也看不到错误码。
  */
 
-/** 单帧上限：与宿主侧的传输上限一致。超限说明脚本返回了不该返回的大对象，早失败好过把内存吃满。 */
+/**
+ * 单帧上限：**脚本侧的出帧上限**。超限说明脚本返回了不该返回的大对象，早失败好过把内存吃满。
+ *
+ * 宿主侧按行读协议流，它给「一行」留的缓冲必须**严格大于**这个数
+ * （宿主侧是 `ScriptProtocol.MAX_LINE_BYTES`）——本注释此前的写法是「与宿主侧的传输上限一致」，
+ * 而那时宿主侧其实只给到 64 KiB：落在两者之间的结果会被宿主**就地切成两条非法行**丢掉，
+ * 现场表现是「调用一直等到超时」，而本文件上面那条「结果超过传输上限」的错误码永远不会触发。
+ * 这是两个语言里的两个数字，谁都不该在对方不知情的情况下改：Node 与 Python 的端到端测试
+ * 各有一条守卫用例，从本文件读这个数去和宿主侧比大小。
+ */
 const MAX_FRAME_BYTES = 10 * 1024 * 1024;
 
 /** 逐条告警的上限：一个循环打印的脚本不该把两侧日志刷满；超过之后只报一次总数。 */
@@ -74,6 +85,58 @@ function feed(buffer, chunk) {
 }
 
 /**
+ * 把一段字节**写到底**（`fs.writeSync` 只是**一次** `write(2)`）。
+ *
+ * 这是本文件里唯一需要文件描述符的地方，而它属于分帧约定——同步写的两个坑都在这里：
+ *
+ * 1. **短写**：写到管道时，超过 `PIPE_BUF` 的写入允许部分完成，返回值被忽略的话一帧就在中间断掉。
+ *    而**半帧比丢帧更糟**：它与下一帧粘在一起时，对端报的是「JSON 解析失败」而不是「写不下」。
+ * 2. **EAGAIN**：子进程的 stdio 管道在 Node 里是**非阻塞**的（libuv 建的，实测确认），
+ *    管道一满（macOS 上是 64 KiB）`write` 直接返回「写不下，你等会儿再来」。
+ *    同步写必须自己把这个等待做掉，否则任何大于管道容量的帧都会**在写完之前**被丢掉——
+ *    现场是「结果超过 64 KB 的调用一直等到超时」，而脚本侧那条「结果超过传输上限」永远不会触发
+ *    （它压根没觉得自己超限）。这条是实测出来的：40 KB 过、70 KB 必丢，边界正好是管道容量。
+ *
+ * 等待用 `Atomics.wait` 做同步睡眠：调用方（worker 内部）是完全同步的，没有事件循环可以等。
+ * 只有 EAGAIN/EINTR 才重试，别的错误一律抛出——写不进去是「对端不读了」，不该被吞掉。
+ *
+ * @param {number} fd 文件描述符
+ * @param {Buffer} data 整帧字节
+ */
+function writeAll(fd, data) {
+    let offset = 0;
+    while (offset < data.length) {
+        try {
+            const written = fs.writeSync(fd, data, offset, data.length - offset);
+            if (written <= 0) {
+                throw new Error(`写描述符 ${fd} 没有进展（已写 ${offset}/${data.length} 字节）`);
+            }
+            offset += written;
+        } catch (error) {
+            if (error.code !== 'EAGAIN' && error.code !== 'EINTR') {
+                throw error;
+            }
+            sleepSync(PIPE_RETRY_MS);
+        }
+    }
+}
+
+/** 管道满时的重试间隔（毫秒）。对端在排空，等一小会儿再来。 */
+const PIPE_RETRY_MS = 2;
+
+/** `Atomics.wait` 需要的共享缓冲（同步睡眠唯一可移植的做法）。 */
+const SLEEP_BUFFER = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * 同步睡一小会儿（这里没有事件循环可等）。
+ *
+ * @param {number} millis 毫秒
+ */
+function sleepSync(millis) {
+    Atomics.wait(SLEEP_BUFFER, 0, 0, millis);
+}
+
+/**
  * 把新到的字节并入缓冲区并按行切分文本（用于把子进程 stderr 转进日志）。
  *
  * 与 {@link feed} 的区别只在用途：日志是给人看的，因此不要求是 JSON，
@@ -115,4 +178,6 @@ function decodeLossy(line) {
     return line.toString('utf8');
 }
 
-module.exports = { MAX_FRAME_BYTES, DROPPED_ALERT_LIMIT, encode, feed, takeLines };
+module.exports = {
+    MAX_FRAME_BYTES, DROPPED_ALERT_LIMIT, encode, feed, takeLines, writeAll,
+};

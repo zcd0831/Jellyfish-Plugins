@@ -39,7 +39,7 @@ const ORPHAN_CHECK_MS = 2000;
  * 统一走同步写入之后，两者共享同一条串行路径，代价是脚本的日志会阻塞——这正是我们想要的。
  */
 process.stdout.write = function writeSync(chunk, encoding) {
-    fs.writeSync(1, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding || 'utf8'));
+    wire.writeAll(1, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding || 'utf8'));
     return true;
 };
 
@@ -106,7 +106,9 @@ function send(message, maxFrameBytes) {
         });
     }
     try {
-        fs.writeSync(1, data);
+        // writeAll 而不是一次 fs.writeSync：整帧必须写到底。**半帧比丢帧更糟**——
+        // 它与下一帧粘在一起时，对端报的是「JSON 解析失败」而不是「结果太大」
+        wire.writeAll(1, data);
     } catch (error) {
         fs.writeSync(2, `发送协议帧失败: ${error.message}\n`);
     }
