@@ -396,7 +396,17 @@ class McpServerConnectionTest {
     @Test
     @DisplayName("我们自己关掉的连接不算「对面断开」：那条路已有自己的收尾")
     void onDisconnected_should_notNotify_whenClosedByUs() throws InterruptedException {
-        // Given
+        // 正向对照先行：**先在另一条连接上让对面真的断一次**，证明「对面断开 → 回调」
+        // 这条通路是活的。没有这一步，下面那条 `assertEquals(0, notified.get())` 在
+        // 「回调压根没接上」时也照样绿——它只能证明「这 100 毫秒里没发生」
+        McpServerConnection control = connected(2);
+        AtomicInteger controlNotified = new AtomicInteger();
+        control.onDisconnected(controlNotified::incrementAndGet);
+        transport.close();
+        assertTrue(awaitNotify(controlNotified, 3_000L), "对面断开应上报（本条用例的正向对照）");
+        control.close();
+
+        // Given：主角是自己关掉的那一条
         connection = connected(2);
         AtomicInteger notified = new AtomicInteger();
         connection.onDisconnected(notified::incrementAndGet);

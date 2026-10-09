@@ -285,7 +285,12 @@ class McpPluginTest {
         }, 1L, 2L, 3);
         plugin.start(context(values(Collections.singletonList(serverConfig("fs")))));
         assertTrue(awaitTool(true, 3_000L), "工具应先注册上");
+
+        // 正向对照：先证明「对面断了之后它真的会重连」。没有这一步，「停止后不再重连」
+        // 这句话在重连逻辑压根没生效时也是真的——那样这条防线就只是「睡 200 毫秒后计数没涨」
         created.get(0).close();
+        assertTrue(await(() -> created.size() >= 2, 3_000L),
+                "对面断开后应当重连（本条用例的正向对照），实际创建 " + created.size() + " 条");
 
         // When
         plugin.stop();
@@ -294,6 +299,8 @@ class McpPluginTest {
 
         // Then
         assertEquals(connectedBefore, created.size(), "停止之后不该再起新的连接");
+        // 这一条不改成轮询：**「在 stop 返回前结束」本身就是契约**，
+        // 放宽成「等一会儿它会结束」会把这条用例要钉的性质换掉
         assertEquals(0, countThreads("mcp-connector"), "连接线程必须在 stop 返回前结束");
     }
 

@@ -144,12 +144,40 @@ class ScriptSchedulerTest {
                 Collections.singletonList(plugin("watch", "[{\"name\":\"refresh\",\"intervalSeconds\":1}]")),
                 Collections.<String, Map<String, Object>>emptyMap());
 
+        // **先证明它真的会触发**：没有这一步，「关闭后计数没涨」就恒真——
+        // 调度器压根没生效时这条用例照样绿。这正是它原先的问题（睡 1.5 秒再断言没涨）：
+        // 那句断言只能证明「这 1.5 秒里没发生」，而不能证明「关掉之后不会再发生」
+        assertTrue(awaitTriggerCount(caller, 1, 8000L),
+                "调度器在 8 秒内一次都没触发，这条用例的前提不成立（实际触发 "
+                        + caller.names.size() + " 次）");
+
         scheduler.close();
         int afterClose = caller.names.size();
         Thread.sleep(1500L);
 
         assertEquals(afterClose, caller.names.size(), "关闭后不该再有触发");
         scheduler.close();
+    }
+
+    /**
+     * 等触发次数至少达到 {@code expected} 次（有界轮询，超时即失败）。
+     *
+     * @param caller    记录调用的假调用器
+     * @param expected  期望的最少次数
+     * @param timeoutMs 等待上限
+     * @return 在超时前达到返回 {@code true}
+     * @throws InterruptedException 等待被中断时抛出
+     */
+    private static boolean awaitTriggerCount(RecordingCaller caller, int expected, long timeoutMs)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (caller.names.size() >= expected) {
+                return true;
+            }
+            Thread.sleep(50L);
+        }
+        return false;
     }
 
     @Test
