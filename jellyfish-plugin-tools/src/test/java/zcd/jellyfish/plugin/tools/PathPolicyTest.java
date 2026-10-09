@@ -14,6 +14,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -56,7 +57,15 @@ class PathPolicyTest {
                 ToolTestSupport.args("path", outside.resolve("x.txt").toString()));
 
         assertEquals(PermissionVerdict.Outcome.ASK, verdict.getOutcome());
+        // DisplayName 承诺了「理由里带上目标与允许范围」——那正是审批弹窗能被看懂的全部依据，
+        // 只断言非空等于什么都没说（理由退化成一句常量文案，这条仍然绿）
         assertNotNull(verdict.getReason());
+        assertTrue(verdict.getReason().contains(outside.resolve("x.txt").toString()),
+                "理由里必须带上是哪个目标: " + verdict.getReason());
+        // 允许范围来自规则的清单（默认是工作目录），因此理由里必须出现它的展示文本；
+        // 这里用生产侧的同一套解析（ToolPaths.resolve）算，避免把断言绑在 `Paths.get("")` 的写法上
+        assertTrue(verdict.getReason().contains(ToolPaths.resolve(".").toString()),
+                "理由里必须带上允许范围: " + verdict.getReason());
     }
 
     @Test

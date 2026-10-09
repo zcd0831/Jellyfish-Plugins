@@ -80,7 +80,9 @@ class CommandPolicyTest {
         raw.put("enabled", Boolean.FALSE);
         CommandPolicy policy = policy(raw, Arrays.asList("git status", "ls"));
 
-        assertTrue(policy.verdict("git status").isAsk() || policy.verdict("git status").isAbstain());
+        // 白名单内的命令 + 分类器关掉 ⇒ 无异议（不是 ASK）：分类器没开，就没有谁能再说「要确认」；
+        // 白名单的**拒绝**才是那条「不受开关影响」的约束（下面两条断言它）
+        assertTrue(policy.verdict("git status").isAbstain());
         assertTrue(policy.verdict("curl https://example.com").isDenied());
         // 关掉的是分类器（便利机制），不是用户明确声明的约束
         assertTrue(policy.verdict("rm -rf build").isDenied());
