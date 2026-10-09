@@ -19,6 +19,14 @@ import zcd.jellyfish.api.JellyfishException;
  */
 public class ScriptCallException extends JellyfishException {
 
+    /**
+     * 序列化版本号。
+     * <p>
+     * 脚本调用链上没有把异常跨进程序列化的路径（协议帧里是错误码与文本，不是 Java 对象），
+     * 因此它眼下只满足可序列化类的规范。
+     */
+    private static final long serialVersionUID = 1L;
+
     /** 网关回报的错误码。 */
     private final int code;
 

@@ -2,6 +2,8 @@ package zcd.jellyfish.script.codec;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import zcd.jellyfish.api.extension.CommandChoice;
 import zcd.jellyfish.script.ScriptJson;
 
@@ -27,6 +29,9 @@ import java.util.Map;
  * @author zcd
  */
 final class Payloads {
+
+    /** 日志：只为「脚本给的数值不能精确表示」这种本来会无声发生的事留痕。 */
+    private static final Logger LOG = LoggerFactory.getLogger(Payloads.class);
 
     /** 候选的取值字段名，同时是唯一的必填字段。 */
     private static final String FIELD_VALUE = "value";
@@ -96,10 +101,15 @@ final class Payloads {
     }
 
     /**
-     * 取可空整数字段，非数字或缺失一律返回 {@code null}。
+     * 取可空整数字段，非数字、缺失或<b>不能精确表示</b>时返回 {@code null}。
      * <p>
      * 返回 {@code null} 而不是 0 是刻意的：这些字段在协议里是「本插件不表态」的表达，
      * 归一成 0 会变成「明确要求保留 0 条」，语义正好相反。
+     * <p>
+     * <b>只接受能精确表示的整数</b>：{@code asInt()} 对小数与超范围的值都是静默截断
+     * （{@code 3.7} 变 3、{@code 5000000000} 变一个负数），而这里的返回值是脚本「表了态」的表达——
+     * 被悄悄改掉之后，脚本作者看到的是「我明明返回了 3.7，行为却像 3」，而两侧日志里一条线索都没有。
+     * 因此不能精确表示时<b>按「不表态」处理</b>（那是这里唯一的诚实答案）并留一条 WARN。
      *
      * @param node  对象节点，可为 {@code null}
      * @param field 字段名
@@ -110,7 +120,14 @@ final class Payloads {
             return null;
         }
         JsonNode value = node.get(field);
-        return value == null || !value.isNumber() ? null : value.asInt();
+        if (value == null || !value.isNumber()) {
+            return null;
+        }
+        if (value.isIntegralNumber() && value.canConvertToInt()) {
+            return Integer.valueOf(value.intValue());
+        }
+        LOG.warn("脚本返回的 {} 不是能精确表示的整数，按「不表态」处理: value={}", field, value);
+        return null;
     }
 
     /**

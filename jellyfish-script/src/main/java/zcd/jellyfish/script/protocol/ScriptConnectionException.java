@@ -19,6 +19,13 @@ import zcd.jellyfish.api.JellyfishException;
 public class ScriptConnectionException extends JellyfishException {
 
     /**
+     * 序列化版本号。
+     * <p>
+     * 脚本调用链上没有把异常跨进程序列化的路径，因此它眼下只满足可序列化类的规范。
+     */
+    private static final long serialVersionUID = 1L;
+
+    /**
      * 构造异常。
      *
      * @param message 错误描述
