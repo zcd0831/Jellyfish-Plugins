@@ -122,6 +122,12 @@ function normalize(manifest) {
                 summary: descriptor.summary === undefined ? null : descriptor.summary,
                 usage: descriptor.usage === undefined ? null : descriptor.usage,
                 aliases: descriptor.aliases || [],
+                // **内核会读它**，因此必须比：漏掉它的表现是「清单校验通过，
+                // 但命令在首页被当成一句提示词发给了模型」——这正是「静默的语义错位」，
+                // 而本工具存在的理由就是不放过这一类。缺省 true 与内核一致
+                // （ScriptManifest 的 `bool(node, "sessionRequired", true)`）
+                sessionRequired: descriptor.sessionRequired === undefined
+                    ? true : Boolean(descriptor.sessionRequired),
             },
             hasOptions: Boolean(item.hasOptions),
         };

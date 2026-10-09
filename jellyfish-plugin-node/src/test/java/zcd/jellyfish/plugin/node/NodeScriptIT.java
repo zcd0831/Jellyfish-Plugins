@@ -491,6 +491,59 @@ class NodeScriptIT {
     }
 
     @Test
+    @DisplayName("清单生成器：命令的 sessionRequired 漂移也必须报出来（内核会读它）")
+    void dumpManifest_should_reportSessionRequiredDrift() throws IOException, InterruptedException {
+        // 这一条盯的是一个**曾被比较逻辑丢掉的字段**：它决定「这条命令在首页能不能用，
+        // 还是被外壳当成一句提示词发给模型」。丢掉它的表现是校验通过、行为静默改变——
+        // 而「守着漂移」这句承诺恰好在这种字段上最没有价值，因为它偏偏是内核真的会读的那个
+        installExample("hello");
+        Path manifest = scriptsRoot.resolve("hello").resolve("manifest.json");
+        String broken = new String(Files.readAllBytes(manifest), StandardCharsets.UTF_8)
+                .replace("\"sessionRequired\": false", "\"sessionRequired\": true");
+        assertTrue(broken.contains("\"sessionRequired\": true"),
+                "示例清单里没有预期的 sessionRequired 字段，用例的前提不成立");
+        Files.write(manifest, broken.getBytes(StandardCharsets.UTF_8));
+
+        String output = runDumperExpectingFailure(scriptsRoot.resolve("hello"));
+
+        assertTrue(output.contains("sessionRequired"), output);
+    }
+
+    @Test
+    @DisplayName("重复订阅同一事件必须当场拒绝，而不是静默丢掉前一个处理器")
+    void subscribe_should_beRejected_whenSameEventIsSubscribedTwice() throws IOException {
+        // 事件到处理器是一对一映射，所以「第二个订阅」会把第一个**静默盖掉**：
+        // 现象是那个处理器好像从来没被调用过，而清单里只列了一个事件名，
+        // 校验、台账、日志都不会有任何提示。这里要的就是「当场说清楚」
+        writeScript("dup", DUPLICATE_SUBSCRIBE_SCRIPT, DUPLICATE_SUBSCRIBE_MANIFEST);
+        startRuntime();
+
+        JellyfishException failure = assertThrows(JellyfishException.class,
+                () -> invokeTool("dup_ping", Collections.<String, Object>emptyMap()));
+
+        assertTrue(failure.getMessage().contains("重复订阅"), failure.getMessage());
+    }
+
+    /**
+     * 跑一次清单生成器的 {@code --check}，并断言它**报出了漂移**。
+     *
+     * @param scriptDirectory 脚本目录
+     * @return 生成器的输出（标准输出与标准错误合并）
+     * @throws IOException          启动失败时抛出
+     * @throws InterruptedException 等待被中断时抛出
+     */
+    private String runDumperExpectingFailure(Path scriptDirectory)
+            throws IOException, InterruptedException {
+        Path dumper = gatewayDirectory().resolve("script").resolve("dump_manifest.js");
+        Process process = new ProcessBuilder(interpreter(), dumper.toString(),
+                scriptDirectory.toString(), "--check").redirectErrorStream(true).start();
+        String output = new String(readAll(process.getInputStream()), StandardCharsets.UTF_8);
+        assertTrue(process.waitFor(30L, TimeUnit.SECONDS), "清单生成器没有在 30 秒内结束");
+        assertEquals(1, process.exitValue(), "清单生成器应当报出漂移，实际输出: " + output);
+        return output;
+    }
+
+    @Test
     @DisplayName("周期任务应按间隔反复触发（Node 侧与 Python 同构）")
     void periodic_should_fireRepeatedly() throws Exception {
         writeScript("beat", PERIODIC_SCRIPT, PERIODIC_MANIFEST);
@@ -954,6 +1007,19 @@ class NodeScriptIT {
     private static final String PERIODIC_MANIFEST = "{\"entry\":\"main.js\","
             + "\"tools\":[{\"name\":\"beat_count\"}],"
             + "\"schedules\":[{\"name\":\"beat\",\"intervalSeconds\":1}]}";
+
+    /** 重复订阅同一事件的脚本：两个处理器抢同一个事件，第二个会静默盖掉第一个。 */
+    private static final String DUPLICATE_SUBSCRIBE_SCRIPT = ""
+            + "'use strict';\n"
+            + "const { subscribe, tool } = require('jellyfish_sdk');\n"
+            + "tool({ name: 'dup_ping', description: 'ping' }, () => 'pong');\n"
+            + "subscribe('ToolCallCompletedEvent')(() => { /* 第一个 */ });\n"
+            + "subscribe('ToolCallCompletedEvent')(() => { /* 第二个：会盖掉第一个 */ });\n";
+
+    /** 与 {@link #DUPLICATE_SUBSCRIBE_SCRIPT} 逐字对应的清单。 */
+    private static final String DUPLICATE_SUBSCRIBE_MANIFEST = "{\"entry\":\"main.js\","
+            + "\"tools\":[{\"name\":\"dup_ping\"}],"
+            + "\"events\":[\"ToolCallCompletedEvent\"]}";
 
     /** 夹具脚本的清单：名字集合必须与上面的声明一致，否则脚本会拒绝服务。 */
     private static final String FULL_MANIFEST = "{\"entry\":\"main.js\","

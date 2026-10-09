@@ -456,6 +456,12 @@ def subscribe(*event_names):
 
     def decorate(func):
         for name in event_names:
+            # **重复订阅必须当场拒绝**，与工具/命令/贡献/周期任务同一个口径：
+            # 事件到处理器是一对一映射，后一个会**静默盖掉**前一个——现象是「那个处理器
+            # 好像从来没被调用过」，而清单里只列了一个事件名，校验与日志都不会有任何提示。
+            # 真要在一个事件上做两件事，就写成一个函数里依次做
+            if ("event", name) in _HANDLERS:
+                raise ScriptError("事件 %s 重复订阅" % name)
             if name not in _SUBSCRIPTIONS:
                 _SUBSCRIPTIONS.append(name)
             _HANDLERS[("event", name)] = func

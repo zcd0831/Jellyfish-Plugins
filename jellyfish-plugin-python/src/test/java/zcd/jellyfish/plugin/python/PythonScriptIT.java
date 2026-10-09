@@ -1458,6 +1458,41 @@ class PythonScriptIT {
         assertTrue(output.contains("清单里多出了这一项"), output);
     }
 
+    @Test
+    @DisplayName("清单生成器：命令的 sessionRequired 漂移也必须报出来（内核会读它）")
+    void dumpManifest_should_reportSessionRequiredDrift() throws IOException {
+        // 这一条盯的是一个**曾被比较逻辑丢掉的字段**：它决定「这条命令在首页能不能用，
+        // 还是被外壳当成一句提示词发给模型」。丢掉它的表现是校验通过、行为静默改变——
+        // 而「守着漂移」这句承诺恰好在这种字段上最没有价值，因为它偏偏是内核真的会读的那个
+        installExample("hello");
+        Path manifest = scriptsRoot.resolve("hello").resolve("manifest.json");
+        String broken = new String(Files.readAllBytes(manifest), StandardCharsets.UTF_8)
+                .replace("\"sessionRequired\": false", "\"sessionRequired\": true");
+        assertTrue(broken.contains("\"sessionRequired\": true"),
+                "示例清单里没有预期的 sessionRequired 字段，用例的前提不成立");
+        Files.write(manifest, broken.getBytes(StandardCharsets.UTF_8));
+
+        String output = runPythonExpectingFailure(
+                resources("dump_manifest.py"), scriptsRoot.resolve("hello").toString(), "--check");
+
+        assertTrue(output.contains("sessionRequired"), output);
+    }
+
+    @Test
+    @DisplayName("重复订阅同一事件必须当场拒绝，而不是静默丢掉前一个处理器")
+    void subscribe_should_beRejected_whenSameEventIsSubscribedTwice() throws IOException {
+        // 事件到处理器是一对一映射，所以「第二个订阅」会把第一个**静默盖掉**：
+        // 现象是那个处理器好像从来没被调用过，而清单里只列了一个事件名，
+        // 校验、台账、日志都不会有任何提示。这里要的就是「当场说清楚」
+        writeScript("dup", DUPLICATE_SUBSCRIBE_SCRIPT, DUPLICATE_SUBSCRIBE_MANIFEST);
+        startRuntime();
+
+        JellyfishException failure = assertThrows(JellyfishException.class,
+                () -> invokeTool("dup_ping", Collections.<String, Object>emptyMap()));
+
+        assertTrue(failure.getMessage().contains("重复订阅"), failure.getMessage());
+    }
+
     /**
      * 跑一个 Python 脚本并取标准输出。
      *
@@ -2023,6 +2058,30 @@ class PythonScriptIT {
     /** 与 {@link #STUBBORN_SCRIPT} 逐字对应的清单。 */
     private static final String STUBBORN_MANIFEST = "{\"entry\":\"main.py\","
             + "\"tools\":[{\"name\":\"stubborn_hang\"}]}";
+
+    /** 重复订阅同一事件的脚本：两个处理器抢同一个事件，第二个会静默盖掉第一个。 */
+    private static final String DUPLICATE_SUBSCRIBE_SCRIPT = ""
+            + "from jellyfish_sdk import subscribe, tool\n"
+            + "\n"
+            + "\n"
+            + "@tool(name=\"dup_ping\", description=\"ping\")\n"
+            + "def dup_ping(args, ctx):\n"
+            + "    return \"pong\"\n"
+            + "\n"
+            + "\n"
+            + "@subscribe(\"ToolCallCompletedEvent\")\n"
+            + "def first(event, ctx):\n"
+            + "    return None\n"
+            + "\n"
+            + "\n"
+            + "@subscribe(\"ToolCallCompletedEvent\")\n"
+            + "def second(event, ctx):\n"
+            + "    return None\n";
+
+    /** 与 {@link #DUPLICATE_SUBSCRIBE_SCRIPT} 逐字对应的清单。 */
+    private static final String DUPLICATE_SUBSCRIBE_MANIFEST = "{\"entry\":\"main.py\","
+            + "\"tools\":[{\"name\":\"dup_ping\"}],"
+            + "\"events\":[\"ToolCallCompletedEvent\"]}";
 
     /** 返回一个大结果的脚本：用来钉住「帧比宿主按行缓冲的上限大」时会发生什么。 */
     private static final String LARGE_SCRIPT = ""
