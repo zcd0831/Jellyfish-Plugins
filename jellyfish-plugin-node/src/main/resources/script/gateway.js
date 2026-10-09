@@ -36,6 +36,9 @@ const CODE_INTERNAL = -32603;
 const KILL_GRACE_MS = 2000;
 const KILL_FORCE_MS = 2000;
 
+/** 认不出请求的应答帧：逐条告警的上限（一个循环打印的脚本不该把日志刷满；超过之后只打总数）。 */
+const FOREIGN_FRAME_ALERT_LIMIT = 5;
+
 /** 事件循环里一次等待的上限：即使没有 I/O，也要周期性检查各种截止时间。 */
 const TICK_MS = 1000;
 
@@ -764,6 +767,21 @@ class Gateway {
             return;
         }
         const pending = state.inflight;
+        // 应答必须认领它的请求：id 对不上说明这一行不是应答——最典型的来源是脚本自己往 stdout
+        // 打了一行**合法 JSON**（`console.log(JSON.stringify(x))`）。此前这里不看 id，于是那一行
+        // 被当成在途请求的应答：调用方当场拿到假结果、真结果随后被静默丢弃，而队列里下一个请求
+        // 已经被派发，于是**此后每次调用都错位一格**（互相拿到对方的输出）；熔断还会把这次调用
+        // 记成成功。python 侧靠 socketpair 隔离了 worker 的 fd 1/2，node 侧的脚本与协议共用 fd 1，
+        // 因此这一道 id 校验是必须的（彻底的修法是给协议单独一个 fd，见 worker.js 顶部注释）。
+        if (frame.id !== pending.seq) {
+            state.foreignFrames = (state.foreignFrames || 0) + 1;
+            if (state.foreignFrames <= FOREIGN_FRAME_ALERT_LIMIT || state.foreignFrames % 100 === 0) {
+                this.log(`[${state.scriptId}] 忽略一帧认不出请求的应答（id=${frame.id}，在途=${pending.seq}`
+                    + `，累计 ${state.foreignFrames}）：脚本输出的日志会与协议共用 stdout，`
+                    + `请勿往 stdout 打印合法 JSON`);
+            }
+            return;
+        }
         state.inflight = null;
         current.lastUsed = Date.now();
         if (frame.error) {

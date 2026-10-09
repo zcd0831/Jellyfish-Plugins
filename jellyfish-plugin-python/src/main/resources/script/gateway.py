@@ -51,6 +51,9 @@ CODE_INTERNAL = -32603
 KILL_GRACE_SECONDS = 2.0
 KILL_FORCE_SECONDS = 2.0
 
+# 认不出请求的应答帧：逐条告警的上限（一个循环打印的脚本不该把日志刷满；超过之后只打总数）
+FOREIGN_FRAME_ALERT_LIMIT = 5
+
 # 读缓冲块大小。
 READ_CHUNK = 64 * 1024
 
@@ -108,6 +111,8 @@ class ScriptState(object):
         # 意味着「换一代 worker」对排队中的请求是透明的
         self.queue = []
         self.inflight = None
+        # 认不出请求的应答帧计数（id 对不上）：要看得见，但一个循环打印的脚本不该把日志刷满
+        self.foreign_frames = 0
         self.last_spawn = 0.0
         # 最近一次上报给宿主的（生命周期状态, 存活, PID）与（排队数, 是否在途）。
         # 后者靠循环里的对账推变化（见 _check_worker_busy），因此必须记住上次报了什么
@@ -758,6 +763,17 @@ class Gateway(object):
         if current is None or state.inflight is None:
             return
         pending = state.inflight
+        # 应答必须认领它的请求：id 对不上说明这一行不是应答（最典型的来源是脚本自己往 stdout
+        # 打了一行合法 JSON——python 侧 fd 1/2 已重定向到日志管道，正常打印不会进来，
+        # 但 worker 自身的误写或脚本直接猜 fd 仍可能）。此前这里不看 id，于是那一行会被当成
+        # 在途请求的应答：调用方当场拿到假结果、真结果随后被静默丢弃、此后每次调用错位一格。
+        if frame.get("id") != pending["seq"]:
+            state.foreign_frames += 1
+            if state.foreign_frames <= FOREIGN_FRAME_ALERT_LIMIT or state.foreign_frames % 100 == 0:
+                self._log("[%s] 忽略一帧认不出请求的应答（id=%r，在途=%r，累计 %d）："
+                          "脚本不要往协议流里写东西"
+                          % (state.script_id, frame.get("id"), pending["seq"], state.foreign_frames))
+            return
         state.inflight = None
         current.last_used = time.time()
         if "error" in frame:

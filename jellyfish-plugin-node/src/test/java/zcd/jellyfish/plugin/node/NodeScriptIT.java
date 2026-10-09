@@ -245,6 +245,25 @@ class NodeScriptIT {
     }
 
     @Test
+    @DisplayName("脚本往 stdout 打一行合法 JSON 时，不能顶替在途调用的应答")
+    void callTool_should_notBeHijacked_whenScriptLogsJsonOnStdout() throws IOException {
+        // Given：一个在 handler 里 `console.log(JSON.stringify(...))` 的脚本——这是脚本作者最自然的
+        // 调试动作，而 node 侧脚本的 stdout 与协议共用 fd 1，于是一行合法 JSON 会进到协议流里
+        writeScript("web_noisy", NOISY_STDOUT_SCRIPT, NOISY_STDOUT_MANIFEST);
+        startRuntime();
+
+        // When：连调两次：第一次那帧假应答若被当成回答，第二次的真实结果就会算到第一次头上
+        String first = String.valueOf(invokeTool("web_noisy_a",
+                Collections.<String, Object>emptyMap()).getOutput());
+        String second = String.valueOf(invokeTool("web_noisy_b",
+                Collections.<String, Object>emptyMap()).getOutput());
+
+        // Then：两次都必须拿到**自己**的真实结果
+        assertEquals("first-real", first, "第一次调用拿到了假应答（或别人的结果）");
+        assertEquals("second-real", second, "第二次调用拿到了假应答（或别人的结果）");
+    }
+
+    @Test
     @DisplayName("工具返回 ToolResult 时：正文进 output，摘要与调用者身份进 metadata")
     void toolResult_should_carryMetadataAndIdentity_when_scriptReturnsIt() throws IOException {
         writeScript("web", METADATA_SCRIPT, METADATA_MANIFEST);
@@ -924,6 +943,27 @@ class NodeScriptIT {
     /** 与 {@link #METADATA_SCRIPT} 逐字对应的清单。 */
     private static final String METADATA_MANIFEST = "{\"entry\":\"main.js\","
             + "\"tools\":[{\"name\":\"web_meta\"}]}";
+
+    /**
+     * 边打日志边返回结果的脚本：两行 `console.log` 都是**合法 JSON**（最容易被误当成协议帧的形状）。
+     * <p>
+     * 它对应的缺陷是：网关此前不看应答帧的 id，于是这两行里的第一行会被当成在途请求的应答。
+     */
+    private static final String NOISY_STDOUT_SCRIPT = ""
+            + "'use strict';\n"
+            + "const { tool } = require('jellyfish_sdk');\n"
+            + "tool({ name: 'web_noisy_a', description: '会打日志的工具' }, () => {\n"
+            + "    console.log(JSON.stringify({ level: 'info' }));\n"
+            + "    return 'first-real';\n"
+            + "});\n"
+            + "tool({ name: 'web_noisy_b', description: '也会打日志的工具' }, () => {\n"
+            + "    console.log(JSON.stringify([1, 2]));\n"
+            + "    return 'second-real';\n"
+            + "});\n";
+
+    /** 与 {@link #NOISY_STDOUT_SCRIPT} 逐字对应的清单。 */
+    private static final String NOISY_STDOUT_MANIFEST = "{\"entry\":\"main.js\","
+            + "\"tools\":[{\"name\":\"web_noisy_a\"},{\"name\":\"web_noisy_b\"}]}";
 
     /** 路由处理器夹具：一个类型级贡献 + 一个 {@code handler}（路由键来自用户配置）。 */
     private static final String HANDLER_SCRIPT = ""
