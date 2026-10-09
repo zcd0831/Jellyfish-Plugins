@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -503,6 +504,47 @@ class McpServerConnectionTest {
         assertNotNull(failure.get());
         assertTrue(String.valueOf(failure.get().getMessage()).contains("已取消"),
                 String.valueOf(failure.get().getMessage()));
+    }
+
+    @Test
+    @DisplayName("停止与在途调用并发：关连接必须叫醒正在等的那个调用")
+    void callTool_should_wakeUp_whenConnectionClosedWhileWaiting() throws Exception {
+        // Given：对面不应答，且调用不设超时（callTimeoutSeconds=0）——它唯一的安全网就是被叫醒
+        connection = connected(0);
+        transport.responder(message -> null);
+        AtomicReference<Throwable> failure = new AtomicReference<Throwable>();
+        Thread caller = new Thread(() -> {
+            try {
+                connection.callTool("stuck", Collections.<String, Object>emptyMap(), 0L,
+                        CancellationToken.NONE);
+            } catch (Throwable e) {
+                failure.set(e);
+            }
+        }, "mcp-caller");
+        caller.setDaemon(true);
+        caller.start();
+        Thread.sleep(100L);
+
+        // 先确认它确实在等：否则下面的断言可能只是「被关闭旗挡在门外」，而不是「被叫醒」
+        assertTrue(caller.isAlive(), "调用应当仍在等应答");
+        assertNull(failure.get(), "调用不该在等待期间失败");
+
+        // When：插件停止，与它在途的调用撞在一起
+        connection.close();
+        caller.join(3_000L);
+
+        // Then：被叫醒并如实说清是断连。「停止之后还挂着一条活」是最难排查的一种——
+        // 它既不报错、也不结束，只是把 react 线程永远占住
+        assertFalse(caller.isAlive(), "关连接必须叫醒在途调用");
+        assertNotNull(failure.get());
+        assertTrue(String.valueOf(failure.get().getMessage()).contains("已断开"),
+                String.valueOf(failure.get().getMessage()));
+
+        // And：关停之后才到达的调用也是显式失败，不是「等一个永远不会来的应答」，
+        // 更不该被说成「超时」（它一次都没等到）
+        JellyfishException afterClose = assertThrows(JellyfishException.class, () -> connection.callTool(
+                "late", Collections.<String, Object>emptyMap(), 0L, CancellationToken.NONE));
+        assertFalse(afterClose.getMessage().contains("超时"), afterClose.getMessage());
     }
 
     @Test

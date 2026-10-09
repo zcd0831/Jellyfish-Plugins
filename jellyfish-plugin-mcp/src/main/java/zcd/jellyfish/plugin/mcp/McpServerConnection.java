@@ -89,6 +89,16 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
     /** 在途请求：id → 等待位。 */
     private final Map<Long, Pending> pending = new ConcurrentHashMap<Long, Pending>();
 
+    /**
+     * 保护「立关闭旗」与「请求入表」这两个动作，使它们互斥。
+     * <p>
+     * <b>为什么必须有它</b>：关连接要先叫醒在途请求（{@code failAllPending}），而调用方是先入表再等
+     * 应答。两件事分头做，就会出现「入表落在叫醒之后」——那条等待位再没有人来唤醒，而
+     * {@code callTimeoutSeconds=0}（不超时）时它会<b>一直等下去</b>：表现是 react 线程永久挂住。
+     * 这与 {@code G-15} 那处「检查与入表同一把锁」是同一条纪律，只是这里管的是在途请求表。
+     */
+    private final Object pendingLock = new Object();
+
     /** 子进程传输；未连接时为 {@code null}。 */
     private volatile McpTransport transport;
 
@@ -250,12 +260,19 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
      * ——它同时是「在途请求立刻失败」与「通知不再被处理」的开关，也是
      * {@link #connectInternal()} 复查的依据：关闭指令可能赶在传输出生之前到达，
      * 那种情况由连接自己去收（见该方法的注释）。
+     * <p>
+     * <b>立旗与叫醒在途请求在同一段临界区里</b>（{@link #pendingLock}，与 {@link #request} 的入表互斥）：
+     * 否则一个恰好卡在两步之间的入表既看不到旗子、也不会被叫醒，而超时设为 0 时那就是永远等下去。
      */
     @Override
     public void close() {
-        closed = true;
+        // 立旗与「叫醒在途请求」必须在同一段临界区里（与 request() 的入表互斥）：分两步做的话，
+        // 一个恰好在这两步之间入表的请求既看不到旗子、也不会被叫醒——超时设为 0 时它会一直等下去
+        synchronized (pendingLock) {
+            closed = true;
+            failAllPending("MCP server 已断开: " + config.id());
+        }
         connected = false;
-        failAllPending("MCP server 已断开: " + config.id());
         notificationWorker.shutdownNow();
         McpTransport current = transport;
         transport = null;
@@ -723,7 +740,15 @@ final class McpServerConnection implements McpInvoker, AutoCloseable {
         long id = nextId.incrementAndGet();
         Long key = Long.valueOf(id);
         Pending waiter = new Pending();
-        pending.put(key, waiter);
+        synchronized (pendingLock) {
+            if (closed) {
+                // 旗已经立了：此刻入表没有人会来唤醒它（关闭那一步的遍历已经过去），
+                // 于是它只能等超时——而超时可能是 0（不超时），那就是永远等下去。
+                // 关停之后才到达的调用因此是显式失败，而不是「等一个永远不会来的应答」
+                throw new JellyfishException("MCP server 已断开: " + config.id() + " / " + method);
+            }
+            pending.put(key, waiter);
+        }
         if (cancellationToken != null) {
             cancellationToken.onCancel(waiter::cancel);
         }
