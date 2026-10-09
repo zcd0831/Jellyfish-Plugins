@@ -2,6 +2,7 @@ package zcd.jellyfish.plugin.sessionfile;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.SessionDeleteRequest;
 import zcd.jellyfish.api.extension.SessionPersistRequest;
 import zcd.jellyfish.api.extension.SessionRestoreRequest;
@@ -37,6 +38,9 @@ public final class SessionFilePlugin implements JellyfishPlugin {
     /** 提交信息里会话标识保留的字符数。 */
     private static final int SHORT_ID_LENGTH = 8;
 
+    /** 停止时等在途 git 提交结束的毫秒数：git 收尾通常毫秒级，这个上限只为兜住「它挂了」。 */
+    private static final long CLOSE_GRACE_MILLIS = 3000L;
+
     /** 会话文件仓库，在 {@link #start(PluginContext)} 中装配。 */
     private volatile SessionStore store;
 
@@ -57,19 +61,59 @@ public final class SessionFilePlugin implements JellyfishPlugin {
     }
 
     /**
-     * 落盘一个会话，内容有变化时留一次 git 提交。
+     * 停止插件：收掉在途的 git。
+     * <p>
+     * <b>为什么必须有它</b>：git 提交在专属线程上做，因此停止那一刻可能正好有一条 git 在跑。
+     * 不管它，用户看到的就是「jellyfish 都退出了，还有一个 git 在跑」——那正是「插件停止时必须
+     * 终止在途子进程」这条不变量要防的东西。{@code flushAll()} 排在 {@code pluginManager.close()}
+     * 之前，因此正常情况下这里已经没有待提交的内容，这一步是兜底。
+     * <p>
+     * 注册由框架按 owner 回收，本插件不需要显式退订。
+     */
+    @Override
+    public void stop() {
+        GitRepository current = git;
+        store = null;
+        git = null;
+        if (current != null) {
+            current.close(CLOSE_GRACE_MILLIS);
+        }
+        LOG.info("会话文件插件已停止");
+    }
+
+    /**
+     * 等后台的 git 提交做完。
+     * <p>
+     * <b>包私有接缝，供同包测试使用</b>：提交在专属线程上做，因此「落盘返回值」与「历史里出现提交」
+     * 之间没有先后关系。生产路径不需要它（{@link #stop()} 会收尾），但测试需要一个确定的观察点，
+     * 否则只能靠轮询 git 的副作用去猜。
+     *
+     * @param timeoutMillis 等待上限毫秒数
+     * @return 已做完返回 {@code true}；超时返回 {@code false}
+     */
+    boolean flushGit(long timeoutMillis) {
+        GitRepository current = git;
+        return current == null || current.flush(timeoutMillis);
+    }
+
+    /**
+     * 落盘一个会话，内容有变化时排一次 git 提交。
      *
      * @param request 持久化请求
      * @return 恒为 {@code null}（结果类型是 {@code Void}）
      */
     private Void persist(SessionPersistRequest request) {
+        SessionStore current = requireStore();
         SessionSnapshot snapshot = request.getSnapshot();
         String json = SnapshotJson.write(snapshot);
-        if (!store.writeIfChanged(snapshot.getSessionId(), json)) {
+        if (!current.writeIfChanged(snapshot.getSessionId(), json)) {
             // 内容没变：既不用重写文件，也不该在历史里留一条空提交
             return null;
         }
-        git.commit(store.fileOf(snapshot.getSessionId()), commitMessage(snapshot));
+        GitRepository repository = git;
+        if (repository != null) {
+            repository.commit(current.fileOf(snapshot.getSessionId()), commitMessage(snapshot));
+        }
         return null;
     }
 
@@ -88,11 +132,15 @@ public final class SessionFilePlugin implements JellyfishPlugin {
      * @return 恒为 {@code null}（结果类型是 {@code Void}）
      */
     private Void delete(SessionDeleteRequest request) {
+        SessionStore current = requireStore();
         String sessionId = request.getSessionId();
-        if (!store.delete(sessionId)) {
+        if (!current.delete(sessionId)) {
             return null;
         }
-        git.commit(store.fileOf(sessionId), deleteMessage(sessionId));
+        GitRepository repository = git;
+        if (repository != null) {
+            repository.commit(current.fileOf(sessionId), deleteMessage(sessionId));
+        }
         return null;
     }
 
@@ -103,16 +151,35 @@ public final class SessionFilePlugin implements JellyfishPlugin {
      * @return 恢复结果，保证非 {@code null}
      */
     private SessionRestoreResult restore(SessionRestoreRequest request) {
+        SessionStore current = requireStore();
         List<SessionSnapshot> sessions = new ArrayList<>();
-        for (Path file : store.files()) {
+        for (Path file : current.files()) {
             try {
-                sessions.add(SnapshotJson.read(store.read(file), file.toString()));
+                sessions.add(SnapshotJson.read(current.read(file), file.toString()));
             } catch (RuntimeException e) {
                 // 单个坏文件不该让同目录其它会话也回不来
                 LOG.warn("跳过无法解析的会话文件: file={} reason={}", file, e.getMessage());
             }
         }
         return SessionRestoreResult.of(sessions);
+    }
+
+    /**
+     * 取当前装配的会话仓库。
+     * <p>
+     * <b>为什么要判空而不是直接用字段</b>：{@link #stop()} 会把字段释放掉，而停止与在途请求之间
+     * 有一个窄窗（框架关闭的最后几步）。那种情况下报一句「插件已停止、本次落盘没执行」
+     * 远好于一个空指针——持久化的失败是「不可丢」的，必须让它显式失败。
+     *
+     * @return 会话仓库，保证非 {@code null}
+     * @throws JellyfishException 插件已停止时抛出
+     */
+    private SessionStore requireStore() {
+        SessionStore current = store;
+        if (current == null) {
+            throw new JellyfishException("会话文件插件已停止，本次落盘未执行");
+        }
+        return current;
     }
 
     /**

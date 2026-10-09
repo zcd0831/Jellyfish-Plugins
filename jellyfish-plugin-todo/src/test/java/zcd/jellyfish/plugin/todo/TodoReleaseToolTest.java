@@ -122,6 +122,16 @@ class TodoReleaseToolTest {
         assertTrue(blank.getMessage().contains("content 必须是非空字符串"), blank.getMessage());
     }
 
+    @Test
+    @DisplayName("没有会话时要说清是哪个工具需要会话上下文")
+    void handle_should_nameItsOwnTool_when_noSession() {
+        // 这里曾经写成「todo_done 需要会话上下文」：文案指向另一个工具，排查时会被带偏
+        JellyfishException failure = assertThrows(JellyfishException.class,
+                () -> tool.handle(request(null, null, null, "甲")));
+
+        assertTrue(failure.getMessage().contains("todo_release"), failure.getMessage());
+    }
+
     /**
      * 构造一次工具调用。
      *

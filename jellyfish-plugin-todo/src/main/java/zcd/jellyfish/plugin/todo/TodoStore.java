@@ -338,8 +338,9 @@ final class TodoStore {
             boolean keepInProgress = sticky.status() == TodoStatus.IN_PROGRESS
                     && item.status() == TodoStatus.PENDING;
             TodoStatus status = keepInProgress ? TodoStatus.IN_PROGRESS : item.status();
-            String reason = item.reason() == null && item.status() == TodoStatus.BLOCKED
-                    ? sticky.reason() : item.reason();
+            String reason = item.status() == TodoStatus.BLOCKED
+                    ? (item.reason() == null ? sticky.reason() : item.reason())
+                    : null;
             // PENDING 不继承认领者：claim 只接受「未开始且无主」的条目，而 complete 要求归属匹配，
             // 于是带上旧 owner 的 PENDING 谁也领不走、谁也完不成。更麻烦的是 findSticky 以「有 owner」
             // 为黏性判据，之后每一次整表覆盖都会把这个 owner 继续继承下来——模型自己修不回来，

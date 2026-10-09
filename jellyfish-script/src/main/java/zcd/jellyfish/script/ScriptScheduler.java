@@ -291,10 +291,30 @@ public final class ScriptScheduler implements AutoCloseable {
             }
             return;
         }
-        if (closed) {
-            return;
+        emitInvalidation(plugin, name);
+    }
+
+    /**
+     * 代发一次 UI 失效事件。
+     * <p>
+     * <b>它自己吞掉异常，这是本方法存在的理由</b>：任务体抛异常会让
+     * {@code scheduleWithFixedDelay} 的后续触发<b>静默停止</b>，而「代发失效」恰好是关闭那一刻
+     * 最容易抛的一步——刚查过 {@code closed} 之后上下文才关（fail-closed）就会抛。
+     * 那个竞争窗口本身无害（最多多发一次没人看的失效），真正要防的是它把定时器带走。
+     *
+     * @param plugin 目标脚本
+     * @param name   任务名
+     */
+    private void emitInvalidation(ScriptPlugin plugin, String name) {
+        try {
+            context.emit(new UiInvalidatedEvent());
+        } catch (RuntimeException e) {
+            if (closed) {
+                LOG.debug("关闭过程中代发失效事件失败: script={} task={}", plugin.id(), name);
+            } else {
+                LOG.warn("代发 UI 失效事件失败: script={} task={} 原因={}", plugin.id(), name, e.getMessage());
+            }
         }
-        context.emit(new UiInvalidatedEvent());
     }
 
     /**

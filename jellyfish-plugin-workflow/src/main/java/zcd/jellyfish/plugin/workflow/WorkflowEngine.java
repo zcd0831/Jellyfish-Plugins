@@ -221,10 +221,16 @@ final class WorkflowEngine {
         String aggregate = collect(ordered);
         DelegationResult synthesis = null;
         if (spec.getAggregateMode() == AggregateMode.SUMMARIZE) {
-            tracker.summarising(workflowId);
-            synthesis = summarize(spec, parentSessionId, token, sink, aggregate);
-            if (synthesis != null && synthesis.hasText()) {
-                aggregate = synthesis.getText().trim();
+            if (token.isCancelled()) {
+                // 汇总本身也是一次子代理 run（墙钟按单 run 的上限算）。用户已经按了 Esc，
+                // 就不该再花一次去做一件他不会看的活：材料照原样返回，取消在各步结局里已经说清
+                LOG.info("workflow 已取消，跳过汇总，直接返回各步材料: spec={}", spec.displayName());
+            } else {
+                tracker.summarising(workflowId);
+                synthesis = summarize(spec, parentSessionId, token, sink, aggregate);
+                if (synthesis != null && synthesis.hasText()) {
+                    aggregate = synthesis.getText().trim();
+                }
             }
         }
         return new WorkflowRun(spec, ordered, synthesis, aggregate);

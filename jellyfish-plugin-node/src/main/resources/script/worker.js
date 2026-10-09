@@ -392,6 +392,10 @@ function main() {
     process.stdin.on('data', (chunk) => {
         const read = wire.feed(buffer, chunk);
         buffer = read.buffer;
+        if (read.dropped > 0) {
+            process.stderr.write('[' + session.scriptId + '] 宿主发来的协议帧有 ' + read.dropped
+                + ' 行无法解析\n');
+        }
         for (const frame of read.frames) {
             pending.push(frame);
         }

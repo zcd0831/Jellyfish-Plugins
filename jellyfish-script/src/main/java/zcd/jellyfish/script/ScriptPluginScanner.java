@@ -6,6 +6,7 @@ import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.script.codec.ExtensionCodecs;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -170,14 +171,35 @@ public final class ScriptPluginScanner {
 
     /**
      * 读取清单文件。
+     * <p>
+     * <b>带上限读，而且先看大小</b>：清单是随仓库分发的东西，扫描发生在<b>插件启动期</b>——
+     * 一个几百 MB 的 {@code manifest.json}（不管是误提交还是恶意）会把内核启动直接拖垮，
+     * 而它没有任何正当理由那么大：声明几百个工具也到不了这个量级。
+     * 判据用<b>上限</b>而不是文件大小：大小在 {@code stat} 与 {@code read} 之间还会变。
      *
      * @param file 清单文件
      * @return 正文
-     * @throws JellyfishException 读取失败时抛出
+     * @throws JellyfishException 读取失败或超出上限时抛出
      */
     private static String read(Path file) {
         try {
-            return new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+            long size = Files.size(file);
+            if (size > ScriptManifest.MAX_FILE_BYTES) {
+                throw new JellyfishException("清单文件过大（" + size + " 字节，上限 "
+                        + ScriptManifest.MAX_FILE_BYTES + " 字节）: " + file);
+            }
+            byte[] buffer = new byte[(int) Math.min(size, (long) ScriptManifest.MAX_FILE_BYTES)];
+            try (InputStream in = Files.newInputStream(file)) {
+                int total = 0;
+                while (total < buffer.length) {
+                    int read = in.read(buffer, total, buffer.length - total);
+                    if (read < 0) {
+                        break;
+                    }
+                    total += read;
+                }
+                return new String(buffer, 0, total, StandardCharsets.UTF_8);
+            }
         } catch (IOException e) {
             throw new JellyfishException("无法读取清单: " + file, e);
         }

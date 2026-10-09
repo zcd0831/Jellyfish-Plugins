@@ -162,7 +162,10 @@ final class CommonsExecScriptProcess implements ScriptProcess {
             LOG.warn("脚本进程未在 {} ms 内退出，发送终止信号: {}", Long.valueOf(graceMillis), describeCommand());
             current.destroy();
         }
-        if (!awaitExit(graceMillis)) {
+        // 第二段等待用 killMillis 而不是再等一遍 graceMillis：从这一刻起已经进入「动手收尾」，
+        // 剩下的每一段等待都该受同一个上限约束（否则最坏情况是 grace + grace + kill，
+        // 而那个多出来的 grace 只是把强杀推后）
+        if (!awaitExit(killMillis)) {
             LOG.warn("脚本进程未响应终止信号，强杀: {}", describeCommand());
             current.destroyForcibly();
             if (!awaitExit(killMillis)) {

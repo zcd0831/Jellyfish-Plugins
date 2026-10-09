@@ -134,6 +134,23 @@ class ScriptPluginScannerTest {
     }
 
     @Test
+    @DisplayName("清单文件过大应记问题并跳过：它是在启动期被读进来的")
+    void scan_should_recordIssue_when_manifestIsTooLarge() throws IOException {
+        // Given：一个超过上限的清单（不是合法 JSON，但这一点无关紧要——超限就该在解析之前被挡下）
+        Path directory = scriptsRoot.resolve("huge");
+        Files.createDirectories(directory);
+        byte[] payload = new byte[ScriptManifest.MAX_FILE_BYTES + 1];
+        java.util.Arrays.fill(payload, (byte) ' ');
+        Files.write(directory.resolve(ScriptManifest.FILE_NAME), payload);
+
+        ScriptScanResult result = scanner.scan(scriptsRoot);
+
+        assertTrue(result.plugins().isEmpty(), result.plugins().toString());
+        assertEquals(1, result.issues().size());
+        assertTrue(result.issues().get(0).message().contains("过大"), result.issues().get(0).message());
+    }
+
+    @Test
     @DisplayName("入口文件是目录外符号链接时应记问题：清单里的名字挡不住链接的指向")
     void scan_should_recordIssue_when_entryIsSymlinkOutsideScriptDirectory() throws IOException {
         // Given：脚本目录外的真实文件，以及一个指向它的符号链接

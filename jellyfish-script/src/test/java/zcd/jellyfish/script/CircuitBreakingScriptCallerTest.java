@@ -289,6 +289,66 @@ class CircuitBreakingScriptCallerTest {
                 .build(), listener);
     }
 
+    @Test
+    @DisplayName("「不表态」不算成功：它不能把连续失败计数清零")
+    void call_should_notCountNotHandledAsSuccess() {
+        AtomicInteger calls = new AtomicInteger();
+        CircuitBreakingScriptCaller caller = caller((plugin, type, request) -> {
+            // 第 3 次是「不表态」：它既不该抹掉前两次的失败，也不该自己算一次失败
+            if (calls.incrementAndGet() == 3) {
+                throw new ScriptNotHandledException("热路径点不表态");
+            }
+            throw new JellyfishException("脚本炸了");
+        }, 4, 60, 3, null);
+
+        for (int index = 0; index < 5; index++) {
+            assertThrows(JellyfishException.class, () -> caller.call(JIRA, "tool", null));
+        }
+
+        // 第 5 次调用是第 4 次「真失败」：若「不表态」被记成成功，计数会被清零，这里仍是正常态
+        assertEquals(ScriptCircuitBreaker.State.OPEN, caller.stateOf("jira"));
+    }
+
+    @Test
+    @DisplayName("「不表态」不算失败：它不该把熔断推到阈值上")
+    void call_should_notCountNotHandledAsFailure() {
+        AtomicInteger calls = new AtomicInteger();
+        CircuitBreakingScriptCaller caller = caller((plugin, type, request) -> {
+            if (calls.incrementAndGet() == 3) {
+                throw new ScriptNotHandledException("热路径点不表态");
+            }
+            throw new JellyfishException("脚本炸了");
+        }, 4, 60, 3, null);
+
+        for (int index = 0; index < 4; index++) {
+            assertThrows(JellyfishException.class, () -> caller.call(JIRA, "tool", null));
+        }
+
+        // 只有 3 次真失败，不该熔断；若「不表态」被记成失败，这里已经是第 4 次
+        assertEquals(ScriptCircuitBreaker.State.CLOSED, caller.stateOf("jira"));
+    }
+
+    @Test
+    @DisplayName("半开探测遇到「不表态」时不能判成已恢复")
+    void call_should_notRecoverHalfOpen_when_notHandled() {
+        AtomicInteger calls = new AtomicInteger();
+        // 冷却 0 秒：冷却期满后的下一次调用立刻进入半开探测
+        CircuitBreakingScriptCaller caller = caller((plugin, type, request) -> {
+            if (calls.incrementAndGet() == 1) {
+                throw new JellyfishException("脚本炸了");
+            }
+            throw new ScriptNotHandledException("热路径点不表态");
+        }, 1, 0, 3, null);
+
+        assertThrows(JellyfishException.class, () -> caller.call(JIRA, "tool", null));
+        assertEquals(ScriptCircuitBreaker.State.OPEN, caller.stateOf("jira"));
+
+        // 这次调用放行了探测，但它什么都没办：状态必须停在半开（不能回到正常态），
+        // 否则「一次没打出去的电话」就成了恢复的证据
+        assertThrows(ScriptNotHandledException.class, () -> caller.call(JIRA, "tool", null));
+        assertEquals(ScriptCircuitBreaker.State.HALF_OPEN, caller.stateOf("jira"));
+    }
+
     /**
      * 造一个总是返回同一载荷的调用入口。
      *

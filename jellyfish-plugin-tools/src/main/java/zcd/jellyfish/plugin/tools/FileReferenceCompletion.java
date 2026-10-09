@@ -2,6 +2,7 @@ package zcd.jellyfish.plugin.tools;
 
 import zcd.jellyfish.api.extension.ExtensionHandler;
 import zcd.jellyfish.api.extension.InputReferenceChoice;
+import zcd.jellyfish.api.extension.InputReferenceEscapes;
 import zcd.jellyfish.api.extension.InputReferenceRequest;
 import zcd.jellyfish.api.extension.InputReferenceResult;
 
@@ -30,6 +31,10 @@ import java.util.Locale;
  * <b>约束</b>：本处理器在渲染线程上同步执行（输入框每帧可能问一次），因此必须快；
  * 目录列举加了 {@link #MAX_CHOICES} 上限，并且不递归。
  * <p>
+ * <b>片段里的空白是转义过的</b>：含空格的路径由 {@link InputReferenceEscapes} 负责转义（插入时）
+ * 与还原（比较之前），规则与外壳切片段时用的是同一处定义——三处各写一份的话，
+ * 迟早出现「能补全但读不对」或「能读但补全断了」这种只有一半成立的现场。
+ * <p>
  * <b>不做过滤</b>：隐藏文件照常列出——「目录里到底有什么」是事实，替用户裁剪只会让他以为文件不存在。
  *
  * @author zcd
@@ -45,9 +50,12 @@ final class FileReferenceCompletion implements ExtensionHandler<InputReferenceRe
     @Override
     public InputReferenceResult handle(InputReferenceRequest request) {
         String token = request.getToken();
-        int slash = token.lastIndexOf('/');
-        String dirPart = slash < 0 ? "" : token.substring(0, slash + 1);
-        String namePrefix = slash < 0 ? token : token.substring(slash + 1);
+        // 片段里的空白是**转义过**的（外壳按同一份规则切片段，见 InputReferenceEscapes），
+        // 因此比较之前先还原：不还原的话，「my\ f」永远匹配不上「my file.txt」
+        String plain = InputReferenceEscapes.unescape(token);
+        int slash = plain.lastIndexOf('/');
+        String dirPart = slash < 0 ? "" : plain.substring(0, slash + 1);
+        String namePrefix = slash < 0 ? plain : plain.substring(slash + 1);
         Path directory = resolveDirectory(dirPart);
         if (directory == null) {
             return InputReferenceResult.empty();
@@ -110,8 +118,12 @@ final class FileReferenceCompletion implements ExtensionHandler<InputReferenceRe
 
     /**
      * 构造一条候选。
+     * <p>
+     * <b>插入文本是转义过的</b>：片段按空白切，因此含空格的路径必须转义成 {@code my\ file.txt}
+     * 才不会被切成两段（规则与外壳共用 {@link InputReferenceEscapes}）。
+     * 转义的是「目录 + 文件名」整段：目录名里有空格时，那一层也得转义。
      *
-     * @param dirPart 目录片段（含结尾 {@code /}），可为空串
+     * @param dirPart 目录片段（含结尾 {@code /}，未转义的原文），可为空串
      * @param entry   子项路径
      * @return 候选
      */
@@ -120,7 +132,7 @@ final class FileReferenceCompletion implements ExtensionHandler<InputReferenceRe
         String name = fileName(entry);
         String suffix = directory ? "/" : "";
         String label = name + suffix;
-        String insertText = dirPart + escape(name) + suffix;
+        String insertText = InputReferenceEscapes.escape(dirPart + name) + suffix;
         String detail = directory ? "目录" : sizeDetail(entry);
         return new InputReferenceChoice(label, insertText, detail);
     }
@@ -138,19 +150,6 @@ final class FileReferenceCompletion implements ExtensionHandler<InputReferenceRe
             // 大小读不出来不影响「这里有个文件」这个事实
             return "文件";
         }
-    }
-
-    /**
-     * 转义插入文本里的空白。
-     * <p>
-     * 空白会把一个引用片段拆成两段，因此路径里的空格必须转义；这里只处理空格，
-     * 因为它是唯一在实践中会让片段断裂的字符。
-     *
-     * @param name 文件名
-     * @return 可插入输入框的文本
-     */
-    private static String escape(String name) {
-        return name.replace(" ", "\\ ");
     }
 
     /**

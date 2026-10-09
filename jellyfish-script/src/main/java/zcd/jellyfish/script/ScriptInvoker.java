@@ -18,6 +18,11 @@ import zcd.jellyfish.api.extension.CancellationToken;
  * 实现方<b>不返回 {@code null}</b> 是一个软约定而非硬保证：{@link ExtensionCodec} 的解码方法
  * 必须接受 {@code null}（协议层可能确实没有结果载荷），因此实现方返回 {@code null}
  * 一律按「空结果」处理。
+ * <p>
+ * <b>「不表态」请抛 {@link ScriptNotHandledException}</b>，不要借用 {@code null}：
+ * 两者在调用点会走成同一条路（处理器返回 {@code null}），但对熔断器来说含义完全不同——
+ * {@code null} 是「这次拿到了空结果」（算成功），而 {@code ScriptNotHandledException} 是
+ * 「这次没去办」（不算成功也不算失败）。把它们混成一个值，坏脚本会被判成好的。
  *
  * @author zcd
  */

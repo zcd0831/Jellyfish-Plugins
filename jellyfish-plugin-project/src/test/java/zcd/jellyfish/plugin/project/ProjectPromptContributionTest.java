@@ -83,6 +83,19 @@ class ProjectPromptContributionTest {
     }
 
     @Test
+    @DisplayName("只剩空白的约定文件不应被内联成一个空块")
+    void handle_should_returnEmpty_when_fileHasNoContentLeft() throws IOException {
+        // 这一条覆盖两种现场：文件本来就只有空白，以及「探测与读取之间被清空」
+        // （那时读回来的是空串）——两者都走同一个判据：没有可读的内容就不内联。
+        // 内联一个空块比什么都不说更糟：模型会据此以为「约定文件是空的」
+        writeConventionFile("   \n\t\n");
+
+        PromptContribution result = contribution(1024).handle(new PromptContributionRequest("s-1"));
+
+        assertTrue(result.isEmpty(), result.getText());
+    }
+
+    @Test
     @DisplayName("会话中途新建约定文件应立刻生效：/init 刚写出的文件，下一轮模型就要看得见")
     void handle_should_detectNewFile_inSameSession() throws IOException {
         ProjectPromptContribution contribution = contribution(1024);

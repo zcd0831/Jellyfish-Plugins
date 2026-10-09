@@ -197,7 +197,10 @@ def serve(sock, script_id, script_dir, entry_name, manifest, strict, idle_second
             break
         if not chunk:
             break
-        buffer, frames = wire.feed(buffer, chunk)
+        buffer, frames, dropped = wire.feed(buffer, chunk)
+        if dropped:
+            print("[%s] 宿主发来的协议帧有 %d 行无法解析" % (script_id, dropped),
+                  file=sys.stderr, flush=True)
         for frame in frames:
             last_used = time.time()
             _handle(sock, script_id, frame)

@@ -138,6 +138,80 @@ class EditFileToolTest {
     }
 
     @Test
+    @DisplayName("不是 UTF-8 的文件应明确拒绝，而不是「读成乱码再整份写回」")
+    void handle_should_reject_when_fileIsNotUtf8() throws Exception {
+        // Given：GBK 编码的「中文」——按 UTF-8 解码一定非法
+        Path file = tempDir.resolve("gbk.txt");
+        Files.write(file, "中文".getBytes("GBK"));
+
+        // When
+        JellyfishException failure = expectFailure(() -> invoke(tool,
+                args("path", file.toString(), "old_text", "中", "new_text", "新")));
+
+        // Then：一次替换会把整份内容变成乱码，那是不可逆的损毁，因此宁可在这里失败
+        assertTrue(failure.getMessage().contains("UTF-8"), failure.getMessage());
+        assertEquals("中文", new String(Files.readAllBytes(file), "GBK"), "原文件不该被碰过");
+    }
+
+    @Test
+    @DisplayName("读之后文件被改动过时应拒绝写入，而不是把别人的改动抹掉")
+    void handle_should_reject_when_fileChangedSinceRead() throws Exception {
+        Path file = write("a.txt", "hello");
+        EditFileTool.Stamp before = EditFileTool.Stamp.of(file);
+        // 模拟「读之后、写之前被别人改了」：内容与修改时间都换掉
+        Files.write(file, "别人改的".getBytes(StandardCharsets.UTF_8));
+        Files.setLastModifiedTime(file, java.nio.file.attribute.FileTime.fromMillis(
+                System.currentTimeMillis() + 10_000L));
+
+        JellyfishException failure = expectFailure(() -> {
+            tool.requireUnchanged(file, before);
+            return null;
+        });
+
+        assertTrue(failure.getMessage().contains("被改动过"), failure.getMessage());
+    }
+
+    @Test
+    @DisplayName("替换应保留原文件的权限，而不是换成临时文件的")
+    void handle_should_keepFilePermissions() throws Exception {
+        Path file = write("a.txt", "hello");
+        java.util.Set<java.nio.file.attribute.PosixFilePermission> expected =
+                java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--");
+        try {
+            Files.setPosixFilePermissions(file, expected);
+        } catch (UnsupportedOperationException e) {
+            // 非 POSIX 文件系统（Windows）：这一层测不了，跳过
+            return;
+        }
+
+        invoke(tool, args("path", file.toString(), "old_text", "hello", "new_text", "world"));
+
+        assertEquals(expected, Files.getPosixFilePermissions(file));
+    }
+
+    @Test
+    @DisplayName("只读文件应拒绝写入：原子替换不该越过文件权限")
+    void handle_should_reject_when_fileIsReadOnly() throws Exception {
+        Path file = write("a.txt", "hello");
+        try {
+            Files.setPosixFilePermissions(file,
+                    java.nio.file.attribute.PosixFilePermissions.fromString("r--r--r--"));
+        } catch (UnsupportedOperationException e) {
+            return;
+        }
+        if (Files.isWritable(file)) {
+            // 以 root 运行时只读位对写权限判定不起作用（容器里常见）：这一层测不了，跳过
+            return;
+        }
+
+        JellyfishException failure = expectFailure(() -> invoke(tool,
+                args("path", file.toString(), "old_text", "hello", "new_text", "world")));
+
+        // 原子替换只受目录权限约束，会绕过文件自身的只读位；那与「不可写就别写」的直觉相反
+        assertTrue(failure.getMessage().contains("不可写"), failure.getMessage());
+    }
+
+    @Test
     @DisplayName("新旧文本都必须存在，缺一个就报错")
     void handle_should_fail_when_newTextMissing() {
         Path file = write("a.txt", "hello");

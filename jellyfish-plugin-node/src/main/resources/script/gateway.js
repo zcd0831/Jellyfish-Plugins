@@ -324,6 +324,10 @@ class Gateway {
     readJava(chunk) {
         const read = wire.feed(this.stdinBuffer, chunk);
         this.stdinBuffer = read.buffer;
+        if (read.dropped > 0) {
+            // 宿主发来的帧解析不了意味着「协议两侧对不上」，比单次调用失败严重得多
+            this.log('宿主发来的协议帧有 ' + read.dropped + ' 行无法解析');
+        }
         for (const frame of read.frames) {
             this.handleJavaFrame(frame);
         }
@@ -709,6 +713,9 @@ class Gateway {
         }
         const read = wire.feed(current.buffer, chunk);
         current.buffer = read.buffer;
+        if (read.dropped > 0) {
+            this.log('脚本 ' + state.scriptId + ' 的协议帧有 ' + read.dropped + ' 行无法解析');
+        }
         for (const frame of read.frames) {
             this.handleWorkerFrame(state, frame);
         }

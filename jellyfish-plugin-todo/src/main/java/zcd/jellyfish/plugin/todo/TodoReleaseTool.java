@@ -75,7 +75,7 @@ final class TodoReleaseTool implements ExtensionHandler<ToolCallRequest, ToolCal
     public ToolCallResult handle(ToolCallRequest request) {
         String key = scope.collaborationKeyOf(request);
         if (key == null) {
-            throw new JellyfishException("todo_done 需要会话上下文，当前没有会话");
+            throw new JellyfishException("todo_release 需要会话上下文，当前没有会话");
         }
         String content = text(request.getArguments().get("content"));
         TodoActionResult result = store.release(key, content, request.getRunId());

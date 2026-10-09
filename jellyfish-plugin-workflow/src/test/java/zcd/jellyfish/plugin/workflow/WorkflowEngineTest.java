@@ -236,6 +236,61 @@ class WorkflowEngineTest {
     }
 
     @Test
+    @DisplayName("取消中途时 on_failure 的补救步骤不该跑：取消不是失败")
+    void run_should_notRunOnFailureStep_when_cancelledMidway() {
+        RecordingPort port = new RecordingPort();
+        // 「按下 Esc」的时刻：步骤 a 已经跑完（await:a 记进了轨迹）之后
+        CancellationToken midway = new CancellationToken() {
+            @Override
+            public boolean isCancelled() {
+                return port.getTrace().contains("await:a");
+            }
+
+            @Override
+            public void onCancel(Runnable callback) {
+                // 本用例只观察 isCancelled
+            }
+        };
+        WorkflowSpec spec = spec(steps(
+                step("a", "scout", "a", null, null),
+                step("b", "scout", "b", java.util.Collections.singletonList("a"), "on_failure")));
+
+        WorkflowRun run = new WorkflowEngine(port, tracker()).run(spec, "s-1", midway, null);
+
+        assertTrue(run.getSteps().get(0).succeeded(), String.valueOf(run.getSteps().get(0).getResult()));
+        // 取消是用户主权，不是「前置失败了」：补救步骤不该被触发
+        assertFalse(port.getTrace().contains("spawn:b"), port.getTrace().toString());
+        assertFalse(run.getSteps().get(1).failed(), String.valueOf(run.getSteps().get(1).getResult()));
+        assertTrue(run.getSteps().get(1).cancelled(), String.valueOf(run.getSteps().get(1).getResult()));
+    }
+
+    @Test
+    @DisplayName("取消之后不再派汇总子代理：材料照原样返回")
+    void run_should_skipSummarize_when_cancelledMidway() {
+        RecordingPort port = new RecordingPort();
+        CancellationToken midway = new CancellationToken() {
+            @Override
+            public boolean isCancelled() {
+                return port.getTrace().contains("await:a");
+            }
+
+            @Override
+            public void onCancel(Runnable callback) {
+                // 本用例只观察 isCancelled
+            }
+        };
+        WorkflowSpec spec = new WorkflowSpec("t",
+                steps(step("a", "scout", "a", null, null)), AggregateMode.SUMMARIZE, null);
+
+        WorkflowRun run = new WorkflowEngine(port, tracker()).run(spec, "s-1", midway, null);
+
+        // 汇总是一次子代理 run：已经取消了就不该再花一次（轨迹里只该有 a 的那两条）
+        assertEquals(2, port.getTrace().size(), port.getTrace().toString());
+        assertNull(run.getSynthesis());
+        assertTrue(run.getAggregate().contains("a"), run.getAggregate());
+    }
+
+    @Test
     @DisplayName("被拒的步骤记为失败（不是静默跳过），原因是内核给的那句话")
     void run_shouldReportRejectedStepAsFailure() {
         RecordingPort port = new RecordingPort();

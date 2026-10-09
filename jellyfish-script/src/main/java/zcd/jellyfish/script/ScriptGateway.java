@@ -123,6 +123,15 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
     /** 当前一代的 RPC 会话；未启动时为 {@code null}。 */
     private volatile ScriptRpc rpc;
 
+    /**
+     * 当前一代的协议帧写出器；未启动时为 {@code null}。
+     * <p>
+     * 它把「写」从调用线程挪到一条专属线程上（理由见 {@link FrameWriter}），因此这里给出的是
+     * {@code ScriptRpc.Sender} 的第二个实现：协议层拿到的仍然是一个「扔一帧进去」的动作，
+     * 只是它不再阻塞。
+     */
+    private volatile FrameWriter writer;
+
     /** 已抽取并复用的网关目录；未抽取时为 {@code null}。 */
     private volatile Path gatewayDirectory;
 
@@ -204,10 +213,13 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
         boolean hotPath = HotPathPoints.contains(typeName);
         if (hotPath && !isRunning()) {
             // 热路径上的点不冷启动：一次进程冷启动（几百毫秒起）不该落在「每次发给厂商之前」
-            // 那条路径上。返回 null = 不表态，调用点走保守缺省
+            // 那条路径上。这里显式「不表态」（而不是返回 null）——null 在调用契约里是
+            // 「脚本没有结果载荷」，那是一类成功，混用会让熔断把「没打的电话」记成打成了
             LOG.debug("{} 热路径扩展点 {} 按「不表态」处理（worker 未热，不冷启动）",
                     language.id(), typeName);
-            return null;
+            throw new ScriptNotHandledException(
+                    "热路径扩展点 " + typeName + " 不表态（" + language.displayName()
+                            + " 网关未运行，按约定不为其冷启动）");
         }
         ScriptRpc current = ensureStarted();
         Map<String, Object> params = new LinkedHashMap<String, Object>();
@@ -316,11 +328,15 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
      * <p>
      * 幂等。先发 {@code shutdown}（域名关卡在网关一侧：只有它知道 worker 是谁），
      * 再走两段式关闭兜住「网关自己也卡住了」的情况。
+     * <p>
+     * <b>写出行排在进程之后关</b>：{@code shutdown} 那一帧要经它出得去，而叫醒一个正阻塞在管道写上的
+     * 写线程的唯一办法是拆掉管道——那正是 {@code ScriptProcess.close} 干的事。
      */
     @Override
     public void close() {
         ScriptRpc current;
         ScriptProcess currentProcess;
+        FrameWriter currentWriter;
         synchronized (lock) {
             if (closed) {
                 return;
@@ -330,6 +346,7 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
             closed = true;
             current = rpc;
             currentProcess = process;
+            currentWriter = writer;
         }
         if (current != null) {
             shutdown(current);
@@ -338,9 +355,13 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
         if (currentProcess != null) {
             currentProcess.close(CLOSE_GRACE_MILLIS, CLOSE_KILL_MILLIS);
         }
+        if (currentWriter != null) {
+            currentWriter.close(CLOSE_KILL_MILLIS);
+        }
         synchronized (lock) {
             rpc = null;
             process = null;
+            writer = null;
         }
         LOG.info("{} 脚本运行时已关闭", language.displayName());
     }
@@ -433,7 +454,7 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
             if (current != null && currentProcess != null && currentProcess.isAlive()) {
                 return current;
             }
-            discard(current, currentProcess);
+            discard(current, currentProcess, writer);
             start();
             return rpc;
         }
@@ -450,9 +471,15 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
         final ScriptRpc created = new ScriptRpc(this::send, this::onIncoming);
         this.rpc = created;
         ScriptProcess started = null;
+        FrameWriter createdWriter = null;
         try {
             started = processFactory.start(this::onLine, code -> onExited(created, code.intValue()));
             this.process = started;
+            // 写出行要排在初始化之前就位：initialize 这一帧本身就要经它才出得去。
+            // 写失败回报给这一代会话——那样「进程其实已经没了」会立刻唤醒正在等待的调用方，
+            // 而不是让它各自等到超时
+            createdWriter = new FrameWriter(started, cause -> onWriteFailure(created, cause));
+            this.writer = createdWriter;
             // 新的一代不清楚任何一个 worker：上一代的快照必须清掉，
             // 否则台账会把「上一代退出时的样子」当成现在的样子展示
             workers.clear();
@@ -465,7 +492,7 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
             LOG.info("{} 脚本网关已启动: {} 个脚本，{}", language.displayName(),
                     Integer.valueOf(scripts.size()), settings);
         } catch (RuntimeException e) {
-            discard(created, started);
+            discard(created, started, createdWriter);
             throw e;
         }
     }
@@ -511,10 +538,10 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
             reasons.append("\n  ").append(id).append(": ").append(reason);
         }
         if (failed > 0 && failed == results.size() && !scripts.isEmpty()) {
-            // 把每条原因写进异常：只说「全都失败了」等于把定位工作又推回给用户，
-            // 而真正有用的信息（哪个脚本、差在哪个扩展点）此刻已经完全在手上了
-            throw new JellyfishException("全部脚本初始化失败（" + failed + " 个）:"
-                    + reasons + "\n清单与实现不一致是最常见的原因，检查各脚本的 manifest.json");
+            // 首行是一句给人看的原因（它会显示在内核的轨迹行上），逐脚本的原因放后面的行：
+            // 「哪个脚本、差在哪个扩展点」此刻已经完全在手上了，不该把它压到第二行之后
+            throw new JellyfishException("全部脚本初始化失败（" + failed + " 个）：清单与实现不一致是最常见的原因，"
+                    + "检查各脚本的 manifest.json" + reasons);
         }
     }
 
@@ -642,16 +669,37 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
 
     /**
      * 发送一帧协议文本。
+     * <p>
+     * <b>本方法不阻塞在管道上</b>：帧交给写出行（{@link FrameWriter}）之后立刻返回，
+     * 于是调用方的截止时间对「写不进去」同样有效。整行的原子性与写出顺序由那条唯一的写线程保证。
      *
      * @param line 帧文本
-     * @throws ScriptConnectionException 进程不存在时抛出
+     * @throws ScriptConnectionException 这一代还没有写出行（未启动、已关闭）时抛出
+     * @throws JellyfishException        写出行已失败或积压到上限时抛出
      */
     private void send(String line) {
-        ScriptProcess current = process;
+        FrameWriter current = writer;
         if (current == null) {
             throw new ScriptConnectionException("脚本网关尚未启动，无法发送协议帧", null);
         }
         current.send(line);
+    }
+
+    /**
+     * 处理协议帧写出失败。
+     * <p>
+     * <b>不取本类的锁</b>：它由写线程调用，而调用线程可能正持锁等待初始化应答（初始化那一帧也走写出行），
+     * 一旦互等就是死锁。因此它只碰这一代的会话。
+     * <p>
+     * 失败的含义与进程退出相同：这一代已经写不进去了，让正在等待的调用立刻拿到「连接不可用」，
+     * 而不是各自等到超时。
+     *
+     * @param generation 该次失败所属的 RPC 会话
+     * @param cause      失败原因
+     */
+    private void onWriteFailure(ScriptRpc generation, JellyfishException cause) {
+        generation.fail(new ScriptConnectionException(
+                language.displayName() + " 脚本网关的协议帧写不进去（连接不可用）", cause));
     }
 
     /**
@@ -848,19 +896,26 @@ public final class ScriptGateway implements ScriptCaller, ScriptEventTarget, Aut
 
     /**
      * 丢弃一代运行态。
+     * <p>
+     * 顺序是「会话 → 进程 → 写出行」：写出行可能正阻塞在管道写上，只能靠进程被关掉来叫醒它。
      *
      * @param generation RPC 会话，可为 {@code null}
      * @param current    进程，可为 {@code null}
+     * @param writer     协议帧写出行，可为 {@code null}
      */
-    private void discard(ScriptRpc generation, ScriptProcess current) {
+    private void discard(ScriptRpc generation, ScriptProcess current, FrameWriter writer) {
         if (generation != null) {
             generation.close();
         }
         if (current != null) {
             current.close(CLOSE_GRACE_MILLIS, CLOSE_KILL_MILLIS);
         }
+        if (writer != null) {
+            writer.close(CLOSE_KILL_MILLIS);
+        }
         this.rpc = null;
         this.process = null;
+        this.writer = null;
     }
 
     /**

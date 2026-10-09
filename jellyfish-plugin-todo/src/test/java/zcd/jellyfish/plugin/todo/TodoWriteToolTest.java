@@ -250,6 +250,32 @@ class TodoWriteToolTest {
         return new ToolCallRequest(TodoWriteTool.NAME, arguments(Arrays.<Object>asList(items)), sessionId);
     }
 
+    @Test
+    @DisplayName("状态不是 blocked 时写下的 reason 应被丢掉：它会变成永久黏性标记")
+    void handle_should_dropReason_when_statusIsNotBlocked() {
+        Map<String, Object> item = item("甲", "pending");
+        item.put("reason", "顺手写的");
+
+        tool.handle(request("s-1", item));
+
+        TodoItem stored = store.itemsOf("s-1").get(0);
+        assertEquals(TodoStatus.PENDING, stored.status());
+        assertEquals(null, stored.reason());
+        // 而「有认领者」那条黏性判据不受影响：pending 本来就不许带认领者
+        assertEquals(null, stored.owner());
+    }
+
+    @Test
+    @DisplayName("blocked 上的 reason 照常保留：那是它唯一的载体")
+    void handle_should_keepReason_when_statusIsBlocked() {
+        Map<String, Object> item = item("甲", "blocked");
+        item.put("reason", "缺权限");
+
+        tool.handle(request("s-1", item));
+
+        assertEquals("缺权限", store.itemsOf("s-1").get(0).reason());
+    }
+
     /**
      * 构造工具参数映射。
      *

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mockito;
+import zcd.jellyfish.api.JellyfishException;
 import zcd.jellyfish.api.extension.SessionDeleteRequest;
 import zcd.jellyfish.api.extension.SessionPersistRequest;
 import zcd.jellyfish.api.extension.SessionRestoreRequest;
@@ -33,6 +34,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -62,6 +64,9 @@ class SessionFilePluginTest {
     /** 事件通道。 */
     private EventChannel eventChannel;
 
+    /** 最近一次启动的插件，供断言生命周期（提交线程、停止之后的失败语义）。 */
+    private SessionFilePlugin plugin;
+
     @BeforeEach
     void setUp() {
         registry = new TypeRegistry();
@@ -72,6 +77,10 @@ class SessionFilePluginTest {
 
     @AfterEach
     void tearDown() {
+        if (plugin != null) {
+            plugin.stop();
+            plugin = null;
+        }
         eventChannel.close();
     }
 
@@ -144,6 +153,8 @@ class SessionFilePluginTest {
 
         persist(TestSnapshots.full("session-1"));
 
+        // 提交在后台线程上做：落盘返回不等于历史已经写好了，这里等它（生产路径由 stop 收尾）
+        assertTrue(plugin.flushGit(10_000L), "git 提交没有做完");
         assertTrue(Files.isDirectory(tempDir.resolve(".git")));
         assertTrue(Files.isDirectory(tempDir.resolve(".git/refs")));
     }
@@ -182,6 +193,44 @@ class SessionFilePluginTest {
         assertFalse(Files.exists(tempDir.resolve("session-1.json")));
     }
 
+    @Test
+    @DisplayName("stop 应收掉在途 git：停止之后再落盘是显式失败，提交线程也不再留着")
+    void stop_should_closeGit_andFailFurtherPersist() throws Exception {
+        int idle = commitThreadCount();
+        startPlugin(true);
+        persist(TestSnapshots.full("session-1"));
+        assertTrue(plugin.flushGit(10_000L), "git 提交没有做完");
+        assertEquals(idle + 1, commitThreadCount(), "有提交过就该有一条提交线程");
+
+        plugin.stop();
+
+        // 停止与在途请求之间有一个窄窗：那时框架可能仍把请求派到处理器上，
+        // 而「落不了盘」必须显式失败——静默丢掉一次会话落盘是最坏的结果
+        assertThrows(JellyfishException.class, () -> persist(TestSnapshots.full("session-2")));
+        for (int i = 0; i < 50 && commitThreadCount() > idle; i++) {
+            Thread.sleep(20L);
+        }
+        assertEquals(idle, commitThreadCount(), "stop 之后不该还有提交线程");
+    }
+
+    /**
+     * 统计当前进程里本插件的 git 提交线程数。
+     * <p>
+     * 用「前后差分」而不是「有没有」：同一个 JVM 里还跑着别的用例的提交线程
+     * （{@code GitRepositoryTest} 各用例自己的、以及本类里 {@code start} 了但由 {@code tearDown} 收尾的）。
+     *
+     * @return 存活的提交线程数
+     */
+    private static int commitThreadCount() {
+        int count = 0;
+        for (Thread thread : Thread.getAllStackTraces().keySet()) {
+            if (thread.isAlive() && "jellyfish-git-commit".equals(thread.getName())) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     /**
      * 启动插件，把配置指向临时目录。
      *
@@ -194,7 +243,8 @@ class SessionFilePluginTest {
         PluginContext context = new PluginContextFactory(extensions, eventChannel, registry,
                 new RuntimeInfoHolder(), new ActionQueue(), Mockito.mock(SessionManager.class), new ShellIngress(new MetricsRegistry()))
                 .create(PluginDeclaration.of(PLUGIN_ID, configuration));
-        new SessionFilePlugin().start(context);
+        plugin = new SessionFilePlugin();
+        plugin.start(context);
     }
 
     /**

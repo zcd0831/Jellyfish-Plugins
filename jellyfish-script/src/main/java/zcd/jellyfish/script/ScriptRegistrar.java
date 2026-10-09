@@ -242,7 +242,16 @@ public final class ScriptRegistrar {
      */
     private <C extends ExtensionRequest<R>, R> ExtensionHandler<C, R> handlerFor(
             ExtensionCodec<C, R> codec, ScriptPlugin plugin) {
-        return codec.handlerTo((typeName, request, token) -> caller.call(plugin, typeName, request, token));
+        return codec.handlerTo((typeName, request, token) -> {
+            try {
+                return caller.call(plugin, typeName, request, token);
+            } catch (ScriptNotHandledException e) {
+                // 脚本侧「不表态」的出口：内核认得的形态就是处理器返回 null（「本插件没有意见」）。
+                // 翻译放在这里而不是各 codec 里，因为这里是「把脚本调用接进内核处理器」的唯一一处；
+                // 散出去的话，早晚会有一处把它当成失败（那正是它必须与「空结果」分开的原因）
+                return null;
+            }
+        });
     }
 
     /**

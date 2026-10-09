@@ -1,10 +1,13 @@
 package zcd.jellyfish.script;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import zcd.jellyfish.api.JellyfishException;
+import zcd.jellyfish.script.codec.HotPathPoints;
 import zcd.jellyfish.script.protocol.ScriptCallException;
 import zcd.jellyfish.script.protocol.ScriptConnectionException;
 import zcd.jellyfish.script.protocol.ScriptProtocol;
@@ -17,6 +20,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -81,6 +85,19 @@ class ScriptGatewayTest {
             return ScriptProtocol.response(message.id().longValue(), ScriptJson.tree("{}"));
         };
         gateway = buildGateway(GatewaySettings.defaults());
+    }
+
+    /**
+     * 关闭网关。
+     * <p>
+     * 这一代进程带着一条常驻的协议写线程，因此用例结束时必须收干净——否则每个用例都会留下
+     * 一条挂在队列上的守护线程（用到「写挂住」的两个用例还会多留一条卡在管道上的）。
+     */
+    @AfterEach
+    void tearDown() {
+        if (gateway != null) {
+            gateway.close();
+        }
     }
 
     @Test
@@ -171,6 +188,11 @@ class ScriptGatewayTest {
                 () -> gateway.call(plugin, "tool", null));
 
         assertTrue(failure.getMessage().contains("全部脚本初始化失败"), failure.getMessage());
+        // 首行会显示在内核的轨迹行上，因此它必须是「一句给人看的原因」：
+        // 逐脚本的原因跟在后面，但不能把「该去查 manifest.json」这句推到第二行之后
+        String firstLine = failure.getMessage().split("\n", -1)[0];
+        assertTrue(firstLine.contains("manifest.json"), "首行没有给出可操作的原因: " + firstLine);
+        assertFalse(firstLine.endsWith(":"), "首行不该以冒号收尾（那等于把结论留到下一行）: " + firstLine);
         // 失败的一代必须被丢弃：否则下一次调用会拿到一个「初始化失败但看起来活着」的进程
         assertFalse(gateway.isRunning());
     }
@@ -212,6 +234,62 @@ class ScriptGatewayTest {
 
         assertTrue(failure.get() instanceof ScriptConnectionException, String.valueOf(failure.get()));
         assertTrue(System.currentTimeMillis() - started < 3000);
+    }
+
+    @Test
+    @DisplayName("热路径点未热着时应「不表态」而不是冷启动一个进程")
+    void call_should_notColdStart_when_hotPathAndNotRunning() {
+        String hotPathType = HotPathPoints.names().iterator().next();
+
+        assertThrows(ScriptNotHandledException.class, () -> gateway.call(plugin, hotPathType, null));
+
+        // 「不表态」的全部代价就在这里：没有进程被拉起来
+        assertEquals(0, startCount.get());
+        assertFalse(gateway.isRunning());
+    }
+
+    @Test
+    @DisplayName("网关热着时热路径点应照常往返，不做特殊处理")
+    void call_should_forward_when_hotPathAndRunning() {
+        String hotPathType = HotPathPoints.names().iterator().next();
+        gateway.call(plugin, "tool", null);
+
+        assertEquals("ok", gateway.call(plugin, hotPathType, null).get("output").asText());
+    }
+
+    @Test
+    @Timeout(20)
+    @DisplayName("管道写不动时应按超时结束，而不是把派发线程挂住")
+    void call_should_timeOut_when_pipeWriteBlocks() {
+        // 热路径扩展点：它超时不去杀 worker，因此这里量到的就是「写不进去 + 等应答」这一条链本身
+        String hotPathType = HotPathPoints.names().iterator().next();
+        gateway = buildGateway(GatewaySettings.builder().invokeTimeoutSeconds(1).build());
+        gateway.call(plugin, "tool", null);
+        FakeProcess process = processes.get(0);
+        process.blockWrites();
+
+        long started = System.currentTimeMillis();
+        assertThrows(ScriptTimeoutException.class, () -> gateway.call(plugin, hotPathType, null));
+        long elapsed = System.currentTimeMillis() - started;
+
+        // 修好之前这里是「永久」：写阻塞发生在进入等待之前，调用方的截止时间对它一点用都没有
+        assertTrue(elapsed < 5000L, "调用被挂了 " + elapsed + " ms");
+    }
+
+    @Test
+    @Timeout(20)
+    @DisplayName("写失败应立刻唤醒在途调用，而不是让它等到超时")
+    void call_should_failFast_when_writeFails() {
+        // 调用超时给得很长：若失败没有被回报，这里就会等到 60 秒——用例的时限（@Timeout）就是判据
+        gateway = buildGateway(GatewaySettings.builder().invokeTimeoutSeconds(60).build());
+        gateway.call(plugin, "tool", null);
+        FakeProcess process = processes.get(0);
+        process.failWrites();
+
+        long started = System.currentTimeMillis();
+        assertThrows(ScriptConnectionException.class, () -> gateway.call(plugin, "tool", null));
+
+        assertTrue(System.currentTimeMillis() - started < 5000L, "失败没有被立刻回报");
     }
 
     @Test
@@ -378,7 +456,7 @@ class ScriptGatewayTest {
         process.emit("{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"emit_event\",\"params\":"
                 + "{\"script\":\"jira\",\"event\":\"SessionCreatedEvent\"}}");
 
-        ScriptProtocol.Message response = process.sent.get(process.sent.size() - 1);
+        ScriptProtocol.Message response = awaitId(99L, process);
         assertNotNull(response);
         assertEquals(Long.valueOf(99), response.id());
         assertFalse(response.result().get(ScriptProtocol.PARAM_ACCEPTED).asBoolean(true));
@@ -393,7 +471,7 @@ class ScriptGatewayTest {
 
         process.emit("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"mystery\",\"params\":{}}");
 
-        ScriptProtocol.Message response = process.sent.get(process.sent.size() - 1);
+        ScriptProtocol.Message response = awaitId(7L, process);
         assertEquals(Long.valueOf(7), response.id());
         assertEquals(ScriptProtocol.CODE_METHOD_NOT_FOUND, response.errorCode());
     }
@@ -546,7 +624,7 @@ class ScriptGatewayTest {
 
         gateway.notifyEvent("SessionCreatedEvent", ScriptJson.tree("{\"event\":\"SessionCreatedEvent\"}"));
 
-        ScriptProtocol.Message frame = lastOf(ScriptProtocol.METHOD_EVENT, processes.get(0));
+        ScriptProtocol.Message frame = awaitFrame(ScriptProtocol.METHOD_EVENT, processes.get(0));
         assertEquals("SessionCreatedEvent", frame.paramText(ScriptProtocol.PARAM_EVENT));
         assertEquals("SessionCreatedEvent",
                 frame.paramNode(ScriptProtocol.PARAM_PAYLOAD).get("event").asText());
@@ -592,7 +670,7 @@ class ScriptGatewayTest {
         process.emit(ScriptProtocol.request(7L, ScriptProtocol.METHOD_EMIT_EVENT,
                 ScriptJson.tree("{\"script\":\"jira\",\"event\":\"SessionCreatedEvent\"}")));
 
-        ScriptProtocol.Message response = process.sent.get(process.sent.size() - 1);
+        ScriptProtocol.Message response = awaitId(7L, process);
         assertFalse(response.result().get(ScriptProtocol.PARAM_ACCEPTED).asBoolean());
         assertEquals("不可发布", response.result().get(ScriptProtocol.PARAM_REASON).asText());
     }
@@ -607,7 +685,7 @@ class ScriptGatewayTest {
         process.emit(ScriptProtocol.request(8L, ScriptProtocol.METHOD_EMIT_EVENT,
                 ScriptJson.tree("{\"script\":\"jira\",\"event\":\"ConfigWarningEvent\"}")));
 
-        ScriptProtocol.Message response = process.sent.get(process.sent.size() - 1);
+        ScriptProtocol.Message response = awaitId(8L, process);
         assertTrue(response.result().get(ScriptProtocol.PARAM_ACCEPTED).asBoolean());
         assertEquals("evt-9", response.result().get(ScriptProtocol.PARAM_EVENT_ID).asText());
     }
@@ -621,13 +699,66 @@ class ScriptGatewayTest {
      */
     private static ScriptProtocol.Message lastOf(String method, FakeProcess process) {
         ScriptProtocol.Message found = null;
-        for (ScriptProtocol.Message message : process.sent) {
+        for (ScriptProtocol.Message message : process.snapshot()) {
             if (method.equals(message.method())) {
                 found = message;
             }
         }
         assertNotNull(found, "没有收到 " + method + " 帧");
         return found;
+    }
+
+    /**
+     * 等某个 id 的应答帧被写出来。
+     * <p>
+     * <b>为什么必须等</b>：帧的写出是异步的（{@code FrameWriter} 在专属写线程上写），
+     * 因此「网关决定怎么应答」与「假进程收到应答」之间隔着一个真实的间隙。
+     * 等它不是将就时序，而是这条设计本身的一部分——被测的正是「谁在哪个线程上写」。
+     *
+     * @param id      消息 id
+     * @param process 假进程
+     * @return 应答帧
+     */
+    private static ScriptProtocol.Message awaitId(long id, FakeProcess process) {
+        for (int attempt = 0; attempt < 500; attempt++) {
+            for (ScriptProtocol.Message message : process.snapshot()) {
+                if (message.id() != null && message.id().longValue() == id) {
+                    return message;
+                }
+            }
+            nap();
+        }
+        throw new AssertionError("没有等到 id=" + id + " 的应答帧，已收到: " + process.snapshot());
+    }
+
+    /**
+     * 等某一方法对应的帧被写出来。
+     *
+     * @param method  方法名
+     * @param process 假进程
+     * @return 帧
+     */
+    private static ScriptProtocol.Message awaitFrame(String method, FakeProcess process) {
+        for (int attempt = 0; attempt < 500; attempt++) {
+            for (ScriptProtocol.Message message : process.snapshot()) {
+                if (method.equals(message.method())) {
+                    return message;
+                }
+            }
+            nap();
+        }
+        throw new AssertionError("没有等到 " + method + " 帧，已收到: " + process.snapshot());
+    }
+
+    /**
+     * 睡一小会儿再查。
+     */
+    private static void nap() {
+        try {
+            Thread.sleep(10L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /**
@@ -700,7 +831,7 @@ class ScriptGatewayTest {
      */
     private static int countOf(String method, FakeProcess process) {
         int count = 0;
-        for (ScriptProtocol.Message message : process.sent) {
+        for (ScriptProtocol.Message message : process.snapshot()) {
             if (method.equals(message.method())) {
                 count++;
             }
@@ -726,13 +857,24 @@ class ScriptGatewayTest {
         private final Function<ScriptProtocol.Message, String> responder;
 
         /** 收到的全部帧。 */
-        private final List<ScriptProtocol.Message> sent = new ArrayList<ScriptProtocol.Message>();
+        private final List<ScriptProtocol.Message> sent =
+                Collections.synchronizedList(new ArrayList<ScriptProtocol.Message>());
 
         /** 是否已被关闭。 */
         private volatile boolean closed;
 
         /** 是否仍在运行。 */
         private volatile boolean alive = true;
+
+        /** 是否把写挂住（模拟管道写满、网关不读 stdin）。 */
+        private volatile boolean blockWrites;
+
+        /** 是否让写失败（模拟进程已消失）。 */
+        private volatile boolean failWrites;
+
+        /** 解除写阻塞的闸门。 */
+        private final java.util.concurrent.CountDownLatch writeGate =
+                new java.util.concurrent.CountDownLatch(1);
 
         /**
          * 构造假进程。
@@ -750,6 +892,13 @@ class ScriptGatewayTest {
 
         @Override
         public void send(String line) {
+            if (blockWrites && !awaitWriteGate()) {
+                // 真进程的管道被拆掉时，阻塞中的写就是这样以失败告终的
+                throw new JellyfishException("写被打断（管道已拆）");
+            }
+            if (failWrites) {
+                throw new JellyfishException("管道断了（模拟进程已消失）");
+            }
             ScriptProtocol.Message message = ScriptProtocol.parse(line);
             sent.add(message);
             String reply = responder.apply(message);
@@ -767,6 +916,35 @@ class ScriptGatewayTest {
         public void close(long graceMillis, long killMillis) {
             closed = true;
             alive = false;
+            writeGate.countDown();
+        }
+
+        /**
+         * 让写挂住，直到 {@link #close(long, long)} 放行。
+         */
+        private void blockWrites() {
+            blockWrites = true;
+        }
+
+        /**
+         * 让写失败。
+         */
+        private void failWrites() {
+            failWrites = true;
+        }
+
+        /**
+         * 等写闸门放行。
+         *
+         * @return 放行返回 {@code true}；超时返回 {@code false}
+         */
+        private boolean awaitWriteGate() {
+            try {
+                return writeGate.await(30, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
         }
 
         /**
@@ -786,6 +964,19 @@ class ScriptGatewayTest {
          */
         private void emit(String line) {
             lines.accept(line);
+        }
+
+        /**
+         * 取已收到帧的快照。
+         * <p>
+         * 写出发生在写线程上、读取发生在用例线程上，因此不能直接遍历内部列表。
+         *
+         * @return 帧快照
+         */
+        private List<ScriptProtocol.Message> snapshot() {
+            synchronized (sent) {
+                return new ArrayList<ScriptProtocol.Message>(sent);
+            }
         }
     }
 

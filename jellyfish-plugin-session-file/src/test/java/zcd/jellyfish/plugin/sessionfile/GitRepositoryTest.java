@@ -1,5 +1,6 @@
 package zcd.jellyfish.plugin.sessionfile;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -39,9 +40,24 @@ class GitRepositoryTest {
     @TempDir
     Path tempDir;
 
+    /** 被测封装，用例结束时统一关闭（它带着一条提交线程）。 */
+    private GitRepository git;
+
     @BeforeEach
     void requireGit() {
         Assumptions.assumeTrue(isGitAvailable(), "环境里没有 git，跳过");
+        git = new GitRepository(tempDir, true);
+    }
+
+    /**
+     * 关闭提交线程，避免用例失败时留下线程与残留 git。
+     */
+    @AfterEach
+    void tearDown() {
+        if (git != null) {
+            git.close(10_000L);
+            git = null;
+        }
     }
 
     @Test
@@ -49,7 +65,8 @@ class GitRepositoryTest {
     void commit_should_initRepositoryAndCommit() throws IOException {
         Path file = write("session-1.json", "{\"a\":1}");
 
-        new GitRepository(tempDir, true).commit(file, "session(1): 1 条消息");
+        git.commit(file, "session(1): 1 条消息");
+        git.close(10_000L);
 
         assertTrue(Files.isDirectory(tempDir.resolve(".git")));
         assertEquals(1, commitSubjects().size());
@@ -59,12 +76,13 @@ class GitRepositoryTest {
     @Test
     @DisplayName("两次不同内容应产生两次提交")
     void commit_should_commitEachChange() throws IOException {
-        GitRepository git = new GitRepository(tempDir, true);
         Path file = write("session-1.json", "{\"a\":1}");
         git.commit(file, "第一条");
+        assertTrue(git.flush(10_000L), "第一次提交没有做完");
 
         Files.write(file, "{\"a\":2}".getBytes(StandardCharsets.UTF_8));
         git.commit(file, "第二条");
+        git.close(10_000L);
 
         assertEquals(Arrays.asList("第二条", "第一条"), commitSubjects());
     }
@@ -72,13 +90,84 @@ class GitRepositoryTest {
     @Test
     @DisplayName("内容没变时 git 会拒绝提交，这属于正常情况而不是错误")
     void commit_should_keepHistoryClean_when_nothingChanged() throws IOException {
-        GitRepository git = new GitRepository(tempDir, true);
         Path file = write("session-1.json", "{\"a\":1}");
         git.commit(file, "第一条");
+        assertTrue(git.flush(10_000L), "第一次提交没有做完");
 
         git.commit(file, "第二条");
+        git.close(10_000L);
 
         assertEquals(1, commitSubjects().size());
+    }
+
+    @Test
+    @DisplayName("落盘路径只做记账：commit 立刻返回，活落在提交线程上")
+    void commit_should_beNonBlocking() throws IOException {
+        Path file = write("session-1.json", "{\"a\":1}");
+        int before = commitThreadCount();
+
+        long started = System.currentTimeMillis();
+        git.commit(file, "提交");
+        long elapsed = System.currentTimeMillis() - started;
+
+        // 真正的判据是「活被挪到了另一条线程上」：同步实现根本不会有这条线程
+        assertEquals(before + 1, commitThreadCount(), "commit 应当把提交交给专属线程");
+        // 量级检查：记账不该有可观测的耗时
+        assertTrue(elapsed < 200L, "commit 阻塞了 " + elapsed + " ms");
+    }
+
+    /**
+     * 统计当前进程里的 git 提交线程数。
+     * <p>
+     * 用「前后差分」而不是「有没有」：同一个 JVM 里还跑着其它用例自己的提交线程。
+     *
+     * @return 存活的提交线程数
+     */
+    private static int commitThreadCount() {
+        int count = 0;
+        for (Thread thread : Thread.getAllStackTraces().keySet()) {
+            if (thread.isAlive() && "jellyfish-git-commit".equals(thread.getName())) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    @Test
+    @DisplayName("同一文件连续排多次提交时只留最新一条：内容本来就以盘上那份为准")
+    void commit_should_coalesce_when_sameFileQueuedTwice() throws IOException {
+        Path file = write("session-1.json", "{\"a\":1}");
+        // 第一笔先让它跑起来，第二、三笔落在同一文件的队列里（两者会被合并成一条）
+        git.commit(file, "第一条");
+        git.commit(file, "第二条");
+        git.commit(file, "第三条");
+        git.close(10_000L);
+
+        List<String> subjects = commitSubjects();
+        assertEquals(1, subjects.size(), subjects.toString());
+        // 合并之后留下的是最后那一条（内容在盘上，早提交没有额外价值）
+        assertEquals("第三条", subjects.get(0));
+    }
+
+    @Test
+    @DisplayName("关闭之后再排提交应被忽略，不会留下跑不完的活")
+    void commit_should_beIgnored_afterClose() throws IOException {
+        git.close(10_000L);
+
+        git.commit(write("session-1.json", "{\"a\":1}"), "不应出现");
+
+        assertFalse(Files.exists(tempDir.resolve(".git")), "关闭之后不该再发起 git");
+    }
+
+    @Test
+    @DisplayName("关闭时应把在途提交做完，而不是把它丢掉")
+    void close_should_finishPendingCommit() throws IOException {
+        Path file = write("session-1.json", "{\"a\":1}");
+        git.commit(file, "提交");
+
+        git.close(10_000L);
+
+        assertEquals(1, commitSubjects().size(), "关闭时在途的提交不该被丢掉");
     }
 
     @Test
@@ -86,7 +175,9 @@ class GitRepositoryTest {
     void commit_should_doNothing_when_disabled() throws IOException {
         Path file = write("session-1.json", "{\"a\":1}");
 
-        new GitRepository(tempDir, false).commit(file, "不应出现");
+        GitRepository disabled = new GitRepository(tempDir, false);
+        disabled.commit(file, "不应出现");
+        disabled.close(1000L);
 
         assertFalse(Files.exists(tempDir.resolve(".git")));
     }
@@ -96,7 +187,8 @@ class GitRepositoryTest {
     void commit_should_usePluginCommitterIdentity() throws IOException {
         Path file = write("session-1.json", "{\"a\":1}");
 
-        new GitRepository(tempDir, true).commit(file, "提交");
+        git.commit(file, "提交");
+        git.close(10_000L);
 
         // 新机器上没有任何 user.name / user.email 也能提交，且不会把用户自己的身份写进本仓库
         assertEquals("jellyfish", runGit("log", "--format=%an").trim());

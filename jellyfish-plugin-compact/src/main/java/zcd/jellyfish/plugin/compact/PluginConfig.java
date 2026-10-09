@@ -15,8 +15,9 @@ import java.util.Map;
  * 与「本插件表态为某个具体数字」是两件不同的事，插件不该用一个自己编的默认值把内核的配置压掉。
  * 项目级覆盖全局级、字符串值里的 {@code ${ENV}} 替换都由内核完成，这里拿到的是最终值。
  * <p>
- * <b>值非法直接抛</b>：类型不对或不是正数属配置错误，启动期就该让人看见，而不是压到运行时变成
- * 「保留条数怎么不生效」。
+ * <b>值非法直接抛</b>：类型不对或超出范围属配置错误，启动期就该让人看见，而不是压到运行时变成
+ * 「保留条数怎么不生效」。<b>但 {@code keepRecentMessages = 0} 是合法值</b>：契约里它的含义是
+ * 「一条原文都不留」，与「没配」（缺省回落内核配置）是两件事。
  * <p>
  * <b>为什么要钳制</b>：内核还会再钳一次（那是它对自己保命机制的把关），这里只做「是不是个合理的数字」
  * 这一层，两边都做不是重复而是分工——本插件拒绝明显荒谬的值，内核拒绝任何越界值。
@@ -69,7 +70,7 @@ final class PluginConfig {
     static PluginConfig from(Map<String, Object> configuration) {
         Map<String, Object> values = configuration == null ? Collections.<String, Object>emptyMap()
                 : configuration;
-        Integer keepRecent = positiveInt(values.get(KEY_KEEP_RECENT_MESSAGES),
+        Integer keepRecent = nonNegativeInt(values.get(KEY_KEEP_RECENT_MESSAGES),
                 KEY_KEEP_RECENT_MESSAGES, MAX_KEEP_RECENT_MESSAGES);
         Integer maxSummary = positiveInt(values.get(KEY_MAX_SUMMARY_CHARS),
                 KEY_MAX_SUMMARY_CHARS, MAX_SUMMARY_CHARS_LIMIT);
@@ -102,28 +103,68 @@ final class PluginConfig {
      * @param key 配置键，用于错误信息
      * @param max 允许的最大值（含）
      * @return 解析结果，未配置时为 {@code null}
-     * @throws JellyfishException 值不是正整数或超出上限时抛出
+     * @throws JellyfishException 值不是整数或超出范围时抛出
      */
     private static Integer positiveInt(Object raw, String key, int max) {
-        if (raw == null) {
-            return null;
-        }
-        int value;
-        if (raw instanceof Number) {
-            value = ((Number) raw).intValue();
-        } else if (raw instanceof String) {
-            String text = ((String) raw).trim();
-            try {
-                value = Integer.parseInt(text);
-            } catch (NumberFormatException e) {
-                throw new JellyfishException(key + " 必须是整数，实际为 " + raw, e);
-            }
-        } else {
-            throw new JellyfishException(key + " 必须是整数，实际为 " + raw);
-        }
-        if (value <= 0 || value > max) {
+        Integer value = integer(raw, key);
+        if (value != null && (value.intValue() <= 0 || value.intValue() > max)) {
             throw new JellyfishException(key + " 必须在 1 到 " + max + " 之间，实际为 " + value);
         }
         return value;
+    }
+
+    /**
+     * 解析一个非负整数配置项：缺省（{@code null}）返回 {@code null}，其余必须是 {@code [0, max]} 内的整数。
+     * <p>
+     * 「保留 0 条」是合法取值而不是写错：契约里 {@code keepRecentMessages = 0} 的含义是
+     * 「一条原文都不留，全部交给摘要」，内核照此执行（它只在缺省时才回落到自己的配置）。
+     * 把它当成非法值会让用户没法表达这个意思。
+     *
+     * @param raw 配置原值，可为 {@code null}
+     * @param key 配置键，用于错误信息
+     * @param max 允许的最大值（含）
+     * @return 解析结果，未配置时为 {@code null}
+     * @throws JellyfishException 值不是整数或超出范围时抛出
+     */
+    private static Integer nonNegativeInt(Object raw, String key, int max) {
+        Integer value = integer(raw, key);
+        if (value != null && (value.intValue() < 0 || value.intValue() > max)) {
+            throw new JellyfishException(key + " 必须在 0 到 " + max + " 之间，实际为 " + value);
+        }
+        return value;
+    }
+
+    /**
+     * 解析一个整数配置项。
+     * <p>
+     * <b>{@code Number} 只接受能精确表示的整数</b>：{@code intValue()} 对小数与超范围的值都是静默截断
+     * （{@code 3.7} 变 3、{@code 5000000000} 变一个负数），而配置文件的作者看不出发生过什么。
+     * 判据与「字符串必须是整数」一致，只是错误提前到了类型检查这一步。
+     *
+     * @param raw 配置原值，可为 {@code null}
+     * @param key 配置键，用于错误信息
+     * @return 解析结果，未配置时为 {@code null}
+     * @throws JellyfishException 值不是整数时抛出
+     */
+    private static Integer integer(Object raw, String key) {
+        if (raw == null) {
+            return null;
+        }
+        if (raw instanceof Number) {
+            double asDouble = ((Number) raw).doubleValue();
+            if (asDouble != Math.floor(asDouble) || asDouble < Integer.MIN_VALUE
+                    || asDouble > Integer.MAX_VALUE) {
+                throw new JellyfishException(key + " 必须是整数，实际为 " + raw);
+            }
+            return Integer.valueOf(((Number) raw).intValue());
+        }
+        if (raw instanceof String) {
+            try {
+                return Integer.valueOf(Integer.parseInt(((String) raw).trim()));
+            } catch (NumberFormatException e) {
+                throw new JellyfishException(key + " 必须是整数，实际为 " + raw, e);
+            }
+        }
+        throw new JellyfishException(key + " 必须是整数，实际为 " + raw);
     }
 }

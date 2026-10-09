@@ -162,6 +162,22 @@ class ScriptManifestTest {
     }
 
     @Test
+    @DisplayName("过长的文本字段应报错，而不是被静默读进来")
+    void parse_should_rejectTooLongText_when_descriptionIsHuge() {
+        // 描述会进模型的工具清单：一个十万字的描述挤掉的是真正有用的上下文
+        StringBuilder description = new StringBuilder();
+        for (int index = 0; index < 20000; index++) {
+            description.append('长');
+        }
+
+        JellyfishException failure = assertThrows(JellyfishException.class, () -> parse(
+                "{\"entry\":\"main.py\",\"tools\":[{\"name\":\"t\",\"description\":\""
+                        + description + "\"}]}"));
+
+        assertTrue(failure.getMessage().contains("过长"), failure.getMessage());
+    }
+
+    @Test
     @DisplayName("工具字段类型不对应报错")
     void parse_should_rejectWrongFieldType_when_requiredOrParametersIsMalformed() {
         assertThrows(JellyfishException.class,

@@ -42,6 +42,10 @@ final class SkillText {
      * <p>
      * <b>必须先折叠空白</b>：这些文本会被拼进 system prompt 的清单与命令行输出，
      * 一段带换行的描述能把两者的排版一起打乱。
+     * <p>
+     * <b>切口不落在代理对中间</b>：{@code substring} 是按 UTF-16 码元切的，
+     * 切在 emoji 之类字符的中间会留下半个字符——终端与 JSON 各自把它显示成问号或替换字符，
+     * 而「一个技能的名字末尾莫名多一个乱码」是最难归因的那类现场。
      *
      * @param text     原始文本，可为 {@code null}
      * @param maxChars 字符上限
@@ -55,6 +59,10 @@ final class SkillText {
         if (collapsed.length() <= maxChars) {
             return collapsed;
         }
-        return collapsed.substring(0, maxChars) + "…";
+        int end = Math.max(0, maxChars);
+        if (end > 0 && end < collapsed.length() && Character.isLowSurrogate(collapsed.charAt(end))) {
+            end--;
+        }
+        return collapsed.substring(0, end) + "…";
     }
 }

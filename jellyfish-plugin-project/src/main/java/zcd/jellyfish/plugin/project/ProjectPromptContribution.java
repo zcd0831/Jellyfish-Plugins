@@ -87,8 +87,15 @@ final class ProjectPromptContribution implements ExtensionHandler<PromptContribu
             return PromptContribution.of(ConventionText.guidance(file));
         }
         ConventionFiles.Reading reading = files.read(file, config.maxInlineBytes());
-        // 读取失败时退回路径指引：模型的读取工具会报出真实原因（权限、编码……）
-        return reading == null ? PromptContribution.of(ConventionText.guidance(file))
-                : PromptContribution.of(ConventionText.inline(file, reading));
+        if (reading == null) {
+            // 读取失败时退回路径指引：模型的读取工具会报出真实原因（权限、编码……）
+            return PromptContribution.of(ConventionText.guidance(file));
+        }
+        if (reading.text().trim().isEmpty()) {
+            // 探测与读取之间文件被清空（或清成只剩空白）时会走到这里：那时内联的是一个空块，
+            // 而「空文件视为不存在」是探测那一层就定下的口径，这里必须与它一致
+            return PromptContribution.empty();
+        }
+        return PromptContribution.of(ConventionText.inline(file, reading));
     }
 }

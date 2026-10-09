@@ -121,6 +121,22 @@ class ScriptSchedulerTest {
     }
 
     @Test
+    @DisplayName("代发失效事件失败也不该把定时任务带走（关闭竞态最容易在这一步抛）")
+    void tickNow_should_survive_when_emitFails() {
+        // 关闭那一刻上下文是 fail-closed 的：emit 会抛。任务体若把异常抛给 scheduleWithFixedDelay，
+        // 后续触发会静默停止——那正是本用例要钉住的东西
+        org.mockito.Mockito.doThrow(new JellyfishException("上下文已关闭")).when(context).emit(any());
+        ScriptScheduler scheduler = ScriptScheduler.start(context, new RecordingCaller(),
+                Collections.singletonList(plugin("watch", "[{\"name\":\"refresh\"}]")),
+                Collections.<String, Map<String, Object>>emptyMap());
+
+        // 不抛出去就是全部要求：调用本身成功，只是「重画面板」这一步失败了
+        scheduler.tickNow(plugin("watch", "[{\"name\":\"refresh\"}]"), "refresh");
+
+        scheduler.close();
+    }
+
+    @Test
     @DisplayName("关闭之后不再触发（在途的一次按调试级吞掉，不再发失效）")
     void close_should_stopFiring_when_called() throws Exception {
         RecordingCaller caller = new RecordingCaller();

@@ -27,6 +27,7 @@ import zcd.jellyfish.infra.plugin.PluginContextFactory;
 import zcd.jellyfish.infra.plugin.RuntimeInfoHolder;
 import zcd.jellyfish.infra.registry.TypeRegistry;
 import zcd.jellyfish.infra.session.SessionManager;
+import zcd.jellyfish.api.extension.RequestTuning;
 import zcd.jellyfish.script.codec.ExtensionCodecs;
 
 import java.nio.file.Paths;
@@ -87,6 +88,27 @@ class ScriptRegistrarTest {
         ToolCallResult result = extensions.invoke(extensions.handler(ToolCallRequest.class, "jira_issue"),
                 new ToolCallRequest("jira_issue", null, "s-1"));
         assertEquals("ok", result.getOutput());
+    }
+
+    @Test
+    @DisplayName("脚本「不表态」时应让处理器返回 null，而不是把异常抛给内核")
+    void register_should_returnNull_when_scriptNotHandled() {
+        ScriptRegistrar registrar = new ScriptRegistrar(ExtensionCodecs.DEFAULTS,
+                (plugin, typeName, request) -> {
+                    throw new ScriptNotHandledException("热路径点不表态");
+                });
+
+        registrar.register(pluginContext(), script("jira",
+                "{\"entry\":\"m.py\",\"contributions\":[\"request_tuning\"]}"));
+
+        // 内核给处理器约定的「不表态」就是返回 null（对本插件而言等于「我没有意见」）；
+        // 这里 RequestTuning 的解码把空结果翻成 empty()，与脚本真的返回空对象时完全一致。
+        // 要紧的是异常没有穿出去——穿出去内核会把它当成一次失败，而它其实什么都没发生
+        RequestTuning tuning = extensions.invoke(
+                extensions.handler(zcd.jellyfish.api.extension.RequestTuningRequest.class, null),
+                new zcd.jellyfish.api.extension.RequestTuningRequest("s-1", "openai", "gpt-4o", null, 3, 5));
+
+        assertEquals(RequestTuning.empty(), tuning);
     }
 
     @Test

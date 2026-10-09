@@ -118,6 +118,16 @@ class TodoBlockToolTest {
     }
 
     @Test
+    @DisplayName("没有会话时要说清是哪个工具需要会话上下文")
+    void handle_should_nameItsOwnTool_when_noSession() {
+        // 这里曾经写成「todo_done 需要会话上下文」：文案指向另一个工具，排查时会被带偏
+        JellyfishException failure = assertThrows(JellyfishException.class,
+                () -> tool.handle(request(null, null, null, "甲", "环境不通")));
+
+        assertTrue(failure.getMessage().contains("todo_block"), failure.getMessage());
+    }
+
+    @Test
     @DisplayName("content 缺失或空白：当场拒绝并回显实际值")
     void handle_should_rejectBadContent() {
         JellyfishException missing = assertThrows(JellyfishException.class,

@@ -138,8 +138,8 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
             if (!(content instanceof String) || ((String) content).trim().isEmpty()) {
                 throw new JellyfishException("todos 每一项的 content 必须是非空字符串，实际为 " + describe(content));
             }
-            items.add(new TodoItem((String) content, status(item.get("status")),
-                    null, reason(item.get("reason"))));
+            TodoStatus itemStatus = status(item.get("status"));
+            items.add(new TodoItem((String) content, itemStatus, null, reason(item.get("reason"), itemStatus)));
         }
         return items;
     }
@@ -170,12 +170,17 @@ final class TodoWriteTool implements ExtensionHandler<ToolCallRequest, ToolCallR
      * 与状态取值不同，它<b>不做枚举校验</b>：只有卡住时才有意义，写在别的状态上只是冗余，
      * 为它报错会把一次本来正确的整表写入整批拒掉——那正是 state 那条路踩过的坑。
      * 空白按「没写」处理。
+     * <p>
+     * <b>状态不是 blocked 时一律丢掉</b>：{@code reason} 是「这一条被人动过、不能被整表覆盖抹掉」
+     * 的黏性判据之一（见 {@code TodoStore.findSticky}）。留在一条 pending 上的原因等于给它永久
+     * 打上黏性标记：模型之后每次整表重写都会把它继承下来，而它自己修不回来。
      *
-     * @param raw {@code reason} 参数原值，可为 {@code null}
-     * @return 原因文本；没写时返回 {@code null}
+     * @param raw    {@code reason} 参数原值，可为 {@code null}
+     * @param status 该条目的状态，不可为 {@code null}
+     * @return 原因文本；没写、或状态不是 blocked 时返回 {@code null}
      */
-    private static String reason(Object raw) {
-        if (!(raw instanceof String)) {
+    private static String reason(Object raw, TodoStatus status) {
+        if (status != TodoStatus.BLOCKED || !(raw instanceof String)) {
             return null;
         }
         String text = ((String) raw).trim();

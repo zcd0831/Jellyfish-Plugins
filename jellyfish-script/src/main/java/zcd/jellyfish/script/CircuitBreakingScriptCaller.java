@@ -22,8 +22,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * 与「进程、协议、worker」无关。放在外面，状态机就能脱离进程被完整验证；
  * 放在网关里，验一次「冷却 60 秒后自动半开」就必须先起一个真实进程。
  * <p>
- * <b>为什么拒绝而不摘注册</b>：注册只能在插件 {@code start()} 窗口内发生，
- * 摘掉就意味着恢复必须走 {@code /reload}。熔断保留注册，工具仍在清单里，
+ * <b>为什么拒绝而不摘注册</b>：摘掉注册会让工具从清单里消失（模型看到的不是「它坏了」，而是
+ * 「它不存在」），而恢复就得走 {@code /reload} 重新装配插件——注册句柄确实能摘
+ * （注册窗口覆盖整个存活期），但「摘了再挂回去」本身就是一次重装配。熔断保留注册，工具仍在清单里，
  * 模型可能再调一次，但拿到的是一个带剩余时间的明确错误，看到就会避开；
  * 而冷却一过它自己会好——不需要任何人做任何事。
  * <p>
@@ -34,6 +35,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *       若把一次短暂的网关故障算进每个脚本的账上，结果是「网关好了，所有脚本还要再等一个冷却」。</li>
  *   <li><b>不计</b> {@code -32001}：那是熔断自己产生的拒绝。把它再计一次失败，
  *       冷却时间就会被自己的拒绝无限延长，永远不会自动恢复。</li>
+ *   <li><b>不计</b> {@link ScriptNotHandledException}：那是「这次没去办」而不是「办砸了」
+ *       （热路径点在网关没热着时刻意不冷启动）。它同时也不该被记成成功——
+ *       {@code null}（空结果）与它必须分开，理由见异常类的注释。</li>
  *   <li><b>其余都计</b>：超时、脚本回报的错误、协议错误码。判据是「这次调用没有拿到结果」——
  *       而失败的归因、要不要杀掉 worker，都不在这里决定。</li>
  * </ul>
@@ -94,6 +98,8 @@ public final class CircuitBreakingScriptCaller implements ScriptCaller {
         }
         try {
             JsonNode result = delegate.call(plugin, typeName, request, token);
+            // 拿到结果就算一次成功（空结果也是结果）：只有「不表态」不算——
+            // 它以 ScriptNotHandledException 抛出，走不到这里
             breaker.recordSuccess();
             return result;
         } catch (JellyfishException e) {
@@ -146,6 +152,13 @@ public final class CircuitBreakingScriptCaller implements ScriptCaller {
         if (failure instanceof ScriptCancelledException) {
             // 取消是用户主权，不是脚本的毛病：把它计进去，就会出现「用户按了几次 Esc，
             // 某个脚本就被熔断冷却」这种荒谬结果
+            return false;
+        }
+        if (failure instanceof ScriptNotHandledException) {
+            // 「不表态」既不是成功也不是失败：它表示这次根本没去办（热路径点没热着就不冷启动）。
+            // 它必须与「空结果」分开——若把不表态记成成功，正常态下会清零连续失败计数
+            // （「失败—不表态—失败」交替的脚本永远到不了阈值），半开态下会把一次没打的探测
+            // 判成「已恢复」，于是坏脚本看起来已经好了
             return false;
         }
         if (failure instanceof ScriptCallException) {

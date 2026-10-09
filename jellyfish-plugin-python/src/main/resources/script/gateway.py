@@ -265,7 +265,11 @@ class Gateway(object):
             self.running = False
             self.exit_reason = "宿主已关闭 stdin"
             return
-        self.stdin_buffer, frames = wire.feed(self.stdin_buffer, chunk)
+        self.stdin_buffer, frames, dropped = wire.feed(self.stdin_buffer, chunk)
+        if dropped:
+            # 计数在这里用一次：宿主发来的帧解析不了意味着「协议两侧对不上」，
+            # 那是比单次调用失败严重得多的事，必须在日志里留一句
+            self._log("宿主发来的协议帧有 %d 行无法解析" % dropped)
         for frame in frames:
             self._handle_java_frame(frame)
 
@@ -281,7 +285,10 @@ class Gateway(object):
         if not chunk:
             self._worker_gone(state, "worker 已断开连接")
             return
-        current.buffer, frames = wire.feed(current.buffer, chunk)
+        current.buffer, frames, dropped = wire.feed(current.buffer, chunk)
+        if dropped:
+            # worker 与网关之间的协议帧解析不了：同样只在这里留一句（feed 已经逐条写了痕迹）
+            self._log("脚本 %s 的协议帧有 %d 行无法解析" % (state.script_id, dropped))
         for frame in frames:
             self._handle_worker_frame(state, frame)
 

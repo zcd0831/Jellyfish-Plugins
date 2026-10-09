@@ -15,6 +15,9 @@
 /** 单帧上限：与宿主侧的传输上限一致。超限说明脚本返回了不该返回的大对象，早失败好过把内存吃满。 */
 const MAX_FRAME_BYTES = 10 * 1024 * 1024;
 
+/** 逐条告警的上限：一个循环打印的脚本不该把两侧日志刷满；超过之后只报一次总数。 */
+const DROPPED_ALERT_LIMIT = 5;
+
 /**
  * 把一个对象编码成一帧字节（含结尾换行）。
  *
@@ -29,15 +32,17 @@ function encode(message) {
  * 把新到的字节并入缓冲区并切出完整的帧。
  *
  * 无法解析的行（脚本误打印、运行时警告）直接丢弃：它不该让一次调用失败，
- * 也不该被计入任何失败账目。
+ * 也不该被计入任何失败账目。但**丢弃必须留痕**：既计数（回给调用方），
+ * 也往 stderr 写一条（两侧的 stderr 都会进宿主日志），并对逐条告警限流。
  *
  * @param {Buffer} buffer 剩余缓冲
  * @param {Buffer} chunk 新到的字节
- * @returns {{buffer: Buffer, frames: Array}} 剩余缓冲与切出的帧
+ * @returns {{buffer: Buffer, frames: Array, dropped: number}} 剩余缓冲、切出的帧与丢弃行数
  */
 function feed(buffer, chunk) {
     let pending = Buffer.concat(buffer === undefined || buffer === null ? [] : [buffer, chunk]);
     const frames = [];
+    let dropped = 0;
     for (;;) {
         const index = pending.indexOf(0x0a);
         if (index < 0) {
@@ -51,10 +56,21 @@ function feed(buffer, chunk) {
         try {
             frames.push(JSON.parse(line.toString('utf8')));
         } catch (ignored) {
-            // 非 JSON 行：宽容丢弃，不计数、不失败
+            // 非 JSON 行：宽容丢弃、不失败，但必须留痕。
+            // 一条被丢掉的行如果正好是某个请求的应答，现场就是「请求悬到超时」——
+            // 那时两侧日志里一条线索都没有，排查只能靠猜
+            dropped++;
+            if (dropped <= DROPPED_ALERT_LIMIT) {
+                process.stderr.write('[script_wire] 丢弃无法解析的协议行: '
+                    + JSON.stringify(line.toString('utf8').slice(0, 200)) + '\n');
+            }
         }
     }
-    return { buffer: pending, frames };
+    if (dropped > DROPPED_ALERT_LIMIT) {
+        process.stderr.write('[script_wire] 本次共丢弃 ' + dropped + ' 行无法解析的协议行（前 '
+            + DROPPED_ALERT_LIMIT + ' 行已逐条记录）\n');
+    }
+    return { buffer: pending, frames, dropped };
 }
 
 /**
@@ -99,4 +115,4 @@ function decodeLossy(line) {
     return line.toString('utf8');
 }
 
-module.exports = { MAX_FRAME_BYTES, encode, feed, takeLines };
+module.exports = { MAX_FRAME_BYTES, DROPPED_ALERT_LIMIT, encode, feed, takeLines };

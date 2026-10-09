@@ -13,6 +13,7 @@ import zcd.jellyfish.script.codec.ExtensionCodecs;
 import zcd.jellyfish.script.event.ScriptEventBridge;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -22,10 +23,10 @@ import java.util.concurrent.TimeUnit;
  * 桥接插件的骨架：内核眼里的一个标准 PF4J 插件，背后是某一门语言的脚本插件。
  * <p>
  * <b>它为什么必须存在</b>：内核的扩展边界由三条硬性质定义，全部发生在 JVM 内——插件身份
- * （注册表的 {@code owner}）来自 PF4J 描述符、注册窗口只允许在 {@code start(PluginContext)} 内、
- * 能力只能从 {@code PluginContext} 的几个方法拿到。脚本进程是 JVM 外的东西，既没有 PF4J 身份，
- * 也拿不到 {@code PluginContext}（那是 JVM 对象，跨不过进程边界）。因此必须有一个 JVM 内的代理人，
- * 在 {@code start()} 里替脚本调用 {@code handle} / {@code contribute} / {@code observe} / {@code emit}。
+ * （注册表的 {@code owner}）来自 PF4J 描述符、注册只能在插件存活期内发生（{@code stop()} 之后
+ * 一切注册当场失败）、能力只能从 {@code PluginContext} 的几个方法拿到。脚本进程是 JVM 外的东西，
+ * 既没有 PF4J 身份，也拿不到 {@code PluginContext}（那是 JVM 对象，跨不过进程边界）。因此必须有一个
+ * JVM 内的代理人，在 {@code start()} 里替脚本调用 {@code handle} / {@code contribute} / {@code observe} / {@code emit}。
  * <p>
  * <b>为什么它在机制层而不是在某个桥接插件里</b>：这一段流程（探测解释器、扫描清单、逐脚本注册、
  * 接通事件桥接与熔断、注册 {@code /<语言>} 命令、按序关闭）没有一处与语言有关，
@@ -56,6 +57,9 @@ public abstract class ScriptBridgePlugin implements JellyfishPlugin {
 
     /** 解释器探测的等待上限：探测只为「告警一句」，不该拖慢内核启动。 */
     private static final long PROBE_TIMEOUT_SECONDS = 2L;
+
+    /** 收尾探测进程时每一段等待的上限（强杀后确认退出、读线程收尾）：同样是「不拖慢启动」的约束。 */
+    private static final long PROBE_KILL_MILLIS = 500L;
 
     /** 语言适配，在 {@code start()} 现造、{@code stop()} 释放。 */
     private ScriptLanguage language;
@@ -311,13 +315,15 @@ public abstract class ScriptBridgePlugin implements JellyfishPlugin {
     private void probeInterpreter() {
         List<String> command = language.probeCommand();
         Process process = null;
+        Thread drain = null;
         try {
             process = new ProcessBuilder(command).redirectErrorStream(true).start();
+            // 必须把它的输出读掉：一个话多的包装脚本（或解释器警告）写满管道缓冲区后会卡在写上，
+            // 于是「探测超时」其实是被自己的输出堵死的，与解释器在不在毫无关系
+            drain = drainOutput(process);
             if (!process.waitFor(PROBE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 LOG.warn("解释器探测超时（{}s），已跳过: {}", Long.valueOf(PROBE_TIMEOUT_SECONDS), command);
-                return;
-            }
-            if (process.exitValue() != 0) {
+            } else if (process.exitValue() != 0) {
                 LOG.warn("解释器探测返回非零退出码 {}: {}", Integer.valueOf(process.exitValue()), command);
             }
         } catch (InterruptedException e) {
@@ -328,8 +334,65 @@ public abstract class ScriptBridgePlugin implements JellyfishPlugin {
                     language.id(), e.getMessage());
         } finally {
             if (process != null) {
-                process.destroy();
+                // destroy() 只发 TERM：用户自己写的包装脚本可能不理会它，于是探测进程会一直留着，
+                // 而它正是「插件停了还有东西在跑」最容易出现在启动期的那一处。因此强杀并确认退出
+                process.destroyForcibly();
+                awaitExit(process);
             }
+            join(drain);
+        }
+    }
+
+    /**
+     * 起一条守护线程把探测进程的输出读空。
+     *
+     * @param process 探测进程
+     * @return 读取线程
+     */
+    private static Thread drainOutput(Process process) {
+        Thread thread = new Thread(() -> {
+            byte[] buffer = new byte[4096];
+            try (InputStream stream = process.getInputStream()) {
+                while (stream.read(buffer) >= 0) {
+                    // 只为了把管道读空：探测的输出没有任何判据价值（判定用的是退出码）
+                }
+            } catch (IOException e) {
+                // 进程被杀掉时读侧报错是预期内的
+            }
+        }, "jellyfish-script-probe");
+        thread.setDaemon(true);
+        thread.start();
+        return thread;
+    }
+
+    /**
+     * 有界地等探测进程退出。
+     *
+     * @param process 探测进程
+     */
+    private static void awaitExit(Process process) {
+        try {
+            if (!process.waitFor(PROBE_KILL_MILLIS, TimeUnit.MILLISECONDS)) {
+                LOG.warn("解释器探测进程强杀后仍未退出，可能出现残留进程（启动期不阻塞等待）");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * 有界地等读取线程收尾。
+     *
+     * @param thread 读取线程，可为 {@code null}
+     */
+    private static void join(Thread thread) {
+        if (thread == null) {
+            return;
+        }
+        try {
+            thread.join(PROBE_KILL_MILLIS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 

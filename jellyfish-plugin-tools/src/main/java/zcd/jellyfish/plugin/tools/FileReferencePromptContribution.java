@@ -22,6 +22,10 @@ import zcd.jellyfish.api.extension.PromptPlacement;
  * <b>语气上强调「不要猜」</b>：模型面对一个路径时最常见的失败模式是照着文件名编内容，
  * 因此这里把「读不到就说读不到」直接写进约定。
  * <p>
+ * <b>为什么要写清转义</b>：含空格的路径在输入框里是 `@my\ file.txt`，而模型手里的 read_file
+ * 只认 `my file.txt`。不说这一句，它要么照着带反斜杠的原文去读（读不到），
+ * 要么自己猜出另一个路径（读错文件）——两种都比「没读到」更难发现。
+ * <p>
  * 无状态，可安全复用。
  *
  * @author zcd
@@ -31,8 +35,10 @@ final class FileReferencePromptContribution
 
     /** 贡献文本。 */
     private static final String TEXT =
-            "用户消息里的 `@路径` 表示引用了工作目录下的文件。看到这种写法时，请先用 read_file 读取该文件，"
-                    + "再基于真实内容回答；不要凭文件名猜测内容，读不到就如实说明。";
+            "用户消息里的 `@路径` 表示引用了工作目录下的文件。路径里的空白以反斜杠转义"
+                    + "（`@my\\ file.txt` 指的是 `my file.txt` 这个文件，取路径时把 `\\ ` 还原成空格）。"
+                    + "看到这种写法时，请先用 read_file 读取该文件，再基于真实内容回答；"
+                    + "不要凭文件名猜测内容，读不到就如实说明。";
 
     @Override
     public PromptContribution handle(PromptContributionRequest request) {

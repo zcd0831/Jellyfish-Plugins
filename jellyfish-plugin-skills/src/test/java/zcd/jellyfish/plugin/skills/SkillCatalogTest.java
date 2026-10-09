@@ -115,6 +115,37 @@ class SkillCatalogTest {
         assertEquals(1, catalog.current().skills().size());
     }
 
+    @Test
+    @DisplayName("在已有子目录里补上 SKILL.md（根目录 mtime 不变）应触发重扫")
+    void current_should_rescan_when_skillFileAppearsInExistingDirectory() throws IOException {
+        // Given：一个还不算 skill 的子目录（没有 SKILL.md），因此它被扫描器跳过
+        Files.createDirectories(root.resolve("foo"));
+        SkillCatalog catalog = newCatalog();
+        assertEquals(0, catalog.current().skills().size());
+
+        // When：只往那个子目录里加文件，根目录自己一动不动
+        writeSkill("foo", "---\nname: foo\ndescription: F\n---\n");
+
+        // Then：签名必须看见这次变化，否则用户会遇到「我补好了 SKILL.md，它却永远不生效」
+        assertEquals(1, catalog.current().skills().size());
+    }
+
+    @Test
+    @DisplayName("缺 description 的条目补上描述之后应触发重扫")
+    void current_should_rescan_when_descriptionIsAdded() throws IOException {
+        // Given：头部合法但没有 description，扫描器按规定跳过它
+        Path body = writeSkill("a", "---\nname: a\n---\n");
+        SkillCatalog catalog = newCatalog();
+        assertEquals(0, catalog.current().skills().size());
+
+        // When
+        Files.write(body, "---\nname: a\ndescription: 补上了\n---\n".getBytes(StandardCharsets.UTF_8));
+        touch(body);
+
+        // Then
+        assertEquals(1, catalog.current().skills().size());
+    }
+
     /**
      * 构造只指向临时根目录的目录缓存。
      *

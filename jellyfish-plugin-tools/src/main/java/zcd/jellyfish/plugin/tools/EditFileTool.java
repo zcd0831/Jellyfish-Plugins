@@ -6,8 +6,10 @@ import zcd.jellyfish.api.extension.ToolCallResult;
 import zcd.jellyfish.api.extension.ToolDescriptor;
 
 import java.io.IOException;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.Arrays;
 
@@ -61,6 +63,7 @@ public final class EditFileTool implements PluginTool {
         if (oldText.equals(newText)) {
             throw new JellyfishException("old_text 与 new_text 相同，无需修改");
         }
+        Stamp before = Stamp.of(file);
         String content = readText(file);
         int matches = countMatches(content, oldText);
         if (matches == 0) {
@@ -72,8 +75,17 @@ public final class EditFileTool implements PluginTool {
                     + " 处，请补足上下文使其唯一，或设置 replace_all=true 全部替换");
         }
         String replaced = replaceAll ? content.replace(oldText, newText) : replaceOnce(content, oldText, newText);
+        // 读之后、写之前再看一眼：这两步之间文件可能被别人（另一个代理、用户自己的编辑器）改过，
+        // 而我们是整份覆盖——不查就会把他的改动静默抹掉
+        requireUnchanged(file, before);
+        if (!Files.isWritable(file)) {
+            // 原子替换只受目录权限约束，会绕过文件自身的只读位——那与「不可写就别写」的直觉相反，
+            // 因此这里显式挡一道，保持与普通写入一致的语义
+            throw new JellyfishException("文件不可写: " + ToolPaths.display(file));
+        }
         try {
-            Files.write(file, replaced.getBytes(StandardCharsets.UTF_8));
+            // 原子替换：写到一半失败时留下的仍是原来那份完整内容，而不是半截文件
+            Utf8Files.writeAtomic(file, replaced.getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
             throw new JellyfishException("写入文件失败: " + ToolPaths.display(file) + " (" + e.getMessage() + ')', e);
         }
@@ -83,10 +95,13 @@ public final class EditFileTool implements PluginTool {
 
     /**
      * 读取文件全部文本。
+     * <p>
+     * <b>不是 UTF-8 就明确拒绝</b>：整份读出、整份写回，而读出时非法字节已经被换成替换字符——
+     * 于是「替换一处」会把一个 GBK 文件整体变成乱码。那是不可逆的数据损毁，宁可在这里失败。
      *
      * @param file 文件路径
      * @return 文件内容
-     * @throws JellyfishException 文件不存在、是目录或读取失败时抛出
+     * @throws JellyfishException 文件不存在、是目录、不是 UTF-8 或读取失败时抛出
      */
     private static String readText(Path file) {
         if (!Files.exists(file)) {
@@ -96,9 +111,93 @@ public final class EditFileTool implements PluginTool {
             throw new JellyfishException("这是一个目录，无法编辑: " + ToolPaths.display(file));
         }
         try {
-            return new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+            return Utf8Files.readStrict(file);
+        } catch (CharacterCodingException e) {
+            throw new JellyfishException("这不是 UTF-8 文本（存在非法字节），edit_file 只改 UTF-8 文件："
+                    + "请先转码，或用 write_file 整份重写: " + ToolPaths.display(file));
         } catch (IOException e) {
             throw new JellyfishException("读取文件失败: " + ToolPaths.display(file) + " (" + e.getMessage() + ')', e);
+        }
+    }
+
+    /**
+     * 校验文件自「读之前记录的身份」以来没被改动过。
+     * <p>
+     * <b>包私有接缝</b>：这条判据的窗口落在两次系统调用之间（先记身份、再读内容、再比对），
+     * 用例无法确定性地把它摆出来，因此把「判定」本身做成一个可以直接喂参数进去的函数——
+     * 与 {@code ScriptScheduler.tickNow} 同一手法。
+     *
+     * @param file   文件路径
+     * @param before 读之前记录的身份
+     * @throws JellyfishException 文件已被改动时抛出
+     */
+    void requireUnchanged(Path file, Stamp before) {
+        Stamp now = Stamp.of(file);
+        if (!before.equals(now)) {
+            throw new JellyfishException("文件在读取之后被改动过，为免覆盖别人的改动，请重新读取后再改: "
+                    + ToolPaths.display(file));
+        }
+    }
+
+    /**
+     * 文件的「身份」：大小与修改时间。
+     * <p>
+     * 用来回答「读完之后它有没有被改过」。判据取这两样而不是内容比对：内容是刚读到的，
+     * 再读一遍要付一次 IO，而这两样在一次改写里几乎不可能同时不变。
+     */
+    static final class Stamp {
+
+        /** 改动时间（毫秒）。 */
+        private final long modifiedAt;
+
+        /** 文件大小。 */
+        private final long size;
+
+        /**
+         * 构造身份。
+         *
+         * @param modifiedAt 改动时间（毫秒）
+         * @param size       文件大小
+         */
+        private Stamp(long modifiedAt, long size) {
+            this.modifiedAt = modifiedAt;
+            this.size = size;
+        }
+
+        /**
+         * 取一个文件的身份。
+         *
+         * @param file 文件路径
+         * @return 身份
+         * @throws JellyfishException 文件不存在或取属性失败时抛出
+         */
+        static Stamp of(Path file) {
+            try {
+                return new Stamp(Files.getLastModifiedTime(file).toMillis(), Files.size(file));
+            } catch (NoSuchFileException e) {
+                // 与 readText 同一句文案：调用方（模型）看到的是「文件不存在」而不是「取属性失败」
+                throw new JellyfishException("文件不存在: " + ToolPaths.display(file));
+            } catch (IOException e) {
+                throw new JellyfishException("读取文件属性失败: " + ToolPaths.display(file)
+                        + " (" + e.getMessage() + ')', e);
+            }
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            }
+            if (!(other instanceof Stamp)) {
+                return false;
+            }
+            Stamp that = (Stamp) other;
+            return modifiedAt == that.modifiedAt && size == that.size;
+        }
+
+        @Override
+        public int hashCode() {
+            return Long.valueOf(modifiedAt).hashCode() * 31 + Long.valueOf(size).hashCode();
         }
     }
 

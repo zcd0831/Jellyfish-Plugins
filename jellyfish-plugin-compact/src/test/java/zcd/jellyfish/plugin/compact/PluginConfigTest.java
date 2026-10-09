@@ -56,11 +56,31 @@ class PluginConfigTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"0", "-1", "100000"})
+    @ValueSource(strings = {"-1", "100000"})
     @DisplayName("超出允许区间的保留条数直接抛：配置错就该在启动期被看见")
     void from_should_rejectOutOfRangeKeepRecent(String raw) {
         Map<String, Object> values = new HashMap<String, Object>();
         values.put(PluginConfig.KEY_KEEP_RECENT_MESSAGES, raw);
+
+        assertThrows(JellyfishException.class, () -> PluginConfig.from(values));
+    }
+
+    @Test
+    @DisplayName("保留 0 条是合法取值：契约里它的含义是「一条原文都不留」")
+    void from_should_acceptZeroKeepRecent() {
+        Map<String, Object> values = new HashMap<String, Object>();
+        values.put(PluginConfig.KEY_KEEP_RECENT_MESSAGES, 0);
+
+        assertEquals(0, PluginConfig.from(values).keepRecentMessages());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"3.7", "5000000000"})
+    @DisplayName("数值不是整数时应报错，而不是被静默截断成另一个数")
+    void from_should_rejectNonIntegralNumber(String raw) {
+        Map<String, Object> values = new HashMap<String, Object>();
+        // 小数截成整数、超出 int 范围的值截成负数：两种都会让「我配了却不生效」无从解释
+        values.put(PluginConfig.KEY_KEEP_RECENT_MESSAGES, new java.math.BigDecimal(raw));
 
         assertThrows(JellyfishException.class, () -> PluginConfig.from(values));
     }

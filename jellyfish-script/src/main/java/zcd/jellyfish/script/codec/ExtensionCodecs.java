@@ -30,7 +30,13 @@ import java.util.Set;
  */
 public final class ExtensionCodecs {
 
-    /** 内核默认支持的 11 个扩展点。 */
+    /**
+     * 内核声明的全部扩展点的编解码器。
+     * <p>
+     * <b>不写死数量</b>：这份清单会随内核新增扩展点而变，写一个数字进去只会变成一句会腐烂的注释
+     * （它以前写着「11 个」，而当时已经是 24 个）。真源是 {@code script/extension-points.json}
+     * 的能力档，由 {@code ExtensionPointCoverageTest} 守着「内核新增的都得在这里分一次档」。
+     */
     public static final ExtensionCodecs DEFAULTS = new ExtensionCodecs(defaults());
 
     /** 类型名 → codec，保持声明顺序以便诊断输出稳定。 */

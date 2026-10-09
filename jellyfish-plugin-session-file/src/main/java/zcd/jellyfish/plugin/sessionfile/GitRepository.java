@@ -11,7 +11,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -21,12 +24,26 @@ import java.util.concurrent.TimeUnit;
  * 不上抛。反过来做（git 出错就让对话失败）会让「机器上没装 git」「仓库权限不对」这类环境问题
  * 直接升级成「jellyfish 不能说话」，代价与收益完全不成比例。
  * <p>
+ * <b>提交在专属线程上做，且按文件合并</b>：落盘走的是每一轮对话的路径（{@code SessionPersistRequest}），
+ * 而 git 是一次进程往返——在慢文件系统或大仓库上，它会把「一次对话的收尾」拖住好几秒。
+ * 因此 {@link #commit(Path, String)} 只做两件非阻塞的事：把「这个文件该提交了」记进待提交表，
+ * 叫醒提交线程。同一文件只保留最新一条待提交记录——内容本来就在盘上，线程取走时执行的
+ * {@code git add} 读到的正是最新内容，提前提交两次没有额外价值。
+ * <p>
+ * <b>它必须能停下来</b>：插件停止时在途的 git 也是「插件起的东西」，不能留着不管
+ * （{@code GitRepositoryTest} 之外的现场表现是「jellyfish 都退出了，还有一个 git 在跑」）。
+ * {@link #close(long)} 因此有界等待 → 仍不结束就真的收掉它，并如实说明代价：
+ * 强杀可能留下 {@code .git/index.lock}，下一次提交会以「无法创建 index.lock」告警并跳过
+ * （会话文件本身已经落盘，只是那一次版本历史没记上）。
+ * <p>
  * <b>提交身份用 {@code -c} 临时指定</b>：新机器上没有任何 {@code user.name} / {@code user.email}
  * 配置时 {@code git commit} 会直接失败。用命令行覆盖只影响本插件发起的提交，不会动用户全局配置，
  * 也不会污染用户自己仓库的提交身份。
  * <p>
  * <b>只认 {@code <会话目录>/.git}</b>：仓库要么已经存在，要么由本插件 {@code git init} 出来，
  * 绝不向上寻找父仓库——那样会把用户的仓库当成本插件的存储，用户仓库里凭空出现会话提交是无法接受的。
+ * <p>
+ * 线程安全。
  *
  * @author zcd
  */
@@ -47,17 +64,43 @@ final class GitRepository {
     /** 等待读取线程收尾的毫秒数。 */
     private static final long JOIN_MILLIS = 1000L;
 
+    /** 提交线程的名字：停止时靠它确认「没有留下线程」。 */
+    private static final String WORKER_NAME = "jellyfish-git-commit";
+
     /** 仓库目录。 */
     private final Path directory;
 
     /** 是否启用 git（来自插件配置）。 */
     private final boolean enabled;
 
+    /** 保护待提交表与运行标志。 */
+    private final Object lock = new Object();
+
+    /**
+     * 待提交的表：文件 → 提交信息，保持插入顺序（先到先提交）。
+     * <p>
+     * 用映射而不是队列，是为了让「同一文件只留最新一条」这件事由数据结构本身保证，
+     * 而不必在入队时线性查找。
+     */
+    private final Map<Path, String> pending = new LinkedHashMap<Path, String>();
+
+    /** 提交线程；第一次有内容要提交时才创建。 */
+    private Thread worker;
+
+    /** 是否有一次提交正在执行（{@link #flush(long)} 靠它判断「表空但还在跑」）。 */
+    private boolean inFlight;
+
+    /** 是否已关闭。 */
+    private boolean closed;
+
+    /** 正在执行的 git 进程；未执行时为 {@code null}。 */
+    private volatile Process running;
+
     /** 是否已经确认过仓库可用；{@code false} 表示还需要探测或初始化。 */
-    private boolean ready;
+    private volatile boolean ready;
 
     /** 是否已经因环境问题放弃 git，避免每次落盘都重试一遍。 */
-    private boolean abandoned;
+    private volatile boolean abandoned;
 
     /**
      * 构造 git 封装。
@@ -71,7 +114,170 @@ final class GitRepository {
     }
 
     /**
-     * 为一次落盘留一次提交。
+     * 为一次落盘排一次提交，立刻返回。
+     * <p>
+     * <b>本方法不做任何进程往返</b>：落盘路径上只允许出现这一句「记账」，否则一次慢 git
+     * 就会把一轮对话的收尾拖住（见类注释）。
+     *
+     * @param file    已落盘的文件
+     * @param message 提交信息
+     */
+    void commit(Path file, String message) {
+        if (!enabled || abandoned || file == null) {
+            return;
+        }
+        synchronized (lock) {
+            if (closed) {
+                return;
+            }
+            pending.put(file, message);
+            if (worker == null) {
+                // 懒建：没有提交过就不该有一条常驻线程（与「没有声明就不创建任何线程」同一口径）
+                worker = new Thread(this::drain, WORKER_NAME);
+                worker.setDaemon(true);
+                worker.start();
+            }
+            lock.notifyAll();
+        }
+    }
+
+    /**
+     * 等提交做完，供关闭与测试使用。
+     *
+     * @param timeoutMillis 等待上限毫秒数
+     * @return 待提交表已空且没有在途提交时返回 {@code true}；超时返回 {@code false}
+     */
+    boolean flush(long timeoutMillis) {
+        long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMillis);
+        synchronized (lock) {
+            while (!pending.isEmpty() || inFlight) {
+                long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0L) {
+                    return false;
+                }
+                try {
+                    lock.wait(remaining);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    /**
+     * 停止接受新的提交，并收掉在途的 git，幂等。
+     * <p>
+     * <b>顺序是「先铺完、再动手」</b>：先在 {@code graceMillis} 内等提交做完（绝大多数情况毫秒级），
+     * 等不到才强杀。强杀必须做——留着一条在途 git 就是我们最不想留下的那种东西
+     * （「jellyfish 都退出了，那条命令还在跑」）。
+     *
+     * @param graceMillis 等在途提交结束的毫秒数
+     */
+    void close(long graceMillis) {
+        synchronized (lock) {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            lock.notifyAll();
+        }
+        boolean drained = flush(graceMillis);
+        Thread current;
+        int leftover;
+        synchronized (lock) {
+            current = worker;
+            worker = null;
+            leftover = pending.size();
+            pending.clear();
+        }
+        Process inFlight = running;
+        if (!drained && inFlight != null) {
+            kill(inFlight);
+        }
+        if (current != null) {
+            current.interrupt();
+            try {
+                current.join(JOIN_MILLIS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (current.isAlive()) {
+                LOG.warn("git 提交线程未在 {} ms 内退出，已放弃等待", Long.valueOf(JOIN_MILLIS));
+            }
+        }
+        if (!drained) {
+            LOG.warn("停止时仍有 git 提交在途，已强制终止；若后续提交报「无法创建 index.lock」，"
+                    + "删掉 {}/.git/index.lock 即可恢复（会话文件本身没有受影响）", directory);
+        }
+        if (leftover > 0) {
+            LOG.warn("停止时丢弃了 {} 次未开始的 git 提交：会话文件已经落盘，只是这些版本历史没记上",
+                    Integer.valueOf(leftover));
+        }
+    }
+
+    /**
+     * 收掉一个 git 进程：先请它走，再由强杀兜底。
+     *
+     * @param process git 进程
+     */
+    private static void kill(Process process) {
+        process.destroy();
+        try {
+            if (!process.waitFor(JOIN_MILLIS, TimeUnit.MILLISECONDS)) {
+                process.destroyForcibly();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * 提交线程主循环：逐条取待提交记录，做完一条再看下一条。
+     * <p>
+     * 任何运行时异常都只记日志：线程一旦退出，后续提交就再也没人做了，而「版本历史不完整」
+     * 远好于「从某一轮对话起版本历史静默消失」。
+     */
+    private void drain() {
+        while (true) {
+            Path file;
+            String message;
+            synchronized (lock) {
+                while (pending.isEmpty() && !closed) {
+                    try {
+                        lock.wait(200L);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+                if (pending.isEmpty()) {
+                    return;
+                }
+                Iterator<Map.Entry<Path, String>> entries = pending.entrySet().iterator();
+                Map.Entry<Path, String> next = entries.next();
+                file = next.getKey();
+                message = next.getValue();
+                entries.remove();
+                inFlight = true;
+            }
+            try {
+                commitNow(file, message);
+            } catch (RuntimeException e) {
+                LOG.warn("git 提交失败（会话文件已落盘，仅版本历史缺失）: file={} reason={}",
+                        file.getFileName(), e.toString());
+            } finally {
+                synchronized (lock) {
+                    inFlight = false;
+                    lock.notifyAll();
+                }
+            }
+        }
+    }
+
+    /**
+     * 真正执行一次提交。
      * <p>
      * 同步执行，失败只记告警。内容没有变化时 git 会以「nothing to commit」失败，这属于正常情况，
      * 不当错误处理。
@@ -79,8 +285,8 @@ final class GitRepository {
      * @param file    已落盘的文件
      * @param message 提交信息
      */
-    synchronized void commit(Path file, String message) {
-        if (!enabled || abandoned) {
+    private void commitNow(Path file, String message) {
+        if (abandoned) {
             return;
         }
         if (!ensureRepository()) {
@@ -144,7 +350,7 @@ final class GitRepository {
      * @return 退出码与合并输出
      */
     private CommandResult run(String... args) {
-        List<String> command = new ArrayList<>();
+        List<String> command = new ArrayList<String>();
         command.add("git");
         command.add("-c");
         command.add("user.name=" + COMMITTER_NAME);
@@ -155,6 +361,8 @@ final class GitRepository {
         builder.redirectErrorStream(true);
         try {
             Process process = builder.start();
+            // 记下它，好让 close 能真的收掉在途的这一次（否则只能等它自己超时）
+            running = process;
             OutputCollector collector = new OutputCollector(process.getInputStream());
             // 读取必须与等待并发：输出写满管道缓冲区时进程会阻塞在写上，等结束会导致双方互等
             Thread reader = new Thread(collector, "jellyfish-git-output");
@@ -172,6 +380,8 @@ final class GitRepository {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new CommandResult(-1, "被中断");
+        } finally {
+            running = null;
         }
     }
 

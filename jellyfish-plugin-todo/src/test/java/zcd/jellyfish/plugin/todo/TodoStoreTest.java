@@ -452,4 +452,21 @@ class TodoStoreTest {
         assertEquals(TodoStatus.BLOCKED, rewritten.get(0).status());
         assertEquals("缺权限", rewritten.get(0).reason());
     }
+
+    @Test
+    @DisplayName("非 blocked 的条目不该挂原因：那是黏性判据，挂上就永远抹不掉了")
+    void replace_should_dropReason_when_statusIsNotBlocked() {
+        // Given：一条已经挂上原因的黏性条目（卡住过）
+        store.replace("s-1", items("甲"));
+        store.block("s-1", "甲", null, "缺权限");
+
+        // When：父回合重写它，状态改成未开始，却又带着一句原因
+        List<TodoItem> rewritten = store.replace("s-1", Arrays.asList(
+                new TodoItem("甲", TodoStatus.PENDING, null, "顺手写的原因")));
+
+        // Then：状态已经不是 blocked，原因不该留下——它会让这一条一直被 findSticky 当成
+        // 「被人动过」的黏性条目，模型之后每次整表重写都要把它带着走，而它自己修不回来
+        assertEquals(TodoStatus.PENDING, rewritten.get(0).status());
+        assertNull(rewritten.get(0).reason());
+    }
 }

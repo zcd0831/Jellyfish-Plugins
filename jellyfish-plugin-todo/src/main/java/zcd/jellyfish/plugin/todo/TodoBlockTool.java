@@ -81,7 +81,7 @@ final class TodoBlockTool implements ExtensionHandler<ToolCallRequest, ToolCallR
     public ToolCallResult handle(ToolCallRequest request) {
         String key = scope.collaborationKeyOf(request);
         if (key == null) {
-            throw new JellyfishException("todo_done 需要会话上下文，当前没有会话");
+            throw new JellyfishException("todo_block 需要会话上下文，当前没有会话");
         }
         String content = text(request.getArguments().get("content"));
         String reason = text(request.getArguments().get("reason"));

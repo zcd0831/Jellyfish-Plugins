@@ -28,7 +28,9 @@ public interface ScriptCaller {
      * @param typeName 扩展点类型名（由 codec 给出），不可为空白
      * @param request  请求载荷，可为 {@code null}（表示该扩展点的请求没有载荷）
      * @return 结果载荷；脚本没有结果载荷时为 {@code null}
-     * @throws zcd.jellyfish.api.JellyfishException 调用失败时抛出
+     * @throws ScriptNotHandledException             脚本侧有意没去办这件事（「不表态」）时抛出；
+     *                                               它既不是成功也不是失败，调用点走保守缺省
+     * @throws zcd.jellyfish.api.JellyfishException  调用失败时抛出
      */
     JsonNode call(ScriptPlugin plugin, String typeName, JsonNode request);
 
@@ -45,7 +47,8 @@ public interface ScriptCaller {
      * @param request   请求载荷，可为 {@code null}
      * @param token     调用级取消令牌，不可为 {@code null}
      * @return 结果载荷；脚本没有结果载荷时为 {@code null}
-     * @throws zcd.jellyfish.api.JellyfishException 调用失败时抛出
+     * @throws ScriptNotHandledException             脚本侧有意没去办这件事（「不表态」）时抛出
+     * @throws zcd.jellyfish.api.JellyfishException  调用失败时抛出
      */
     default JsonNode call(ScriptPlugin plugin, String typeName, JsonNode request, CancellationToken token) {
         return call(plugin, typeName, request);

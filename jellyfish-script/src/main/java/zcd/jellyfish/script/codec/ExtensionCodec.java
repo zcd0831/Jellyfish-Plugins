@@ -14,7 +14,7 @@ import zcd.jellyfish.script.ScriptInvoker;
  * 因此新增一个扩展点 = 新增一个 codec，不动协议、不动进程模型。
  * <p>
  * <b>两个方法都是纯函数</b>：不碰进程、不碰注册表、不打日志，因此可以完全离线单测——
- * 这是「11 个扩展点全部打通」能被验证的前提。
+ * 这是「全部扩展点都真的打通了」能被验证的前提。
  * <p>
  * {@link #handlerTo(ScriptInvoker)} 把编解码与调用拼成内核认得的
  * {@link ExtensionHandler}，并且<b>不引入任何 unchecked 转换</b>：类型参数 {@code C}、{@code R}

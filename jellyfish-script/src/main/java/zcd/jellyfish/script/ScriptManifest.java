@@ -50,6 +50,24 @@ public final class ScriptManifest {
     /** 清单文件名。 */
     public static final String FILE_NAME = "manifest.json";
 
+    /**
+     * 清单文件大小上限：1 MiB。
+     * <p>
+     * 它是「管道与消息的长度上限」这一族护栏里最宽松的一个，因为清单是<b>随仓库分发</b>的东西，
+     * 而扫描发生在插件启动期——上限的作用是不让一份荒唐的清单把内核启动拖垮。真实清单是几 KB 量级
+     * （几十个工具 × 每条一行描述），1 MiB 留了两个数量级的余量。
+     */
+    public static final int MAX_FILE_BYTES = 1024 * 1024;
+
+    /**
+     * 单个文本字段的长度上限（字符）：{@value}。
+     * <p>
+     * 这些字段里的描述会进<b>模型的工具清单</b>、台账与日志，因此一个写了十万字的描述不只是占内存，
+     * 它会挤掉真正有用的上下文。超限直接报错而不是截断：清单是作者自己写的，说清「哪一项太长」
+     * 比悄悄少一半更有用。
+     */
+    private static final int MAX_FIELD_CHARS = 8192;
+
     /** 上一级目录段：{@code entry} 规范化后以它开头即视为跳出脚本目录。 */
     private static final Path PARENT_DIRECTORY = Paths.get("..");
 
@@ -658,7 +676,7 @@ public final class ScriptManifest {
      * @param node  对象节点
      * @param field 字段名
      * @return 文本或 {@code null}
-     * @throws JellyfishException 字段存在但不是字符串时抛出
+     * @throws JellyfishException 字段存在但不是字符串、或长度超过 {@link #MAX_FIELD_CHARS} 时抛出
      */
     private static String text(JsonNode node, String field) {
         JsonNode value = node.get(field);
@@ -668,7 +686,13 @@ public final class ScriptManifest {
         if (!value.isTextual()) {
             throw new JellyfishException(field + " 必须是字符串");
         }
-        return value.asText();
+        String text = value.asText();
+        if (text.length() > MAX_FIELD_CHARS) {
+            // 这里是所有文本字段的唯一入口，因此上限只需要在这里判一次
+            throw new JellyfishException(field + " 过长（" + text.length() + " 字符，上限 "
+                    + MAX_FIELD_CHARS + " 字符）");
+        }
+        return text;
     }
 
     /**

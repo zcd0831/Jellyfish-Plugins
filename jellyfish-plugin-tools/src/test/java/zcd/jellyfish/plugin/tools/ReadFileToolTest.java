@@ -78,6 +78,22 @@ class ReadFileToolTest {
     }
 
     @Test
+    @DisplayName("不是 UTF-8 的文件应说出来，而不是把非法字节显示成问号")
+    void handle_should_report_when_fileIsNotUtf8() throws Exception {
+        // Given：GBK 编码的文件（按 UTF-8 解码一定非法）
+        Path file = tempDir.resolve("gbk.txt");
+        Files.write(file, "第一行\n第二行\n".getBytes("GBK"));
+
+        // When
+        ToolCallResult result = invokeResult(tool, args("path", file.toString()));
+
+        // Then：默认解码器会把非法字节换成替换字符，于是「文件里有一堆问号」看起来像文件内容。
+        // 真相必须说出来，否则模型会照着乱码下结论
+        String output = String.valueOf(result.getOutput());
+        assertTrue(output.contains("不是合法 UTF-8"), output);
+    }
+
+    @Test
     @DisplayName("空文件应给出「文件为空」而不是报错")
     void handle_should_reportEmpty_when_fileIsEmpty() throws Exception {
         Path file = write("a.txt", "");

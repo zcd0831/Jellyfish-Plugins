@@ -7,7 +7,9 @@ import zcd.jellyfish.api.extension.ToolCallResult;
 import zcd.jellyfish.api.extension.ToolDescriptor;
 
 import java.io.BufferedReader;
+import java.io.Closeable;
 import java.io.IOException;
+import java.nio.charset.MalformedInputException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -131,12 +133,17 @@ public final class ReadFileTool implements PluginTool {
         long usedBytes = 0L;
         boolean moreContent = false;
         boolean cancelled = false;
+        boolean notUtf8 = false;
         if (token.isCancelled()) {
             // 开始前就取消了：一行都不读。行循环里的检查是每 8192 行一次，短文件根本到不了那次检查，
             // 因此这一句不是冗余——没有它，「取消」在小文件上会表现得像没取消
             return new ReadOutcome("[已取消：读取被中止，一行都没读到]", ToolPaths.display(file) + "（已取消）");
         }
-        try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+        // 严格解码：非法字节处抛异常停下来，而不是把它换成替换字符。
+        // 换成替换字符的话，用户看到的「一堆问号」会被当成文件内容，而真相是编码不对
+        BufferedReader reader = null;
+        try {
+            reader = Utf8Files.strictReader(file);
             String line;
             while ((line = reader.readLine()) != null) {
                 lineNumber++;
@@ -170,8 +177,25 @@ public final class ReadFileTool implements PluginTool {
                 taken++;
                 usedBytes += lineBytes;
             }
+        } catch (MalformedInputException e) {
+            // 非 UTF-8：已经读到的部分照常交出去，但必须说清是为什么停的——
+            // 不说的话，模型会把「读到这里为止」当成「文件就到这里」
+            notUtf8 = true;
         } catch (IOException e) {
             throw new JellyfishException("读取文件失败: " + ToolPaths.display(file) + " (" + e.getMessage() + ')', e);
+        } finally {
+            closeQuietly(reader);
+        }
+        if (notUtf8) {
+            if (taken == 0) {
+                // 一个非 UTF-8 的文件（GBK 源码、二进制……）不是「空文件」
+                return new ReadOutcome("[不是合法 UTF-8：从第一个非法字节起就无法解码，未能读到任何一行]",
+                        ToolPaths.display(file) + "（非 UTF-8）");
+            }
+            text.append("\n[不是合法 UTF-8：读取在第一个非法字节处停下，以上是已读到的 ")
+                    .append(taken).append(" 行]");
+            return new ReadOutcome(text.toString(),
+                    ToolPaths.display(file) + ':' + offset + '-' + (offset + taken - 1) + "（非 UTF-8）");
         }
         if (cancelled) {
             // 取消时把已经读到的部分交出去：那部分是真的，丢掉它只会让用户白等一场；
@@ -197,6 +221,22 @@ public final class ReadFileTool implements PluginTool {
         String range = ToolPaths.display(file) + ':' + offset + '-' + (offset + taken - 1)
                 + (moreContent ? "+" : "");
         return new ReadOutcome(text.toString(), range);
+    }
+
+    /**
+     * 静默关闭读取器。
+     *
+     * @param reader 读取器，可为 {@code null}
+     */
+    private static void closeQuietly(Closeable reader) {
+        if (reader == null) {
+            return;
+        }
+        try {
+            reader.close();
+        } catch (IOException e) {
+            // 关闭失败没有可恢复动作：内容已经读到了
+        }
     }
 
     /**

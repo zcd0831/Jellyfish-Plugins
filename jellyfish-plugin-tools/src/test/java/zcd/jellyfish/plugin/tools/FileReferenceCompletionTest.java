@@ -83,6 +83,37 @@ class FileReferenceCompletionTest {
     }
 
     @Test
+    @DisplayName("片段里带转义空格时应还原后再匹配，能接着往下补")
+    void handle_should_match_after_unescaping_escaped_whitespace() throws Exception {
+        // Given：文件叫「my file.txt」，用户接受补全后输入框里是 @…/my\ file.txt，
+        // 接着往下敲成了 @…/my\ f
+        Files.write(root.resolve("my file.txt"), "hi".getBytes("UTF-8"));
+
+        // When
+        InputReferenceResult result = completion.handle(request(root + "/my\\ f"));
+
+        // Then：必须匹配上（不还原的话永远匹配不上），而插进去的仍是转义过的完整名字
+        assertEquals(1, result.getChoices().size());
+        assertEquals("my file.txt", result.getChoices().get(0).getLabel());
+        assertEquals(root + "/my\\ file.txt", result.getChoices().get(0).getInsertText());
+    }
+
+    @Test
+    @DisplayName("目录名里有空格时，目录片段也要一起转义")
+    void handle_should_escape_directory_part_too() throws Exception {
+        // Given：目录名带空格，用户已经进到它里面
+        Files.createDirectories(root.resolve("my dir").resolve("sub"));
+
+        // When
+        InputReferenceResult result = completion.handle(request(root + "/my\\ dir/s"));
+
+        // Then
+        assertEquals(1, result.getChoices().size());
+        assertEquals("sub/", result.getChoices().get(0).getLabel());
+        assertEquals(root + "/my\\ dir/sub/", result.getChoices().get(0).getInsertText());
+    }
+
+    @Test
     @DisplayName("名字里的空格应转义，避免片段被拆成两段")
     void handle_should_escape_spaces_in_insert_text() throws Exception {
         // Given

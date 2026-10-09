@@ -10,6 +10,7 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /**
@@ -60,7 +61,7 @@ final class PlanConfig {
     private final Consumer<JellyfishEvent> warner;
 
     /** 是否已经就「白名单为空」告警过。 */
-    private volatile boolean emptyWhitelistWarned;
+    private final AtomicBoolean emptyWhitelistWarned = new AtomicBoolean();
 
     /**
      * 构造配置。
@@ -139,16 +140,22 @@ final class PlanConfig {
      * <p>
      * <b>为什么只喊一次</b>：本判定挂在每一次被拒的工具调用上，无节流会让同一份配置重复刷屏，
      * 把真正需要看见的告警淹掉。配置段一变本插件就会重启，因此「一次」的作用域恰好是「一份配置」。
+     * <b>「一次」由 CAS 保证</b>：判定发生在并发的工具调用上（子代理并行时尤其明显），
+     * 而「查一次再置一次」之间的窗口足以让两条线程各发一条一模一样的。
      * <p>
      * 告警失败不影响拒绝结论：可观测性不该让判定链失败。
      *
      * @param toolName 被拒的工具名，进告警文案便于定位
      */
     void warnIfWhitelistIsEmpty(String toolName) {
-        if (!readOnlyTools.isEmpty() || emptyWhitelistWarned || warner == null) {
+        if (!readOnlyTools.isEmpty() || warner == null) {
             return;
         }
-        emptyWhitelistWarned = true;
+        // CAS 而不是「查一次再置一次」：判定挂在每一次被拒的工具调用上，而工具调用是并发的
+        // （子代理并行跑时尤其明显），查与置之间的窗口足以让两条线程各发一条一模一样的告警
+        if (!emptyWhitelistWarned.compareAndSet(false, true)) {
+            return;
+        }
         try {
             warner.accept(new ConfigWarningEvent(source, "plan 模式下工具「" + toolName
                     + "」被拒，且只读白名单为空（plan 下所有工具都会被拒）：" + DECLARATION_HINT));
