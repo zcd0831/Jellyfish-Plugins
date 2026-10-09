@@ -351,6 +351,30 @@ class NodeScriptIT {
     }
 
     @Test
+    @DisplayName("被隔离的 worker 还在两段式关闭里时换了新一代：不能把它就地丢掉（那会成为永久孤儿）")
+    void killedWorker_should_stillBeForceKilled_whenNewWorkerTakesOver()
+            throws IOException, InterruptedException {
+        // 缺陷现场：网关在「再派一次调用」时会把上一代 worker 的句柄就地丢掉
+        // （`invoke()` 见 `killAt !== null` 就 `closeWorker()`），而两段式关闭的第二段
+        // （SIGKILL）正是靠那个句柄发的。句柄一丢，卡在同步忙等里、连 SIGTERM 处理器
+        // 都没机会跑的 worker 就再也没人收得动它——它会一直占满一个核，直到 60 秒的忙等
+        // 自己跑完；而宿主连这个进程的存在都不知道。
+        // 这里让两件事在同一次运行里发生：先卡死一次（进入隔离），再立刻调一次（网关换一代）
+        writeScript("jira", TOOL_SCRIPT, FULL_MANIFEST);
+        startRuntime(2);
+        Map<String, Object> noArguments = Collections.<String, Object>emptyMap();
+
+        assertThrows(JellyfishException.class, () -> invokeTool("jira_hang", noArguments));
+        // 紧接着再调一次：上一代此刻正处在「SIGTERM 已发、SIGKILL 未发」的宽限期里
+        assertThrows(JellyfishException.class, () -> invokeTool("jira_hang", noArguments));
+
+        // 期望 1 个进程（网关自己）：那两个 60 秒忙等都该被 SIGKILL 收掉，
+        // 而网关是设计成可空闲十分钟的长命进程，它留下是对的
+        assertTrue(awaitProcessCount(gatewayDirectory(), 1, 30_000L),
+                "被隔离的 worker 成了永久孤儿（进程数 " + countProcesses(gatewayDirectory()) + "）");
+    }
+
+    @Test
     @DisplayName("连续失败应触发熔断，且熔断期间不派发、工具仍在清单里")
     void circuitBreaker_should_rejectWithoutDispatch_whenFailuresExceedThreshold() throws IOException {
         writeScript("jira", TOOL_SCRIPT, FULL_MANIFEST);

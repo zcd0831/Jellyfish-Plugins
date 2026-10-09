@@ -640,6 +640,30 @@ class PythonScriptIT {
         hanging.join(5000L);
     }
 
+    @Test
+    @DisplayName("被隔离的 worker 还在两段式关闭里时换了新一代：不能把它就地丢掉（那会成为永久孤儿）")
+    void killedWorker_should_stillBeForceKilled_whenNewWorkerTakesOver()
+            throws IOException, InterruptedException {
+        // 缺陷现场：网关在「再派一次调用」时会把上一代 worker 的句柄就地丢掉，
+        // 而两段式关闭的第二段（SIGKILL）正是靠那个句柄发的。这里用一个**自己接管了 SIGTERM**
+        // 的脚本把第一段彻底堵死，于是「第二段会不会送到」成了唯一能救它的东西。
+        // 两件事要在同一次运行里发生：先卡死一次（进入隔离），再立刻调一次（网关换一代 worker）
+        writeScript("stubborn", STUBBORN_SCRIPT, STUBBORN_MANIFEST);
+        java.nio.file.Path gatewayDirectory = new zcd.jellyfish.script.GatewayResources(gatewayRoot)
+                .materialize(new PythonLanguage(interpreter()), PythonLanguage.GATEWAY_RESOURCES);
+        startRuntime(2);
+        Map<String, Object> noArguments = Collections.<String, Object>emptyMap();
+
+        assertThrows(JellyfishException.class, () -> invokeTool("stubborn_hang", noArguments));
+        // 紧接着再调一次：上一代此刻正处在「SIGTERM 已发、SIGKILL 未发」的宽限期里
+        assertThrows(JellyfishException.class, () -> invokeTool("stubborn_hang", noArguments));
+
+        // 期望 1 个进程（网关自己）：那两个 sleep(600) 都该被 SIGKILL 收掉，
+        // 而网关是设计成可空闲十分钟的长命进程，它留下是对的
+        assertTrue(awaitProcessCount(gatewayDirectory, 1),
+                "被隔离的 worker 成了永久孤儿（进程数 " + countProcesses(gatewayDirectory) + "）");
+    }
+
 
     @Test
     @DisplayName("PID 文件应记下网关自己的 PID，并在正常退出时删掉")
@@ -1869,6 +1893,30 @@ class PythonScriptIT {
     /** 与 {@link #GIT_SCRIPT} 逐字对应的清单。 */
     private static final String GIT_MANIFEST = "{\"entry\":\"main.py\","
             + "\"tools\":[{\"name\":\"git_status\"}]}";
+
+    /**
+     * 自己接管 SIGTERM 的脚本：用来验证两段式关闭的**第二段**真的会送到。
+     * <p>
+     * 「脚本自己装 SIGTERM 处理器」不是编出来的场景——做收尾清理是很自然的动机，而一旦
+     * 脚本接管了这个信号，网关的第一段（SIGTERM）就失效了，收场全靠第二段（SIGKILL）。
+     */
+    private static final String STUBBORN_SCRIPT = ""
+            + "import signal\n"
+            + "import time\n"
+            + "\n"
+            + "from jellyfish_sdk import tool\n"
+            + "\n"
+            + "\n"
+            + "@tool(name=\"stubborn_hang\", description=\"接管 SIGTERM 之后卡死\")\n"
+            + "def stubborn_hang(args, ctx):\n"
+            + "    # 先接管 SIGTERM（脚本做收尾清理很自然），再卡住不回来\n"
+            + "    signal.signal(signal.SIGTERM, lambda *_: None)\n"
+            + "    time.sleep(600)\n"
+            + "    return \"never\"\n";
+
+    /** 与 {@link #STUBBORN_SCRIPT} 逐字对应的清单。 */
+    private static final String STUBBORN_MANIFEST = "{\"entry\":\"main.py\","
+            + "\"tools\":[{\"name\":\"stubborn_hang\"}]}";
 
     /**
      * 读配置的脚本：同时从 ``ctx.configuration`` 与模块级 ``configuration()`` 取值。

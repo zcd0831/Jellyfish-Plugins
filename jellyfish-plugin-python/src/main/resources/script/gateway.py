@@ -143,6 +143,10 @@ class Gateway(object):
         self.states = {}
         self.running = True
         self.exit_reason = None
+        # 「已发过 SIGTERM、还在等它退场」的上一代 worker（元素是 (state, worker)）。
+        # **它们必须留在账上**：SIGKILL 是两段式关闭的第二段，靠进程句柄发；句柄一丢，
+        # 卡在用户代码里、收不到 SIGTERM 的 worker 就再也没人收得动它了（永久孤儿）
+        self.dying = []
         self.stdin_buffer = b""
         self.pending_ready = set()
         self.pending_init = None
@@ -171,6 +175,7 @@ class Gateway(object):
             self._expire()
             self._pump_all()
             self._reap()
+            self._escalate()
             self._check_worker_busy()
             self._check_idle()
             self._wait()
@@ -210,6 +215,10 @@ class Gateway(object):
             self._reap()
         for state in self.states.values():
             self._close_worker(state)
+        if self._alive_workers():
+            # 送到这一步还活着的，只可能是 SIGKILL 也没收掉的进程（内核层面异常或权限问题）。
+            # 这是唯一一种「网关退出了却仍留下孤儿」的情形，必须留下痕迹而不是静默收场
+            self._log("警告: 仍有 %d 个 worker 未退出，网关将留下孤儿进程" % self._alive_workers())
         self._remove_pid_file()
         if self.events_pushed or self.events_dropped or self.events_echoed:
             self._log("事件统计: 推送 %d，丢弃 %d（worker 忙或没有 worker），跳过回声 %d"
@@ -477,10 +486,28 @@ class Gateway(object):
                 return
             if pid == 0:
                 return
+            if self._reap_dying(pid):
+                continue
             for state in self.states.values():
                 current = state.worker
                 if current is not None and current.pid == pid:
                     self._worker_gone(state, "worker 进程已退出（pid=%d）" % pid)
+
+    def _reap_dying(self, pid):
+        """被隔离的 worker 终于退场：把它从收割名单上摘掉。
+
+        它必须按 **pid** 找，不能只看 ``state.worker``：被「换一代」换下来之后句柄已经不在
+        那一代上了（那个脚本可能已经有新一代 worker 在跑），按句柄找是找不到的。
+
+        :param pid: 已退出的进程号
+        :return: 这个 pid 属于收割名单返回 ``True``
+        """
+        for index, item in enumerate(self.dying):
+            if item[1].pid == pid:
+                state, _worker = self.dying.pop(index)
+                self._log("[%s] 被隔离的 worker 已退场: pid=%d" % (state.script_id, pid))
+                return True
+        return False
 
     # ------------------------------------------------------------ 宿主请求
 
@@ -930,26 +957,55 @@ class Gateway(object):
         return True
 
     def _escalate(self):
-        """两段式关闭的第二步：到点还没走就强杀。"""
+        """两段式关闭的第二步：到点还没走就强杀。
+
+        **两个名单都要看**：当前这一代在 ``states`` 上，而被隔离（或超时）之后已经被
+        「换一代」换下来的那些只在收割名单上。只看前者，正是「SIGKILL 永远发不出去」的由来。
+
+        **必须放在事件循环里跑**，不能只在关闭路径上跑：把卡住的 worker 挂进收割名单之后，
+        ``_alive_workers()`` 就一直不为零（见 _close_worker），若没人继续推进第二段，
+        网关自己也不会退场了。
+        """
         now = time.time()
         for state in self.states.values():
             current = state.worker
             if current is None or current.kill_at is None:
                 continue
             if current.force_kill_at is not None and now > current.force_kill_at:
-                self._log("[%s] worker 未响应终止信号，强杀: pid=%d" % (state.script_id, current.pid))
-                current.force_kill_at = None
-                try:
-                    os.kill(current.pid, signal.SIGKILL)
-                except OSError:
-                    self._worker_gone(state, "worker 已不存在")
+                self._force_kill(state, current)
+        for state, current in list(self.dying):
+            if current.force_kill_at is not None and now > current.force_kill_at:
+                self._force_kill(state, current)
+
+    def _force_kill(self, state, current):
+        """第一段到期还在时，把 SIGKILL 送出去。"""
+        self._log("[%s] worker 未响应终止信号，强杀: pid=%d" % (state.script_id, current.pid))
+        current.force_kill_at = None
+        try:
+            os.kill(current.pid, signal.SIGKILL)
+        except OSError:
+            # 进程已经不在了（它刚好自己退场，而 waitpid 还没轮到）。当前这一代按老规矩
+            # 走 _worker_gone；收割名单里的那一个由 _reap 按 pid 摘掉，这里不重复处置
+            if state.worker is current:
+                self._worker_gone(state, "worker 已不存在")
 
     def _close_worker(self, state):
-        """关闭并丢弃 worker 的连接。"""
+        """关闭并丢弃 worker 的连接。
+
+        **正在两段式关闭中的 worker（``kill_at`` 已设、SIGTERM 已发、SIGKILL 还没发）不在这里丢**：
+        句柄一丢，``_escalate()`` 与 ``_alive_workers()`` 就再也看不见它，于是那个
+        「卡在用户代码里、连 SIGTERM 处理器都没机会跑」的 worker 会一直占着 CPU，
+        而网关自己还会误以为「一个 worker 都没有了」——空闲自毁提前收场，孤儿就留在了身后。
+        因此先交给收割名单，等它真的退场（或 SIGKILL 生效、``waitpid`` 收到它）再摘掉。
+        """
         current = state.worker
         if current is not None:
             self._close_worker_fds(current)
             state.worker = None
+            if current.kill_at is not None:
+                self.dying.append((state, current))
+                self._log("[%s] 上一代 worker 仍在退场流程中，交给收割名单: pid=%d"
+                          % (state.script_id, current.pid))
 
     def _close_worker_fds(self, current):
         """关闭 worker 的套接字与日志管道。"""
@@ -965,8 +1021,14 @@ class Gateway(object):
             current.log_fd = None
 
     def _alive_workers(self):
-        """存活的 worker 数。"""
-        return sum(1 for state in self.states.values() if state.worker is not None)
+        """存活的 worker 数。
+
+        **收割名单里的也算**：它们还没死透（正在等 SIGKILL），把它们漏掉的表现是
+        「网关以为一个 worker 都没有了」——于是空闲自毁提前收场、关闭路径也不等它们，
+        正好把孤儿留在了身后。
+        """
+        return len(self.dying) + sum(1 for state in self.states.values()
+                                     if state.worker is not None)
 
     def _fail_inflight(self, state, code, message):
         """失败在途的请求（它可能已经执行了一半，因此不重试）。

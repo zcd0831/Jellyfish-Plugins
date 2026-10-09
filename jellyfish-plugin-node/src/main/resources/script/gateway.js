@@ -195,6 +195,10 @@ class Gateway {
         this.states = new Map();
         this.running = true;
         this.exitReason = null;
+        // 「已发过 SIGTERM、还在等它退场」的上一代 worker（元素是 { state, worker }）。
+        // **它们必须留在账上**：SIGKILL 是两段式关闭的第二段，靠句柄发；句柄一丢，
+        // 卡在同步 JS 里、收不到 SIGTERM 的 worker 就再也没人收得动它了（永久孤儿）
+        this.dying = [];
         this.stdinBuffer = Buffer.alloc(0);
         this.pendingReady = new Set();
         this.pendingInit = null;
@@ -282,8 +286,10 @@ class Gateway {
         this.pumpAll();
         // 两段式关闭的第二步必须在**循环里**做：worker 卡在一段同步 JS 里时，
         // 它的 SIGTERM 处理器根本没有机会跑（Node 的信号处理器排在事件循环上），
-        // 只有内核送达的 SIGKILL 收得动它。Python 版靠的是「信号处理器里直接 os._exit」，
-        // 因此它只在关闭路径上做这件事——这条差异是实测出来的，不是照抄能得到的
+        // 只有内核送达的 SIGKILL 收得动它。Python 版原先只在关闭路径上做这一步
+        // （它的 SIGTERM 处理器直接 os._exit，通常够用），现在两边都在循环里做了：
+        // 一旦有 worker 被挂进收割名单，「还活着的 worker 数」就不为零，
+        // 若不继续推进第二段，那个名单会一直挂着——连网关自己的空闲自毁都收不了场
         this.escalate();
         this.checkWorkerBusy();
         this.checkIdle();
@@ -308,6 +314,11 @@ class Gateway {
         }
         for (const state of this.states.values()) {
             this.closeWorker(state);
+        }
+        if (this.aliveWorkers() > 0) {
+            // 送到这一步还活着的，只可能是 SIGKILL 也没收掉的进程（内核层面异常或权限问题）。
+            // 这是唯一一种「网关退出了却仍留下孤儿」的情形，必须留下痕迹而不是静默收场
+            this.log(`警告: 仍有 ${this.aliveWorkers()} 个 worker 未退出，网关将留下孤儿进程`);
         }
         this.removePidFile();
         if (this.eventsPushed || this.eventsDropped || this.eventsEchoed) {
@@ -922,6 +933,13 @@ class Gateway {
         child.stdout.on('data', (chunk) => this.readWorker(state, chunk));
         child.stderr.on('data', (chunk) => this.readWorkerLog(state, chunk));
         child.on('exit', (code, signalName) => {
+            if (this.reapDying(worker)) {
+                // 被换下来的那一代：它已经不在 state.worker 上了，因此不能走 workerGone
+                // （那条路会去动当前这一代的现场）。这里只把它从收割名单上摘掉
+                this.log(`[${spec.id}] 被隔离的 worker 已退场: pid=${worker.pid}`
+                    + `${signalName ? `，信号 ${signalName}` : `，退出码 ${code}`}`);
+                return;
+            }
             if (state.worker === worker) {
                 this.workerGone(state, `worker 进程已退出（pid=${worker.pid}`
                     + `${signalName ? `，信号 ${signalName}` : `，退出码 ${code}`}）`);
@@ -995,6 +1013,9 @@ class Gateway {
 
     /**
      * 两段式关闭的第二步：到点还没走就强杀。
+     *
+     * **两个名单都要看**：当前这一代在 `states` 上，而被隔离（或超时）之后已经被
+     * 「换一代」换下来的那些只在收割名单上。只看前者，正是「SIGKILL 永远发不出去」的由来。
      */
     escalate() {
         const now = Date.now();
@@ -1004,19 +1025,41 @@ class Gateway {
                 continue;
             }
             if (current.forceKillAt !== null && now > current.forceKillAt) {
-                this.log(`[${state.scriptId}] worker 未响应终止信号，强杀: pid=${current.pid}`);
-                current.forceKillAt = null;
-                try {
-                    current.child.kill('SIGKILL');
-                } catch (error) {
-                    this.log(`[${state.scriptId}] 强杀失败: ${error.message}`);
-                }
+                this.forceKill(state, current);
+            }
+        }
+        for (const item of this.dying.slice()) {
+            const current = item.worker;
+            if (current.forceKillAt !== null && now > current.forceKillAt) {
+                this.forceKill(item.state, current);
             }
         }
     }
 
     /**
+     * 第一段到期还在时，把 SIGKILL 送出去。
+     *
+     * @param {object} state 脚本状态
+     * @param {object} current worker 句柄
+     */
+    forceKill(state, current) {
+        this.log(`[${state.scriptId}] worker 未响应终止信号，强杀: pid=${current.pid}`);
+        current.forceKillAt = null;
+        try {
+            current.child.kill('SIGKILL');
+        } catch (error) {
+            this.log(`[${state.scriptId}] 强杀失败: ${error.message}`);
+        }
+    }
+
+    /**
      * 关闭并丢弃 worker 的连接。
+     *
+     * **正在两段式关闭中的 worker（`killAt` 已设、SIGTERM 已发、SIGKILL 还没发）不在这里丢**：
+     * 句柄一丢，`escalate()` 与 `aliveWorkers()` 就再也看不见它，于是那个「卡在同步 JS 里、
+     * 连 SIGTERM 处理器都没机会跑」的 worker 会以 100% CPU 常驻下去，直到它自己跑完——
+     * 而宿主对此一无所知（它连这个进程的存在都不知道）。因此先交给收割名单，
+     * 等它真的退场（或 SIGKILL 生效、`exit` 事件到了）再摘掉。
      *
      * @param {object} state 脚本状态
      */
@@ -1025,7 +1068,27 @@ class Gateway {
         if (current) {
             this.closeWorkerFds(current);
             state.worker = null;
+            if (current.killAt !== null) {
+                this.dying.push({ state, worker: current });
+                this.log(`[${state.scriptId}] 上一代 worker 仍在退场流程中，交给收割名单:`
+                    + ` pid=${current.pid}`);
+            }
         }
+    }
+
+    /**
+     * 从收割名单里摘掉一个已经退场的 worker。
+     *
+     * @param {object} worker worker 句柄
+     * @returns {boolean} 它本来就在名单里返回 `true`
+     */
+    reapDying(worker) {
+        const index = this.dying.findIndex((item) => item.worker === worker);
+        if (index < 0) {
+            return false;
+        }
+        this.dying.splice(index, 1);
+        return true;
     }
 
     /**
@@ -1050,10 +1113,14 @@ class Gateway {
     /**
      * 存活的 worker 数。
      *
+     * **收割名单里的也算**：它们还没死透（正在等 SIGKILL），把它们漏掉的表现是
+     * 「网关以为一个 worker 都没有了」——于是空闲自毁提前收场、关闭路径也不等它们，
+     * 正好把孤儿留在了身后。
+     *
      * @returns {number} 数量
      */
     aliveWorkers() {
-        let count = 0;
+        let count = this.dying.length;
         for (const state of this.states.values()) {
             if (state.worker) {
                 count += 1;
