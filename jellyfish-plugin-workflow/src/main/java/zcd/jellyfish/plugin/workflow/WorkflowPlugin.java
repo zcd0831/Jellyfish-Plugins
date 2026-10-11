@@ -10,6 +10,8 @@ import zcd.jellyfish.api.plugin.JellyfishPlugin;
 import zcd.jellyfish.api.plugin.PluginContext;
 import zcd.jellyfish.api.subagent.SubAgentPort;
 
+import java.util.function.LongSupplier;
+
 /**
  * 官方编排插件：把「声明式编排」做成插件能力，内核只出原语、不解释 spec。
  * <p>
@@ -40,13 +42,16 @@ public final class WorkflowPlugin implements JellyfishPlugin {
     @Override
     public void start(PluginContext context) {
         SubAgentPort port = context.delegations();
+        // 面板与台账共用同一个时钟：耗时文案（「已跑」「已 38s」）必须和记账时刻同源，
+        // 否则注入时钟的单测会在面板上算出「跑了 50 年」这种数字
+        LongSupplier clock = System::currentTimeMillis;
         // 先装配台账与引擎再注册：处理器一旦注册就可能被调用，依赖必须已经就绪
-        WorkflowTracker tracker = new WorkflowTracker(invalidator(context));
+        WorkflowTracker tracker = new WorkflowTracker(invalidator(context), clock);
         WorkflowEngine engine = new WorkflowEngine(port, tracker);
         context.handle(ToolCallRequest.class, WorkflowTool.NAME, WorkflowTool.descriptor(),
                 new WorkflowTool(engine));
         context.contribute(PromptContributionRequest.class, new WorkflowGuidance());
-        context.contribute(PanelContributionRequest.class, new WorkflowPanel(tracker));
+        context.contribute(PanelContributionRequest.class, new WorkflowPanel(tracker, clock));
         LOG.info("编排插件已启动: tool={}", WorkflowTool.NAME);
     }
 

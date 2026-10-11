@@ -22,6 +22,9 @@ class WorkflowTrackerTest {
     /** 记录变更通知次数。 */
     private int changes;
 
+    /** 可控时钟：耗时断言用它拨时间。 */
+    private long now = 1_000L;
+
     @Test
     @DisplayName("登记后所有步骤都是待执行，且已经发过一次通知")
     void started_shouldRegisterAllStepsAsPending() {
@@ -82,6 +85,59 @@ class WorkflowTrackerTest {
         assertTrue(tracker.snapshot("s-1").get(0).isSummarizing());
         // 它不计入步骤数：spec 里只有三步
         assertEquals(3, tracker.snapshot("s-1").get(0).getSteps().size());
+    }
+
+    @Test
+    @DisplayName("登记时就把依赖、层号与次序装进快照：面板画图靠它们")
+    void started_shouldCarryLayersNeedsAndOrder() {
+        WorkflowTracker tracker = tracker();
+
+        String id = tracker.started("s-1", spec());
+
+        List<WorkflowProgress.Step> steps = tracker.snapshot("s-1").get(0).getSteps();
+        // a、b 无依赖（第 1 层），c 依赖 a、b（第 2 层）
+        assertEquals(1, steps.get(0).getLayer());
+        assertEquals(1, steps.get(1).getLayer());
+        assertEquals(2, steps.get(2).getLayer());
+        assertEquals(Arrays.asList("a", "b"), steps.get(2).getNeeds());
+        assertEquals(Arrays.<String>asList(), steps.get(0).getNeeds());
+        // 次序即 spec 里写下的顺序，同层排序用它，因此它与层号一起必须是稳定的
+        assertEquals(0, steps.get(0).getOrder());
+        assertEquals(1, steps.get(1).getOrder());
+        assertEquals(2, steps.get(2).getOrder());
+    }
+
+    @Test
+    @DisplayName("记下每一步的起止时刻，用于「已跑多久」这类会自己跳的数字")
+    void stepStates_shouldRecordTimes() {
+        WorkflowTracker tracker = trackerWithClock();
+        String id = tracker.started("s-1", spec());
+        long started = now();
+
+        tracker.stepStarted(id, "a");
+        now += 5_000L;
+        tracker.stepFinished(id, "a", StepState.DONE);
+
+        WorkflowProgress.Step step = firstStep(tracker, "a");
+        assertEquals(started, step.getStartedAt());
+        assertEquals(started + 5_000L, step.getSettledAt());
+        // 还没轮到它的步骤没有时刻：0 是「还没开始」，不是「1970 年」
+        assertEquals(0L, firstStep(tracker, "b").getStartedAt());
+        assertEquals(0L, firstStep(tracker, "b").getSettledAt());
+    }
+
+    @Test
+    @DisplayName("汇总的开始时刻也记下来：那一次委派同样要能看出「还在动」")
+    void summarising_shouldRecordStartTime() {
+        WorkflowTracker tracker = trackerWithClock();
+        String id = tracker.started("s-1", spec());
+
+        tracker.summarising(id);
+
+        WorkflowProgress progress = tracker.snapshot("s-1").get(0);
+        assertTrue(progress.isSummarizing());
+        assertEquals(now(), progress.getSummarizingSince());
+        assertEquals(0, progress.runningCount());
     }
 
     @Test
@@ -148,6 +204,40 @@ class WorkflowTrackerTest {
      */
     private WorkflowTracker tracker() {
         return new WorkflowTracker(() -> changes++);
+    }
+
+    /**
+     * 构造带可控时钟的台账：耗时的断言必须有一根能拨的时针，否则只能断言「大于零」。
+     *
+     * @return 台账
+     */
+    private WorkflowTracker trackerWithClock() {
+        return new WorkflowTracker(() -> changes++, this::now);
+    }
+
+    /**
+     * 当前时刻。
+     *
+     * @return epoch 毫秒
+     */
+    private long now() {
+        return now;
+    }
+
+    /**
+     * 取某会话第一次编排里的某个步骤。
+     *
+     * @param tracker 台账
+     * @param stepId  步骤标识
+     * @return 步骤快照
+     */
+    private static WorkflowProgress.Step firstStep(WorkflowTracker tracker, String stepId) {
+        for (WorkflowProgress.Step step : tracker.snapshot("s-1").get(0).getSteps()) {
+            if (step.getId().equals(stepId)) {
+                return step;
+            }
+        }
+        throw new IllegalStateException("步骤不存在：" + stepId);
     }
 
     /**

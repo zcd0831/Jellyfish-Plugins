@@ -8,25 +8,31 @@ import zcd.jellyfish.api.extension.PanelContributionRequest;
 import zcd.jellyfish.api.ui.UiEmphasis;
 import zcd.jellyfish.api.ui.UiLine;
 import zcd.jellyfish.api.ui.UiRegion;
+import zcd.jellyfish.api.ui.UiSegment;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * {@link WorkflowPanel} 的单元测试：无内容时不占区域、内容与强调档位、行数上限。
+ * {@link WorkflowPanel} 的单元测试：无内容时不占区域、标题行、图形与清单的取舍、行数上限。
+ * <p>
+ * 断言写得逐字，是因为这块面板的价值全在「一眼能不能读懂」：改版式的人必须看到自己改动了哪张图。
+ * 图形中的连线位置另有断言（上下两行的字形必须落同一列），那是「图能不能读懂」的底线。
  *
  * @author zcd
  */
 @DisplayName("编排面板")
 class WorkflowPanelTest {
 
-    /** 记录变更通知（本测试不观察它，但台账要它）。 */
+    /** 记录变更通知次数（本测试不观察它，但台账要它）。 */
     private int changes;
+
+    /** 当前时刻，由测试推进。 */
+    private long now = 1_000L;
 
     /** 台账。 */
     private WorkflowTracker tracker;
@@ -36,8 +42,14 @@ class WorkflowPanelTest {
 
     @BeforeEach
     void setUp() {
-        tracker = new WorkflowTracker(() -> changes++);
-        panel = new WorkflowPanel(tracker);
+        tracker = new WorkflowTracker(new Runnable() {
+
+            @Override
+            public void run() {
+                changes++;
+            }
+        }, () -> now);
+        panel = new WorkflowPanel(tracker, () -> now);
     }
 
     @Test
@@ -49,30 +61,65 @@ class WorkflowPanelTest {
     }
 
     @Test
-    @DisplayName("渲染标题、进度与每个步骤的标记；落消息区上方")
-    void handle_shouldRenderProgressAndSteps() {
-        String id = tracker.started("s-1", spec(3));
-        tracker.stepFinished(id, "step-0", StepState.DONE);
-        tracker.stepStarted(id, "step-1");
+    @DisplayName("标题行说清进度与耗时，正文把链压成一行；耗时只标在跑的那一步")
+    void handle_shouldDrawChainWithTitleAndRunningElapsed() {
+        String id = started(step("a", "调研 A", "scout"), step("b", "写方案", "planner", "a"),
+                step("c", "落笔", "docForge", "b"));
+        settled(id, "a");
+        tracker.stepStarted(id, "b");
+        now = 40_000L;
 
         PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
 
         assertEquals(WorkflowPanel.TITLE, contribution.getTitle());
         assertEquals(UiRegion.TOP, contribution.getPreferredRegion());
-        List<String> texts = textsOf(contribution);
-        assertEquals("小任务 · 1/3 步", texts.get(0));
-        assertEquals("[x] step-0（scout）", texts.get(1));
-        assertEquals("[~] step-1（scout）", texts.get(2));
-        assertEquals("[ ] step-2（planner）", texts.get(3));
+        assertEquals(Arrays.asList(
+                "调研并写方案 · 1/3 步 · 已跑 39s · 1 在跑",
+                "L1 [x] 调研 A（scout） ───> L2 [~] 写方案（planner） 已 38s",
+                "… ───> L3 [ ] 落笔（docForge）"), textsOf(contribution));
+    }
+
+    @Test
+    @DisplayName("汇合：下游画在第一个上游那一行的右端，其余上游行尾拐上去，且两行字形同列")
+    void handle_shouldDrawJoinAndAlignColumns() {
+        String id = started(step("a", "调研 A", "scout"), step("b", "调研 B", "scout"),
+                step("c", "写方案", "planner", "a", "b"));
+        settled(id, "a");
+        tracker.stepStarted(id, "b");
+        now = 40_000L;
+
+        List<String> texts = textsOf(panel.handle(new PanelContributionRequest("s-1")));
+
+        assertEquals("调研并写方案 · 1/3 步 · 已跑 39s · 1 在跑", texts.get(0));
+        assertEquals("L1 [x] 调研 A（scout） ────────┬──> L2 [ ] 写方案（planner）", texts.get(1));
+        assertEquals("L1 [~] 调研 B（scout） 已 38s ─┘", texts.get(2));
+        assertEquals(columnOf(texts.get(1), '\u252c'), columnOf(texts.get(2), '\u2518'));
+    }
+
+    @Test
+    @DisplayName("分叉：第一个下游接在行内，其余的从同一列往下引")
+    void handle_shouldDrawFanOut() {
+        String id = started(step("a", "调研 A", "scout"), step("b", "写方案", "planner", "a"),
+                step("c", "复核", "reviewer", "a"));
+        settled(id, "a");
+        tracker.stepStarted(id, "b");
+        now = 40_000L;
+
+        List<String> texts = textsOf(panel.handle(new PanelContributionRequest("s-1")));
+
+        assertEquals("L1 [x] 调研 A（scout） ───┬──> L2 [~] 写方案（planner） 已 38s", texts.get(1));
+        assertTrue(texts.get(2).endsWith("└──> L2 [ ] 复核（reviewer）"), texts.get(2));
+        assertEquals(columnOf(texts.get(1), '\u252c'), columnOf(texts.get(2), '\u2514'));
     }
 
     @Test
     @DisplayName("强调档位跟着状态走：跑着的用 ACCENT、完成的退到 DIM、失败的用 ERROR")
     void handle_shouldEmphasiseByState() {
-        String id = tracker.started("s-1", spec(3));
-        tracker.stepFinished(id, "step-0", StepState.DONE);
-        tracker.stepStarted(id, "step-1");
-        tracker.stepFinished(id, "step-2", StepState.FAILED);
+        String id = started(step("a", "调研 A", "scout"), step("b", "调研 B", "scout"),
+                step("c", "调研 C", "scout"));
+        settled(id, "a");
+        tracker.stepStarted(id, "b");
+        tracker.stepFinished(id, "c", StepState.FAILED);
 
         PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
 
@@ -84,8 +131,8 @@ class WorkflowPanelTest {
     @Test
     @DisplayName("有步骤失败时标题行改用警示档位")
     void handle_shouldWarnOnTitleWhenFailed() {
-        String id = tracker.started("s-1", spec(1));
-        tracker.stepFinished(id, "step-0", StepState.FAILED);
+        String id = started(step("a", "调研 A", "scout"));
+        tracker.stepFinished(id, "a", StepState.FAILED);
 
         PanelContribution contribution = panel.handle(new PanelContributionRequest("s-1"));
 
@@ -93,108 +140,109 @@ class WorkflowPanelTest {
     }
 
     @Test
-    @DisplayName("汇总中要单独说一句：它是 spec 之外的又一次委派")
+    @DisplayName("汇总中要单独说一句，并带上它自己跑了多久")
     void handle_shouldShowSummarising() {
-        String id = tracker.started("s-1", spec(1));
+        String id = started(step("a", "调研 A", "scout"));
+        settled(id, "a");
         tracker.summarising(id);
+        now += 12_000L;
 
-        assertTrue(textsOf(panel.handle(new PanelContributionRequest("s-1"))).contains("[~] 汇总中"));
+        List<String> texts = textsOf(panel.handle(new PanelContributionRequest("s-1")));
+
+        assertEquals("[~] 汇总中 已 12s", texts.get(texts.size() - 1));
     }
 
     @Test
-    @DisplayName("步骤多到放不下时截断，并说明还有几步没显示")
-    void handle_shouldCapLines() {
-        // 20 步远超面板能放的行数
-        tracker.started("s-1", spec(20));
+    @DisplayName("内容行数不超过外壳给的上限")
+    void handle_shouldStayWithinLineBudget() {
+        List<WorkflowStep> steps = new ArrayList<WorkflowStep>();
+        for (int i = 0; i < 12; i++) {
+            steps.add(step("s" + i, "步骤 " + i, "scout", i == 0 ? new String[0] : new String[] {"s" + (i - 1)}));
+        }
+        started(steps.toArray(new WorkflowStep[0]));
 
         List<String> texts = textsOf(panel.handle(new PanelContributionRequest("s-1")));
 
         assertTrue(texts.size() <= WorkflowPanel.MAX_LINES, String.valueOf(texts.size()));
-        assertTrue(texts.get(texts.size() - 1).startsWith("…另有 "), texts.toString());
     }
 
     @Test
     @DisplayName("多个编排之间用空行隔开，且只显示本会话的")
     void handle_shouldSeparateWorkflowsAndFilterBySession() {
-        tracker.started("s-1", spec(1));
-        tracker.started("s-1", spec(1));
-        tracker.started("s-2", spec(1));
+        started(step("a", "调研 A", "scout"));
+        started(step("b", "调研 B", "scout"));
+        tracker.started("s-2", spec(step("c", "调研 C", "scout")));
 
         List<String> texts = textsOf(panel.handle(new PanelContributionRequest("s-1")));
 
-        // 两个编排：标题 + 步骤 + 空行 + 标题 + 步骤（s-2 那个不该出现）
+        // 两个编排：标题 + 一行正文 + 空行 + 标题 + 一行正文（s-2 那个不该出现）
         assertEquals(5, texts.size(), texts.toString());
         assertEquals("", texts.get(2));
-        assertEquals("小任务 · 0/1 步", texts.get(0));
-        assertEquals("小任务 · 0/1 步", texts.get(3));
-        assertFalse(texts.contains(null));
+        assertTrue(texts.get(0).startsWith("调研并写方案 · 0/1 步"), texts.get(0));
+        assertTrue(texts.get(3).startsWith("调研并写方案 · 0/1 步"), texts.get(3));
     }
 
     @Test
-    @DisplayName("有名字时显示名字，没有时退回标识")
-    void handle_shouldPreferNameOverId() {
-        tracker.started("s-1", namedSpec("任务A", null));
+    @DisplayName("排不出图的形状退化成清单，依赖用行尾的 <- 标出来，而不是干脆丢掉")
+    void handle_shouldFallBackToPlainList() {
+        // a 分叉给 b、c；b 又分叉给 d、e——同一行上要出现两个分叉字形，画不准就不画
+        String id = started(step("a", "调研 A", "scout"), step("b", "写方案", "planner", "a"),
+                step("c", "复核", "reviewer", "a"), step("d", "落笔", "docForge", "b"),
+                step("e", "归档", "docForge", "b"));
+        settled(id, "a");
 
         List<String> texts = textsOf(panel.handle(new PanelContributionRequest("s-1")));
 
-        // 标识是给机器用的键（被 needs 引用），面板是给人看的：给了名字就用名字
-        assertEquals("[ ] 任务A（scout）", texts.get(1));
-        // 没给名字时退回标识——它至少能把这一行与失败清单、材料标头对起来
-        assertEquals("[ ] step-b（scout）", texts.get(2));
-    }
-
-    @Test
-    @DisplayName("过长的名字由面板自己截短，不依赖外壳兜底")
-    void handle_shouldClipLongName() {
-        StringBuilder longName = new StringBuilder();
-        for (int i = 0; i < 30; i++) {
-            longName.append('长');
-        }
-        tracker.started("s-1", namedSpec(longName.toString(), null));
-
-        List<String> texts = textsOf(panel.handle(new PanelContributionRequest("s-1")));
-
-        // 40 列的名字加「（scout）」会折行，而这块面板落消息区上方（全宽）就是为了不折行
-        assertEquals(WorkflowPanel.MAX_NAME_CHARS + 1 + "（scout）".length(),
-                texts.get(1).length() - "[ ] ".length());
-        assertTrue(texts.get(1).endsWith("…（scout）"), texts.get(1));
-    }
-
-    @Test
-    @DisplayName("截短不切开代理对：半个字符在终端上是乱码")
-    void handle_shouldNotSplitSurrogatePairWhenClipping() {
-        // 19 个半角 + 两个代理对：第 20 个字符（下标 MAX_NAME_CHARS）正好是某个代理对的后半个
-        StringBuilder name = new StringBuilder("0123456789012345678");
-        name.append("\uD83D\uDE00").append("\uD83D\uDE00");
-        tracker.started("s-1", namedSpec(name.toString(), null));
-
-        List<String> label = textsOf(panel.handle(new PanelContributionRequest("s-1")));
-
-        String line = label.get(1);
-        for (int i = 0; i < line.length(); i++) {
-            char current = line.charAt(i);
-            if (Character.isHighSurrogate(current)) {
-                assertTrue(Character.isLowSurrogate(line.charAt(i + 1)), "高位代理后面没有低位代理");
-                i++;
-            } else {
-                assertFalse(Character.isLowSurrogate(current), "出现了孤立低位代理：" + line);
-            }
-        }
-        assertTrue(line.startsWith("[ ] 0123456789012345678…（scout）"), line);
+        assertTrue(texts.contains("L1 [x] 调研 A（scout）"), texts.toString());
+        assertTrue(texts.contains("L2 [ ] 写方案（planner） <- a"), texts.toString());
+        assertTrue(texts.contains("L3 [ ] 落笔（docForge） <- b"), texts.toString());
     }
 
     /**
-     * 构造两个步骤的 spec，可分别指定名字。
+     * 登记一次编排（本会话，名字固定）。
      *
-     * @param firstName  第一步的名字，可为 {@code null}
-     * @param secondName 第二步的名字，可为 {@code null}
+     * @param steps 步骤
+     * @return 编排标识
+     */
+    private String started(WorkflowStep... steps) {
+        return tracker.started("s-1", spec(steps));
+    }
+
+    /**
+     * 造一份 spec。
+     *
+     * @param steps 步骤
      * @return spec
      */
-    private static WorkflowSpec namedSpec(String firstName, String secondName) {
-        List<WorkflowStep> steps = new ArrayList<WorkflowStep>();
-        steps.add(new WorkflowStep("step-a", firstName, "scout", "step-a", null, StepCondition.ALWAYS));
-        steps.add(new WorkflowStep("step-b", secondName, "scout", "step-b", null, StepCondition.ALWAYS));
-        return new WorkflowSpec("小任务", steps, AggregateMode.COLLECT, null);
+    private static WorkflowSpec spec(WorkflowStep... steps) {
+        return new WorkflowSpec("调研并写方案", Arrays.asList(steps), AggregateMode.COLLECT, null);
+    }
+
+    /**
+     * 把某一步跑完（期间推进时钟，让耗时不为零）。
+     *
+     * @param id     编排标识
+     * @param stepId 步骤标识
+     */
+    private void settled(String id, String stepId) {
+        tracker.stepStarted(id, stepId);
+        // 推进一点点，让这一步的起止时刻不同（不到 1 秒，因此不会污染后面按秒读的耗时文案）
+        now += 1_000L;
+        tracker.stepFinished(id, stepId, StepState.DONE);
+    }
+
+    /**
+     * 造一个步骤。
+     *
+     * @param id    标识
+     * @param name  名字
+     * @param agent 类型
+     * @param needs 上游
+     * @return 步骤
+     */
+    private static WorkflowStep step(String id, String name, String agent, String... needs) {
+        return new WorkflowStep(id, name, agent, id, needs.length == 0 ? null : Arrays.asList(needs),
+                StepCondition.ALWAYS);
     }
 
     /**
@@ -212,34 +260,41 @@ class WorkflowPanelTest {
     }
 
     /**
-     * 找以给定标记开头的第一行的强调档位。
+     * 找某个字形所在的显示列。
+     *
+     * @param text  文本
+     * @param glyph 字形
+     * @return 显示列；找不到时返回 -1
+     */
+    private static int columnOf(String text, char glyph) {
+        int column = 0;
+        int index = 0;
+        while (index < text.length()) {
+            int codePoint = text.codePointAt(index);
+            if (codePoint == glyph) {
+                return column;
+            }
+            column += WorkflowText.displayWidth(new String(Character.toChars(codePoint)));
+            index += Character.charCount(codePoint);
+        }
+        return -1;
+    }
+
+    /**
+     * 找带给定标记的那一段的强调档位（标记在节点文本里，因此按段找而不是按行首找）。
      *
      * @param contribution 面板贡献
-     * @param mark         行首标记
+     * @param mark         状态标记，如 {@code [x] }
      * @return 强调档位
      */
     private static UiEmphasis emphasisOf(PanelContribution contribution, String mark) {
         for (UiLine line : contribution.getLines()) {
-            if (line.text().startsWith(mark)) {
-                return line.getSegments().get(0).getEmphasis();
+            for (UiSegment segment : line.getSegments()) {
+                if (segment.getText().contains(mark)) {
+                    return segment.getEmphasis();
+                }
             }
         }
-        throw new IllegalStateException("没有以该标记开头的行：" + mark);
-    }
-
-    /**
-     * 构造一份给定步数的 spec（步骤依次依赖前一步，便于断言顺序）。
-     *
-     * @param count 步数
-     * @return spec
-     */
-    private static WorkflowSpec spec(int count) {
-        List<WorkflowStep> steps = new ArrayList<WorkflowStep>();
-        for (int i = 0; i < count; i++) {
-            List<String> needs = i == 0 ? null : Arrays.asList("step-" + (i - 1));
-            String agent = i == count - 1 ? "planner" : "scout";
-            steps.add(new WorkflowStep("step-" + i, null, agent, "step-" + i, needs, StepCondition.ALWAYS));
-        }
-        return new WorkflowSpec("小任务", steps, AggregateMode.SUMMARIZE, "planner");
+        throw new IllegalStateException("没有带该标记的段：" + mark);
     }
 }
