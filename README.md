@@ -31,7 +31,7 @@
 
 ```bash
 mvn -q package -DskipTests      # 打包全部插件
-./cpPlugins.sh                  # 把 target/*.jar 拷进扫描目录（缺省 ~/.jellyfish/plugins/）
+./cpPlugins.sh                  # 在聚合工作目录根执行（本仓库内没有这个脚本）；把各插件 target/*.jar 拷进扫描目录（缺省 ~/.jellyfish/plugins/）
 ```
 
 **新增 / 删除插件 jar 需要重启 jellyfish**——扫描目录与插件集合只在启动期确定（`config.json` 的
@@ -908,7 +908,7 @@ public final class MyPlugin implements JellyfishPlugin {
     @Override
     public void start(PluginContext context) {
         ToolDescriptor descriptor = new ToolDescriptor("hello", "按名字打招呼",
-                /* parametersSchema */ ..., /* order */ 0);
+                /* parameters */ ..., /* required */ ...);   // 没有 order 参数：顺序只在 contribute / RegisterOptions 上声明
         context.handle(ToolCallRequest.class, "hello", descriptor, request -> {
             String name = String.valueOf(request.getArguments().get("name"));
             return new ToolCallResult("hello", "你好，" + name + "！");

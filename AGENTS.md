@@ -22,7 +22,7 @@ Jellyfish 官方插件仓库：把内核的扩展点变成一组可直接安装�
 mvn -q compile
 mvn -q test                         # 全量单测（JUnit5 + Mockito + JaCoCo）
 mvn -q package -DskipTests          # 打包全部插件
-./cpPlugins.sh                      # 把 target/*.jar 拷进 ~/.jellyfish/plugins/
+./cpPlugins.sh                      # 在聚合工作目录根执行（本仓库内没有这个脚本），把各插件 jar 拷进 ~/.jellyfish/plugins/
 mvn -q -Pshell-it test              # shell 插件端到端（真 /bin/sh，会真起进程再杀掉）
 mvn -q -Pmcp-it test                # MCP 插件端到端（真 fork 进程跑仓库自带的 echo server）
 mvn -q -Pscript-it test             # 真实 python3 / node 的端到端
