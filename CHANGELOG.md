@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-11
+
+### Changed
+
+- 版本号对齐到 `0.1.2`：父 POM 与各插件描述符里的 `plugin.version` 同步到 `0.1.2`，与内核 `0.1.2`
+  配套。本版插件自身没有面向使用者的行为变更。
+
 ## [0.1.1] - 2026-10-11
 
 ### Added
@@ -308,6 +315,7 @@
 - 命令策略的 `commandPolicy.trustedCommands`：白名单内的命令免审批直接执行。
 - 插件 id 与模块名一致（`jellyfish-plugin-<模块名>`），`plugin.requires` 声明内核兼容约束。
 
-[Unreleased]: https://github.com/zcd0831/Jellyfish-Plugins/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/zcd0831/Jellyfish-Plugins/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/zcd0831/Jellyfish-Plugins/releases/tag/v0.1.2
 [0.1.1]: https://github.com/zcd0831/Jellyfish-Plugins/releases/tag/v0.1.1
 [0.1.0]: https://github.com/zcd0831/Jellyfish-Plugins/releases/tag/v0.1.0

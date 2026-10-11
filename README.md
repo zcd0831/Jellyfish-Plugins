@@ -897,7 +897,7 @@ jellyfish.tags=example
 <parent>
     <groupId>io.github.zcd0831</groupId>
     <artifactId>jellyfish-plugins</artifactId>
-    <version>0.1.1</version>
+    <version>0.1.2</version>
 </parent>
 
 <artifactId>my-plugin</artifactId>
