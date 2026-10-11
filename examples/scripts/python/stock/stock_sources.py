@@ -640,16 +640,28 @@ def moneyflow(code, days=20):
     try:
         with _quiet_stdout():
             frame = _ak().stock_fund_flow_individual(symbol=rank)
-        hit = frame[frame["股票代码"].astype(str) == plain_code(code)]
+        # **必须补零再比**：这一列从接口解析出来是 int64，深市代码的前导零在解析时就被吃掉了
+        # （002558 存成 2558），因此直接 ``astype(str)`` 比较会让所有 0 开头的代码永远匹配不上，
+        # 而同花顺恰恰是东财挂掉时唯一的兜底——那等于兜底形同虚设。
+        hit = frame[frame["股票代码"].astype(str).str.zfill(6) == plain_code(code)]
         if len(hit) > 0:
             row = hit.iloc[0]
+            # 净额列名按档位不同：「即时」档叫「净额」，3 / 5 / 10 / 20 日排行叫「资金流入净额」
+            # （2026-10 实测）。只认后者的话，days=1 落到「即时」档时会取到空串——表面上像
+            # 「这只股票没有数据」，而实际只是列名不叫这个。
+            value = row.get("资金流入净额")
+            if value is None:
+                value = row.get("净额")
             return {"code": plain_code(code), "source": "同花顺", "note": (
                 "东财的逐日明细这次没取到，已退到同花顺的「%s」口径——它只有一个累计净额，"
                 "没有主力/超大单/大单的五档拆分。" % rank),
                 "columns": ["口径", "资金流入净额"],
                 "rows": [{"label": "%s累计" % span,
-                          "value": str(row.get("资金流入净额", "")).strip()}],
+                          "value": "" if value is None else str(value).strip()}],
                 "days": limit}
+        # 空命中也要留一条原因：否则最终错误里只有东财那句，会被读成「同花顺也挂了」，
+        # 而事实是这只股票不在这个档位里。错误信息的职责是别让人猜。
+        attempts.append("同花顺：%s 里没有 %s 的记录" % (rank, plain_code(code)))
     except Exception as exc:  # noqa: BLE001 - 两条口径都挂了
         attempts.append("同花顺：%s" % _brief(exc))
 
