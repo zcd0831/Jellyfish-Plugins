@@ -29,6 +29,12 @@ import java.util.Map;
  * 命令仍要过可信表与分类器，命中不了就问人。这正是「把 {@code mvn test} 放进白名单却仍被弹框」
  * 的原因，不是缺陷。
  * <p>
+ * <b>「全部」有一种写法：整条 {@code *}</b>（{@link #WILDCARD_ALL}）。三个表都认它，含义随表而定：
+ * 白名单里的 {@code *} 是「准入不再拦任何命令」（等价于白名单不表态），可信表里的是「一律免审批」，
+ * 只读表里的是「一律按只读放行」。条目里带别的字符时仍按原有的 1 / 2 token 前缀规则匹配——
+ * 因为单 token 的 {@code git} 已经覆盖了 {@code git} 的全部子命令，再引入 {@code git *} 这种
+ * 半个通配只会让人猜哪个更宽。
+ * <p>
  * <b>可信表与只读表（{@code readOnlyCommands}）为什么不合并</b>：只读表的语义承诺是
  * 「这条命令不改东西」，而免审批的诉求常常落在 {@code mvn test} / {@code git commit} 这类
  * <b>确实会改东西</b>的命令上。逼用户把它们写进只读表，等于让他对系统说谎，
@@ -77,6 +83,23 @@ final class CommandPolicy {
 
     /** 配置来源，用于告警定位。 */
     private static final String SOURCE = "plugins.configurations.jellyfish-plugin-shell";
+
+    /**
+     * 「匹配全部命令」的通配条目：<b>整条</b>写一个 {@code *}，没有别的通配写法。
+     * <p>
+     * 白名单、可信表、只读表共用同一套匹配（{@link #matchesPrefix}），因此这一条在三个表里
+     * 各是一句不同的话：写进 {@code allowedCommands} 是「准入这道门不再拦任何命令」，
+     * 写进 {@code trustedCommands} 是「一律免审批」，写进 {@code readOnlyCommands} 是「一律按只读放行」。
+     * <p>
+     * <b>为什么只认整条</b>：{@code git *} 这类半个通配会让人以为「匹配 git 的全部子命令」，
+     * 而单 token 的 {@code git} 早就是这个意思——两者同时存在只会让人猜哪个更宽。
+     * 于是含 {@code *} 却不是整条 {@code *} 的条目按<b>字面量</b>匹配（永不命中），
+     * 并在解析时发一条告警，不让它静默失效（见 {@code PluginConfig.commandListOf}）。
+     * <p>
+     * <b>它不免除更严的那几道</b>：拒绝形状、命令替换与重定向都要问人这两条照旧，{@code *} 只解除
+     * 它自己所在的那一道门——它在哪个表里，就只关哪个表的事。
+     */
+    static final String WILDCARD_ALL = "*";
 
     /**
      * 内置只读命令表。
@@ -151,9 +174,10 @@ final class CommandPolicy {
         return new CommandPolicy(
                 booleanValue(values.get("enabled"), true),
                 Collections.unmodifiableList(new ArrayList<String>(allowedCommands)),
-                PluginConfig.stringListOf(context, values.get("trustedCommands"), "commandPolicy.trustedCommands"),
-                extend(DEFAULT_READ_ONLY_COMMANDS, PluginConfig.stringListOf(context, values.get("readOnlyCommands"),
-                        "commandPolicy.readOnlyCommands")),
+                PluginConfig.commandListOf(context, values.get("trustedCommands"),
+                        "commandPolicy.trustedCommands"),
+                extend(DEFAULT_READ_ONLY_COMMANDS, PluginConfig.commandListOf(context,
+                        values.get("readOnlyCommands"), "commandPolicy.readOnlyCommands")),
                 extend(DEFAULT_DENIED_PATTERNS, PluginConfig.stringListOf(context, values.get("deniedPatterns"),
                         "commandPolicy.deniedPatterns")));
     }
@@ -463,7 +487,8 @@ final class CommandPolicy {
      * 判断命令是否命中某个前缀表。
      * <p>
      * 白名单、可信表与只读表的匹配粒度一致：允许写 {@code git status} 这种两 token 形式
-     * （精确匹配前两个 token），也允许写单 token（匹配该命令本身）。
+     * （精确匹配前两个 token），也允许写单 token（匹配该命令本身），还允许整条 {@code *}
+     * （{@link #WILDCARD_ALL}，匹配任何命令）。
      *
      * @param table   前缀表，不可为 {@code null}
      * @param command 命令原文
@@ -473,6 +498,10 @@ final class CommandPolicy {
         String first = firstToken(command);
         String firstTwo = firstTwoTokens(command);
         for (String prefix : table) {
+            if (WILDCARD_ALL.equals(prefix)) {
+                // 通配条不参与前缀比较：它独立成条，命中时命令长什么样都不必再看
+                return true;
+            }
             if (prefix.indexOf(' ') < 0 ? prefix.equals(first) : prefix.equals(firstTwo)) {
                 return true;
             }
@@ -487,6 +516,18 @@ final class CommandPolicy {
      */
     int trustedCommandCount() {
         return trustedCommands.size();
+    }
+
+    /**
+     * 取可信命令表的规模描述，供启动台账展示。
+     * <p>
+     * 与 {@link #trustedCommandCount()} 分开：那个数字回答「表里几条」，是解析与断言的粒度；
+     * 而台账要说的是「这份表意味着什么」——整条 {@code *} 时条数是 1，含义却是「一律免审批」。
+     *
+     * @return 规模描述，保证非 {@code null}
+     */
+    String trustedSummary() {
+        return PluginConfig.tableSummary(trustedCommands);
     }
 
     /**

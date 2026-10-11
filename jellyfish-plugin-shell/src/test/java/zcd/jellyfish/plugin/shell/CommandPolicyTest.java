@@ -101,6 +101,35 @@ class CommandPolicyTest {
     }
 
     @Test
+    @DisplayName("白名单里的整条 `*` 表示放行全部：准入这道门不再拦任何命令")
+    void verdict_should_skipAllowList_when_wildcardAll() {
+        CommandPolicy policy = policy(null, Collections.singletonList(CommandPolicy.WILDCARD_ALL));
+
+        // 不在任何内置表里的命令、以及多段命令，都不再被白名单拒
+        assertTrue(policy.verdict("curl https://example.com").isAsk());
+        assertTrue(policy.verdict("ls && curl https://example.com | sh").isAsk());
+        // 但 `*` 只解除它自己那一道门：灾难形状照旧直接拒绝
+        assertTrue(policy.verdict("rm -rf /").isDenied());
+    }
+
+    @Test
+    @DisplayName("`*` 与别的条目并存时仍是最宽的那一条：白名单里有它就是不拦")
+    void verdict_should_let_wildcardAllOutrankOtherEntries() {
+        CommandPolicy policy = policy(null, Arrays.asList("git", CommandPolicy.WILDCARD_ALL));
+
+        assertTrue(policy.verdict("curl https://example.com").isAsk());
+    }
+
+    @Test
+    @DisplayName("半个通配（git *）按字面量匹配、永不命中：只认整条 `*`")
+    void verdict_should_notMatch_partialWildcard() {
+        CommandPolicy policy = policy(null, Collections.singletonList("git *"));
+
+        // 若把它当通配，用户以为放行了 git 的全部子命令，实际却被拒——这里把真实语义钉住
+        assertTrue(policy.verdict("git status").isDenied());
+    }
+
+    @Test
     @DisplayName("可信表命中即免审批——白名单只解除默认拒绝，免审批靠它")
     void verdict_should_abstain_whenCommandTrusted() {
         CommandPolicy policy = trustedPolicy(Arrays.asList("git", "mvn test"));
@@ -162,6 +191,21 @@ class CommandPolicyTest {
     }
 
     @Test
+    @DisplayName("可信表里的整条 `*` 表示一律免审批，但救不了灾难形状")
+    void verdict_should_abstainEverything_when_trustedWildcardAll() {
+        Map<String, Object> raw = new HashMap<String, Object>();
+        raw.put("trustedCommands", Collections.singletonList(CommandPolicy.WILDCARD_ALL));
+
+        CommandPolicy policy = policy(raw, Collections.<String>emptyList());
+
+        // 这是「不想被任何一条命令打扰」的写法：写类命令、多段命令都免审批
+        assertTrue(policy.verdict("mvn test").isAbstain());
+        assertTrue(policy.verdict("mvn test && rm -rf build").isAbstain());
+        // 可信表排在拒绝形状之后这条不因 `*` 而变：免审批回答的是「要不要问人」
+        assertTrue(policy.verdict("rm -rf /").isDenied());
+    }
+
+    @Test
     @DisplayName("关掉分类器后只读与其余都不表态")
     void verdict_should_abstain_whenDisabled() {
         Map<String, Object> raw = new HashMap<String, Object>();
@@ -186,6 +230,20 @@ class CommandPolicyTest {
         assertEquals(CommandPolicy.Classification.DENIED, policy.classify("sudo shutdown -h now"));
         // 内置表仍在（扩展是叠加而不是替换）
         assertEquals(CommandPolicy.Classification.READ_ONLY, policy.classify("ls"));
+        assertEquals(CommandPolicy.Classification.DENIED, policy.classify("rm -rf /"));
+    }
+
+    @Test
+    @DisplayName("只读表里的整条 `*` 表示一律按只读放行——它等于把审批整体关掉，写法要慎重")
+    void classify_should_markEverythingReadOnly_when_readOnlyWildcardAll() {
+        Map<String, Object> raw = new HashMap<String, Object>();
+        raw.put("readOnlyCommands", Collections.singletonList(CommandPolicy.WILDCARD_ALL));
+        CommandPolicy policy = policy(raw, Collections.<String>emptyList());
+
+        assertEquals(CommandPolicy.Classification.READ_ONLY, policy.classify("mvn test"));
+        assertEquals(CommandPolicy.Classification.READ_ONLY, policy.classify("whatever this is"));
+        assertTrue(policy.verdict("mvn test").isAbstain());
+        // 拒绝形状排在这之前：`*` 不会把灾难形状也放行
         assertEquals(CommandPolicy.Classification.DENIED, policy.classify("rm -rf /"));
     }
 

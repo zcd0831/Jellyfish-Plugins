@@ -196,10 +196,10 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
 | `maxTimeoutSeconds` | `1800` | 单次调用能声明的超时上限 |
 | `idleTimeoutSeconds` | `0`（关闭） | 连续多久没有任何输出就判定卡住。「墙钟」回答「最多跑多久」，它回答「多久没动静就当死了」。**模型不能设置它**，它是用户的环境策略 |
 | `environment` | `{}` | 额外注入或覆盖的环境变量。子进程**继承**父进程环境，但名字匹配 `*KEY*` / `*TOKEN*` / `*SECRET*` / `*PASSWORD*` / `*CREDENTIAL*` / `*_PAT*` / `*AUTH*` / `*NETRC*` / `*PROXY*` / `*PASSPHRASE*` / `*_PWD` 的变量**不会**传下去（工具输出会送到远端 LLM）；其中 `*AUTH*` 会让 `SSH_AUTH_SOCK`、`*PROXY*` 会让 `HTTP_PROXY` 也一并被挡，需要时在这里写回来。另有一组防挂死默认值（`PAGER=cat`、`GIT_PAGER=cat`、`GIT_TERMINAL_PROMPT=0`、`TERM=dumb`、`NO_COLOR=1`、`DEBIAN_FRONTEND=noninteractive`），这里写的值可以盖掉默认值；`sensitivePatterns` 用于**追加**剔除模式 |
-| `allowedCommands` | `[]` | **非空即默认拒绝**的准入白名单，支持 `git status` 这种两 token 形式（单 token 覆盖该命令的全部子命令）。**它只管准入，不管审批**，也**不受 `commandPolicy.enabled` 影响** |
+| `allowedCommands` | `[]` | **非空即默认拒绝**的准入白名单，支持 `git status` 这种两 token 形式（单 token 覆盖该命令的全部子命令），也支持**整条 `*`**（匹配全部命令，等于准入这道门不再拦任何命令）。**它只管准入，不管审批**，也**不受 `commandPolicy.enabled` 影响** |
 | `commandPolicy.enabled` | `true` | 只关**分类器**这个便利机制。`false` 时只读表、重定向/命令替换检查与「其余命令问人」都不再表态，但白名单、可信表、拒绝形状照旧生效 |
-| `commandPolicy.trustedCommands` | `[]` | **可信命令表，命中即免审批**。粒度与白名单一致 |
-| `commandPolicy.readOnlyCommands` | `[]` | **追加**在内置只读表之后。内置表**不可替换**，只能追加 |
+| `commandPolicy.trustedCommands` | `[]` | **可信命令表，命中即免审批**。粒度与白名单一致，也支持**整条 `*`**（一律免审批） |
+| `commandPolicy.readOnlyCommands` | `[]` | **追加**在内置只读表之后。内置表**不可替换**，只能追加；也支持**整条 `*`**（一律按只读放行，等于把审批整体关掉，写法要慎重） |
 | `commandPolicy.deniedPatterns` | `[]` | **追加**在内置拒绝形状（`rm -rf /`、`mkfs`、`of=/dev/`、`:(){`）之后，同样不可撤销 |
 
 ### 权限与分类器
@@ -218,6 +218,13 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
 `rm -rf /` 依旧被拒。第 4 步要求「全段命中」也是同理：`trustedCommands: ["mvn test"]` 不该把
 `mvn test; rm -rf ~/x` 一并免审批。
 
+**「全部」只有一种写法：整条 `*`。** 三个表都认它，含义随表而定——白名单里是「准入不再拦任何命令」
+（效果等同于白名单不表态），可信表里是「一律免审批」，只读表里是「一律按只读放行」（等于把审批整体
+关掉）。它**只解除自己所在的那一道门**：拒绝形状、命令替换 / 重定向升级问人这两条照旧生效。
+条目里带别的字符时仍按 1 / 2 token 的前缀规则匹配，因此 `git *` 这类半个通配按**字面量**匹配、
+**永不命中**——单 token 的 `git` 本来就覆盖它的全部子命令，插件不引入第二套通配语法；配置解析时
+会为这种条目发一条告警，不让它静默失效。
+
 - **分类器仍不是安全边界**：`FOO=bar cmd`、别名、`sh -c` 嵌套照旧能绕过前缀判定。它的价值是让你不必为
   每次 `git status` 点一次批准——否则你最终会把 `shell` 从 `askTools` 里整个拿掉，那才是真正的风险。
 - **引号内的分隔符与重定向是字面量**：`echo "a;b"`、`echo 'a > b'` 仍是一条只读命令，不会被误伤。
@@ -230,6 +237,9 @@ cp jellyfish-plugin-tools/target/jellyfish-plugin-tools-*.jar ~/.jellyfish/plugi
 - **`trustedCommands` 是免审批表，白名单不解除审批**：这是最容易踩的一处——`allowedCommands` 里的
   `mvn test` 每次仍然弹批准框，因为白名单只回答「能不能跑」。要它静默执行，就把同一条前缀也写进
   `trustedCommands`。**「允许跑但每次都要我批准」这种姿态仍然写得出来**——只配白名单、不配可信表即可。
+- **想一次放行所有命令**：`allowedCommands: ["*"]`；要连审批也不再弹，把 `trustedCommands` 也写成
+  `["*"]`——那是「任何命令都不再问人」，只适合你自己完全掌控的机器。**代价要说清楚**：这条写法把
+  前缀判定这一层整个交出去，剩下的只有拒绝形状那几条（它们照样拒）。
 - **`commandPolicy.enabled=false` 会连第 5 步一起关掉**：它关的是「分类器」这个便利机制，
   只读表、重定向/命令替换检查与「其余命令问人」都不再表态；白名单、可信表、拒绝形状照旧生效。
 - **默认配置（`shell` 不在 `askTools` 里）就是推荐的姿态**；**把 `shell` 写进 `askTools` 则是
@@ -1058,7 +1068,8 @@ mvn -q -Pscript-it test
 
 **`-cli` / `-server` 下写类工具总是被拒？**
 那两个外壳没有审批者，而 `ASK` 就是拒绝。要么别把工具放进 `askTools`，要么为 `shell` 配
-`commandPolicy.trustedCommands`（白名单只管准入、不解除审批）。
+`commandPolicy.trustedCommands`（白名单只管准入、不解除审批）。**要一次性全放开就写整条 `*`**：
+`allowedCommands: ["*"]` + `trustedCommands: ["*"]`（见「权限与分类器」一节里那句「「全部」只有一种写法」）。
 
 **改了插件配置段要重启吗？**
 不用，`/reload` 会**只重启配置段变了的插件**。但改 `config.json`、新增 / 删除 jar 必须重启进程。

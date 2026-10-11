@@ -120,7 +120,7 @@ final class PluginConfig {
     static PluginConfig from(PluginContext context) {
         Map<String, Object> values = context == null ? Collections.<String, Object>emptyMap()
                 : safeConfiguration(context);
-        List<String> allowed = stringListOf(context, values.get("allowedCommands"), "allowedCommands");
+        List<String> allowed = commandListOf(context, values.get("allowedCommands"), "allowedCommands");
         return new PluginConfig(
                 positiveInt(context, values, "timeoutSeconds", DEFAULT_TIMEOUT_SECONDS,
                         HARD_MAX_TIMEOUT_SECONDS),
@@ -270,6 +270,46 @@ final class PluginConfig {
             result.add(text);
         }
         return Collections.unmodifiableList(result);
+    }
+
+    /**
+     * 描述一个命令名单的规模，供启动台账展示。
+     * <p>
+     * <b>含整条 {@code *} 时报的是「全部」而不是条数</b>：那种配置的条数是 1，含义却是
+     * 「一律放行 / 一律免审批」，报成 {@code allowed=1} 会让读日志的人以为只放行了一条命令。
+     *
+     * @param table 名单，不可为 {@code null}
+     * @return 规模描述，保证非 {@code null}
+     */
+    static String tableSummary(List<String> table) {
+        return table.contains(CommandPolicy.WILDCARD_ALL)
+                ? "全部(" + CommandPolicy.WILDCARD_ALL + ")" : String.valueOf(table.size());
+    }
+
+    /**
+     * 读取命令名单（白名单 / 可信表 / 只读表）：解析同 {@link #stringListOf}，
+     * 额外对「含 {@code *} 却不是整条 {@code *}」的条目发一条告警。
+     * <p>
+     * <b>为什么只告警、不改写</b>：{@code git *} 这类写法在用户看来是「匹配 git 的全部子命令」，
+     * 而本插件只认整条 {@code *}（见 {@link CommandPolicy#WILDCARD_ALL}），它会按字面量匹配、
+     * <b>永不命中</b>。静默失效的代价是用户从「命令怎么还是被拦」里去反推配置写错了，
+     * 而配置告警正是为这种时刻准备的。改成「帮用户猜一个意图」更糟：猜错的方向都是放宽权限。
+     *
+     * @param context 插件上下文，可为 {@code null}
+     * @param raw     原始值
+     * @param key     键名
+     * @return 列表，保证非 {@code null}
+     */
+    static List<String> commandListOf(PluginContext context, Object raw, String key) {
+        List<String> entries = stringListOf(context, raw, key);
+        for (String entry : entries) {
+            if (entry.indexOf('*') >= 0 && !CommandPolicy.WILDCARD_ALL.equals(entry)) {
+                warn(context, key + " 的条目 " + entry + " 含通配符但不是整条 "
+                        + CommandPolicy.WILDCARD_ALL + "：本插件只认整条 " + CommandPolicy.WILDCARD_ALL
+                        + "（匹配全部命令），该条目按字面量匹配，永不命中");
+            }
+        }
+        return entries;
     }
 
     /**

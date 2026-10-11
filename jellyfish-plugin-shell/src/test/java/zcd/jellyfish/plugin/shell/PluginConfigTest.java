@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
+import zcd.jellyfish.api.event.notification.ConfigWarningEvent;
 import zcd.jellyfish.api.plugin.PluginContext;
 
 import java.util.Arrays;
@@ -13,7 +14,10 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -181,6 +185,52 @@ class PluginConfigTest {
         assertTrue(config.commandPolicy().verdict("git commit -m x").isAbstain());
         // 未列入可信表的写类命令仍然问人
         assertTrue(config.commandPolicy().verdict("git push").isAsk());
+    }
+
+    @Test
+    @DisplayName("整条 `*` 原样读出并生效：准入不再拦、免审批一律给")
+    void from_should_keepWildcardAll() {
+        Map<String, Object> policy = new HashMap<String, Object>();
+        policy.put("trustedCommands", Collections.singletonList("*"));
+        Map<String, Object> values = new HashMap<String, Object>();
+        values.put("allowedCommands", Collections.singletonList("*"));
+        values.put("commandPolicy", policy);
+
+        PluginConfig config = PluginConfig.from(context(values));
+
+        assertEquals(Collections.singletonList("*"), config.allowedCommands());
+        assertTrue(config.commandPolicy().verdict("curl https://example.com").isAbstain());
+        // `*` 在台账里要说成「全部」而不是条数：1 条与「一律免审批」是两件事
+        assertEquals("全部(*)", PluginConfig.tableSummary(config.allowedCommands()));
+        assertEquals("全部(*)", config.commandPolicy().trustedSummary());
+    }
+
+    @Test
+    @DisplayName("半个通配（git *）当场告警：它按字面量匹配、永不命中，静默失效最难查")
+    void from_should_warn_when_partialWildcard() {
+        Map<String, Object> values = new HashMap<String, Object>();
+        values.put("allowedCommands", Arrays.asList("git *", "*"));
+        PluginContext context = context(values);
+
+        PluginConfig config = PluginConfig.from(context);
+
+        // 条目本身不改写：替用户猜意图的方向都是放宽权限，而权限只能由用户自己放宽
+        assertEquals(Arrays.asList("git *", "*"), config.allowedCommands());
+        verify(context).emit(any(ConfigWarningEvent.class));
+    }
+
+    @Test
+    @DisplayName("告警只针对半个通配：整条 `*` 与不含通配的条目都不打扰人")
+    void from_should_notWarn_when_noPartialWildcard() {
+        Map<String, Object> values = new HashMap<String, Object>();
+        values.put("allowedCommands", Arrays.asList("*", "git status"));
+        // sensitivePatterns 的 `*INTERNAL*` 是它自己的合法通配写法，不该跟着报
+        values.put("sensitivePatterns", Collections.singletonList("*INTERNAL*"));
+        PluginContext context = context(values);
+
+        PluginConfig.from(context);
+
+        verify(context, never()).emit(any(ConfigWarningEvent.class));
     }
 
     /**

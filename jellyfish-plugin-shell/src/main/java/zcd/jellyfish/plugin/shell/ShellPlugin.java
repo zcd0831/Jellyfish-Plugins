@@ -62,8 +62,9 @@ public final class ShellPlugin implements JellyfishPlugin {
         this.runner = created;
         LOG.info("命令行插件已启动: timeout={}s maxTimeout={}s idleTimeout={}s allowed={} trusted={}",
                 Integer.valueOf(config.timeoutSeconds()), Integer.valueOf(config.maxTimeoutSeconds()),
-                Integer.valueOf(config.idleTimeoutSeconds()), Integer.valueOf(config.allowedCommands().size()),
-                Integer.valueOf(config.commandPolicy().trustedCommandCount()));
+                Integer.valueOf(config.idleTimeoutSeconds()),
+                PluginConfig.tableSummary(config.allowedCommands()),
+                config.commandPolicy().trustedSummary());
     }
 
     @Override

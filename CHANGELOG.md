@@ -5,6 +5,16 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Added
+
+- **`shell` 的命令名单支持整条 `*`（匹配全部命令）**：`allowedCommands` 与 `commandPolicy` 下的
+  `trustedCommands` / `readOnlyCommands` 三个表里单独写一个 `*`，分别表示「准入不再拦任何命令」
+  「一律免审批」「一律按只读放行」。它**只解除自己所在的那一道门**——拒绝形状、命令替换 / 重定向
+  升级问人照旧生效。含 `*` 却不是整条 `*` 的条目（如 `git *`）按**字面量**匹配、永不命中，配置解析时
+  会为此发一条告警；启动台账遇到 `*` 报的是「全部(*)」而不是条数 1。
+
 ## [0.1.1] - 2026-10-10
 
 ### Added
